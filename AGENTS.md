@@ -77,3 +77,17 @@ go test -v -run TestName ./internal/...
 ## Agent behaviour
 
 - Don't make commits, or push changes to remotes. I will take care of this myself.
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown file-based issue tracker. See [issue-tracker.md](file:///Users/arau/code/playground/once/docs/agents/issue-tracker.md).
+
+### Triage labels
+
+State roles mapped to issue metadata labels. See [triage-labels.md](file:///Users/arau/code/playground/once/docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context repository layout. See [domain.md](file:///Users/arau/code/playground/once/docs/agents/domain.md).
