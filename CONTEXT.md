@@ -15,3 +15,6 @@ _Avoid_: Tailscale Sidecar, Tailscale Agent container
 
 **Tailscale Funnel**:
 A Tailscale feature that routes public internet traffic to a specific port on a tailnet node, enabling temporary public access.
+
+**Once Admin Web App**:
+A browser-based administrative interface for Once, reachable only from the tailnet. Distinct from the TUI and CLI. Its feature set is specified separately from the Tailscale integration that exposes it.
