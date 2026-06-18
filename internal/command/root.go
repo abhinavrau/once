@@ -45,6 +45,7 @@ func NewRootCommand() *RootCommand {
 	r.cmd.AddCommand(newRestoreCommand().cmd)
 	r.cmd.AddCommand(newStartCommand().cmd)
 	r.cmd.AddCommand(newStopCommand().cmd)
+	r.cmd.AddCommand(newTailscaleCommand().cmd)
 	r.cmd.AddCommand(newTeardownCommand().cmd)
 	r.cmd.AddCommand(newUpdateCommand().cmd)
 	r.cmd.AddCommand(newSelfUpdateCommand().cmd)

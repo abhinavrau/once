@@ -27,6 +27,7 @@ type Namespace struct {
 	name         string
 	client       *client.Client
 	proxy        *Proxy
+	tailscale    *Tailscale
 	applications []*Application
 }
 
@@ -59,6 +60,7 @@ func NewNamespace(name string, opts ...NamespaceOption) (*Namespace, error) {
 		client: c,
 	}
 	ns.proxy = NewProxy(ns)
+	ns.tailscale = NewTailscale(ns)
 
 	for _, opt := range opts {
 		opt(ns)
@@ -93,6 +95,10 @@ func (n *Namespace) addApplication(settings ApplicationSettings) *Application {
 
 func (n *Namespace) Proxy() *Proxy {
 	return n.proxy
+}
+
+func (n *Namespace) Tailscale() *Tailscale {
+	return n.tailscale
 }
 
 func (n *Namespace) Application(name string) *Application {
@@ -177,6 +183,10 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 	}
 
 	if err := n.proxy.Destroy(ctx); err != nil {
+		return err
+	}
+
+	if err := n.tailscale.Destroy(ctx); err != nil {
 		return err
 	}
 

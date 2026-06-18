@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
@@ -243,6 +244,60 @@ func TestTSDProxyRegistersWithHeadscale(t *testing.T) {
 		names, err := cp.nodeNames(ctx)
 		return err == nil && slices.Contains(names, "whoami")
 	}, 90*time.Second, 2*time.Second, "tsdproxy node never registered with the control plane")
+}
+
+// TestTailscaleEnableBootsTSDProxyViaControlSeam boots once-tsdproxy through
+// Once's real Enable path (not the raw harness helper), driving it at headscale
+// via the hidden control seam, and asserts a labelled app registers a node.
+// Disable then tears down the container while keeping the data volume.
+func TestTailscaleEnableBootsTSDProxyViaControlSeam(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-enable-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	t.Cleanup(func() { cli.Close() })
+
+	cp := newControlPlane(t, ctx, ns)
+
+	key, err := cp.authKey(ctx)
+	require.NoError(t, err)
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", cp.controlURL())
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", key)
+
+	startWhoami(t, ctx, ns, "whoami")
+
+	require.NoError(t, ns.Tailscale().Enable(ctx, docker.TailscaleSettings{
+		ClientID:     "unused-with-control-seam",
+		ClientSecret: "unused-with-control-seam",
+	}))
+
+	tsdproxyName := ns.Name() + "-tsdproxy"
+	info, err := cli.ContainerInspect(ctx, tsdproxyName)
+	require.NoError(t, err)
+	assert.Contains(t, info.Config.Labels["once"], "unused-with-control-seam")
+
+	require.Eventually(t, func() bool {
+		names, err := cp.nodeNames(ctx)
+		return err == nil && slices.Contains(names, "whoami")
+	}, 90*time.Second, 2*time.Second, "Once-booted tsdproxy never registered a node via the control seam")
+
+	dataVolume := ns.Name() + "-tsdproxy-data"
+	_, err = cli.VolumeInspect(ctx, dataVolume)
+	require.NoError(t, err, "data volume should exist after enable")
+
+	require.NoError(t, ns.Tailscale().Disable(ctx))
+
+	_, err = cli.ContainerInspect(ctx, tsdproxyName)
+	assert.True(t, errdefs.IsNotFound(err), "container should be gone after disable")
+
+	_, err = cli.VolumeInspect(ctx, dataVolume)
+	assert.NoError(t, err, "data volume should be retained after disable")
 }
 
 func TestWhoamiDeploysViaHarness(t *testing.T) {
