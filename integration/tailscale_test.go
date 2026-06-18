@@ -27,9 +27,11 @@ import (
 // Pinned images for the Tailscale integration harness. Bumped via Once releases,
 // mirroring how the kamal-proxy pin is managed.
 const (
-	headscaleImage = "headscale/headscale:0.26.1"
-	tsdproxyImage  = "almeidapaulopt/tsdproxy:2"
-	whoamiImage    = "traefik/whoami:v1.10.3"
+	headscaleImage  = "headscale/headscale:0.26.1"
+	tsdproxyImage   = "almeidapaulopt/tsdproxy:2"
+	whoamiImage     = "traefik/whoami:v1.10.3"
+	tailscaleImage  = "tailscale/tailscale:v1.80.3"
+	magicDNSBaseDom = "tailnet.test" // matches base_domain in headscaleConfig
 
 	headscaleBin = "/ko-app/headscale" // ko image has no shell; exec the binary directly
 	testUser     = "once-test"
@@ -46,6 +48,9 @@ type controlPlane interface {
 	authKey(ctx context.Context) (string, error)
 	// nodeNames lists the hostnames currently registered with the control plane.
 	nodeNames(ctx context.Context) ([]string, error)
+	// nodeOnline reports whether the named node is currently connected. found is
+	// false when no node with that name exists.
+	nodeOnline(ctx context.Context, name string) (found, online bool, err error)
 }
 
 type controlBackend string
@@ -123,6 +128,26 @@ func (h *headscale) nodeNames(ctx context.Context) ([]string, error) {
 		names[i] = n.GivenName
 	}
 	return names, nil
+}
+
+func (h *headscale) nodeOnline(ctx context.Context, name string) (bool, bool, error) {
+	out, err := execCapture(ctx, h.cli, h.name, headscaleBin, "nodes", "list", "-o", "json")
+	if err != nil {
+		return false, false, err
+	}
+	var nodes []struct {
+		GivenName string `json:"given_name"`
+		Online    bool   `json:"online"`
+	}
+	if err := json.Unmarshal([]byte(out), &nodes); err != nil {
+		return false, false, fmt.Errorf("parsing nodes: %w (%s)", err, out)
+	}
+	for _, n := range nodes {
+		if n.GivenName == name {
+			return true, n.Online, nil
+		}
+	}
+	return false, false, nil
 }
 
 // startHeadscale boots a headscale container in the namespace network, waits for
@@ -300,6 +325,149 @@ func TestTailscaleEnableBootsTSDProxyViaControlSeam(t *testing.T) {
 	assert.NoError(t, err, "data volume should be retained after disable")
 }
 
+// TestAppRetrofitRollOnEnableAndDisable deploys a real Once-managed whoami app,
+// then enables Tailscale and asserts the retrofit roll injects the tsdproxy.*
+// labels (alongside the existing once label) so the app's ephemeral node
+// registers with headscale. Disabling rolls the app again to strip the labels.
+// Removing the app takes its ephemeral node offline and frees the Magic DNS name.
+func TestAppRetrofitRollOnEnableAndDisable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-retrofit-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	t.Cleanup(func() { cli.Close() })
+
+	cp := newControlPlane(t, ctx, ns)
+	key, err := cp.authKey(ctx)
+	require.NoError(t, err)
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", cp.controlURL())
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", key)
+
+	deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name:  "whoami",
+		Image: whoamiImage,
+		Host:  "whoami.localhost",
+	})
+
+	// Enable retrofits the running app: tsdproxy.* labels are injected via a roll.
+	require.NoError(t, ns.Tailscale().Enable(ctx, docker.TailscaleSettings{
+		ClientID:     "unused-with-control-seam",
+		ClientSecret: "unused-with-control-seam",
+	}))
+
+	assertAppLabels(t, ctx, cli, ns, hasTSDProxyLabels)
+
+	require.Eventually(t, func() bool {
+		names, err := cp.nodeNames(ctx)
+		return err == nil && slices.Contains(names, "whoami")
+	}, 90*time.Second, 2*time.Second, "retrofitted app never registered a node on enable")
+
+	// Disable rolls the app again, stripping the tsdproxy.* labels.
+	require.NoError(t, ns.Tailscale().Disable(ctx))
+	assertAppLabels(t, ctx, cli, ns, noTSDProxyLabels)
+
+	// Re-enable so we can prove ephemeral cleanup on delete frees the name.
+	require.NoError(t, ns.Tailscale().Enable(ctx, docker.TailscaleSettings{
+		ClientID:     "unused-with-control-seam",
+		ClientSecret: "unused-with-control-seam",
+	}))
+	require.Eventually(t, func() bool {
+		names, err := cp.nodeNames(ctx)
+		return err == nil && slices.Contains(names, "whoami")
+	}, 90*time.Second, 2*time.Second, "app never re-registered after re-enable")
+
+	require.NoError(t, ns.Refresh(ctx))
+	require.NoError(t, ns.Application("whoami").Remove(ctx, true))
+
+	// Deleting the app takes its node offline. Against headscale that is the
+	// observable signal; SaaS-side auto-removal that frees the Magic DNS name is
+	// covered by the SaaS smoke pass (headscale may not replicate it exactly).
+	require.Eventually(t, func() bool {
+		found, online, err := cp.nodeOnline(ctx, "whoami")
+		return err == nil && (!found || !online)
+	}, 90*time.Second, 2*time.Second, "node never went offline after app deletion")
+}
+
+// TestAppReachableViaMagicDNS is the single end-to-end data-path smoke: it boots
+// a tailscale client joined to the same headscale, then curls the retrofitted
+// whoami app through the tailnet via its Magic DNS name and asserts the echoed
+// hostname is the app container — proving userspace networking carries traffic.
+func TestAppReachableViaMagicDNS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-magicdns-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	t.Cleanup(func() { cli.Close() })
+
+	cp := newControlPlane(t, ctx, ns)
+	key, err := cp.authKey(ctx)
+	require.NoError(t, err)
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", cp.controlURL())
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", key)
+
+	deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name:  "whoami",
+		Image: whoamiImage,
+		Host:  "whoami.localhost",
+	})
+	require.NoError(t, ns.Tailscale().Enable(ctx, docker.TailscaleSettings{
+		ClientID:     "unused-with-control-seam",
+		ClientSecret: "unused-with-control-seam",
+	}))
+
+	require.Eventually(t, func() bool {
+		found, online, err := cp.nodeOnline(ctx, "whoami")
+		return err == nil && found && online
+	}, 90*time.Second, 2*time.Second, "app node never came online before the smoke")
+
+	// The app container's hostname is what whoami echoes back through the proxy.
+	require.NoError(t, ns.Refresh(ctx))
+	appContainer, err := ns.Application("whoami").ContainerName(ctx)
+	require.NoError(t, err)
+	appInfo, err := cli.ContainerInspect(ctx, appContainer)
+	require.NoError(t, err)
+	appHostname := appInfo.Config.Hostname
+
+	clientName := startTailscaleClient(t, ctx, cli, ns, cp, key)
+
+	magicDNSURL := fmt.Sprintf("http://whoami.%s/", magicDNSBaseDom)
+	var body string
+	var lastErr error
+	ok := assert.Eventually(t, func() bool {
+		out, err := execCapture(ctx, cli, clientName, "sh", "-c",
+			"http_proxy=http://localhost:1055 wget -T 5 -qO- "+magicDNSURL)
+		if err != nil {
+			lastErr = err
+			return false
+		}
+		body = out
+		return true
+	}, 120*time.Second, 3*time.Second)
+	if !ok {
+		status, _ := execCapture(ctx, cli, clientName, "tailscale", "status")
+		netcheck, _ := execCapture(ctx, cli, clientName, "tailscale", "netcheck")
+		t.Logf("last wget error: %v\ntailscale status:\n%s\nnetcheck:\n%s", lastErr, status, netcheck)
+		t.Fatal("never reached the app via Magic DNS")
+	}
+
+	assert.Contains(t, body, "Hostname: "+appHostname,
+		"whoami should echo the app container hostname proving the tailnet data path")
+}
+
 func TestWhoamiDeploysViaHarness(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -323,6 +491,63 @@ func TestWhoamiDeploysViaHarness(t *testing.T) {
 }
 
 // Helpers
+
+// startTailscaleClient boots a tailscale node (userspace, no /dev/net/tun)
+// joined to the control plane and exposing an outbound HTTP proxy on :1055 that
+// resolves Magic DNS, so the test can curl tailnet hostnames from inside it.
+func startTailscaleClient(t *testing.T, ctx context.Context, cli *client.Client, ns *docker.Namespace, cp controlPlane, authKey string) string {
+	t.Helper()
+
+	pullImage(t, ctx, cli, tailscaleImage)
+
+	name := ns.Name() + "-tsclient"
+	runContainer(t, ctx, cli, ns, name,
+		&container.Config{
+			Image: tailscaleImage,
+			Env: []string{
+				"TS_AUTHKEY=" + authKey,
+				"TS_EXTRA_ARGS=--login-server=" + cp.controlURL() + " --accept-dns=true",
+				"TS_USERSPACE=true",
+				"TS_OUTBOUND_HTTP_PROXY_LISTEN=0.0.0.0:1055",
+				"TS_HOSTNAME=tsclient",
+			},
+		},
+		&container.HostConfig{},
+	)
+
+	require.Eventually(t, func() bool {
+		_, err := execCapture(ctx, cli, name, "tailscale", "status")
+		return err == nil
+	}, 90*time.Second, 2*time.Second, "tailscale client never joined the tailnet")
+
+	return name
+}
+
+// assertAppLabels inspects the whoami app's current container and checks its
+// labels with the given predicate. The once label must always survive.
+func assertAppLabels(t *testing.T, ctx context.Context, cli *client.Client, ns *docker.Namespace, check func(*testing.T, map[string]string)) {
+	t.Helper()
+	require.NoError(t, ns.Refresh(ctx))
+	name, err := ns.Application("whoami").ContainerName(ctx)
+	require.NoError(t, err)
+	info, err := cli.ContainerInspect(ctx, name)
+	require.NoError(t, err)
+	assert.NotEmpty(t, info.Config.Labels["once"], "once label must survive the roll")
+	check(t, info.Config.Labels)
+}
+
+func hasTSDProxyLabels(t *testing.T, labels map[string]string) {
+	t.Helper()
+	assert.Equal(t, "true", labels["tsdproxy.enable"])
+	assert.Equal(t, "whoami", labels["tsdproxy.name"])
+	assert.Equal(t, "80/http:80/http", labels["tsdproxy.port.1"])
+	assert.Equal(t, "true", labels["tsdproxy.ephemeral"])
+}
+
+func noTSDProxyLabels(t *testing.T, labels map[string]string) {
+	t.Helper()
+	assert.NotContains(t, labels, "tsdproxy.enable")
+}
 
 func runContainer(t *testing.T, ctx context.Context, cli *client.Client, ns *docker.Namespace, name string, cfg *container.Config, host *container.HostConfig) {
 	t.Helper()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -198,6 +199,17 @@ func (a *Application) Deploy(ctx context.Context, progress DeployProgressCallbac
 	return a.deployWithVolume(ctx, vol, progress)
 }
 
+// Roll recreates the app's container in place (zero-downtime, via the normal
+// deploy path) so it picks up label changes such as tsdproxy.* injection. It
+// reuses the running image and the existing volume — no image pull.
+func (a *Application) Roll(ctx context.Context, progress DeployProgressCallback) error {
+	vol, err := a.Volume(ctx)
+	if err != nil {
+		return fmt.Errorf("getting volume: %w", err)
+	}
+	return a.deployWithVolume(ctx, vol, progress)
+}
+
 func (a *Application) VerifyHTTPOrRemove(ctx context.Context) error {
 	if err := a.verifyHTTP(ctx); err != nil {
 		if cleanupErr := a.Remove(context.Background(), true); cleanupErr != nil {
@@ -312,6 +324,11 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 
 	containerName := fmt.Sprintf("%s-app-%s-%s", a.namespace.name, a.Settings.Name, id)
 
+	tailscaleEnabled, err := a.namespace.Tailscale().Enabled(ctx)
+	if err != nil {
+		return fmt.Errorf("checking tailscale: %w", err)
+	}
+
 	env := a.Settings.BuildEnv(vol.Settings)
 
 	hostConfig := &container.HostConfig{
@@ -325,7 +342,7 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 	}
 
 	resp, err := a.namespace.client.ContainerCreate(ctx,
-		a.containerConfig(env),
+		a.containerConfig(env, tailscaleEnabled),
 		hostConfig,
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
@@ -429,12 +446,12 @@ func (a *Application) volumeMounts(vol *ApplicationVolume) []mount.Mount {
 	return mounts
 }
 
-func (a *Application) containerConfig(env []string) *container.Config {
+func (a *Application) containerConfig(env []string, tailscaleEnabled bool) *container.Config {
+	labels := map[string]string{labelKey: a.Settings.Marshal()}
+	maps.Copy(labels, tsdproxyLabels(a.Settings.Name, tailscaleEnabled))
 	return &container.Config{
-		Image: a.Settings.Image,
-		Labels: map[string]string{
-			labelKey: a.Settings.Marshal(),
-		},
-		Env: env,
+		Image:  a.Settings.Image,
+		Labels: labels,
+		Env:    env,
 	}
 }

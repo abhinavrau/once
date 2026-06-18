@@ -15,6 +15,34 @@ func TestTailscaleSettingsRoundTrip(t *testing.T) {
 	assert.Equal(t, settings, parsed)
 }
 
+func TestTSDProxyLabelsWhenEnabled(t *testing.T) {
+	labels := tsdproxyLabels("writebook", true)
+
+	assert.Equal(t, map[string]string{
+		"tsdproxy.enable":    "true",
+		"tsdproxy.name":      "writebook",
+		"tsdproxy.port.1":    "80/http:80/http",
+		"tsdproxy.ephemeral": "true",
+	}, labels)
+}
+
+func TestTSDProxyLabelsWhenDisabled(t *testing.T) {
+	assert.Nil(t, tsdproxyLabels("writebook", false))
+}
+
+func TestContainerConfigInjectsTSDProxyLabels(t *testing.T) {
+	app := &Application{Settings: ApplicationSettings{Name: "writebook", Image: "writebook:1"}}
+
+	enabled := app.containerConfig(nil, true)
+	assert.Equal(t, app.Settings.Marshal(), enabled.Labels[labelKey])
+	assert.Equal(t, "true", enabled.Labels["tsdproxy.enable"])
+	assert.Equal(t, "writebook", enabled.Labels["tsdproxy.name"])
+
+	disabled := app.containerConfig(nil, false)
+	assert.Equal(t, app.Settings.Marshal(), disabled.Labels[labelKey])
+	assert.NotContains(t, disabled.Labels, "tsdproxy.enable")
+}
+
 func TestBuildTSDProxyConfigOAuth(t *testing.T) {
 	config := buildTSDProxyConfig(TailscaleSettings{ClientID: "id-123", ClientSecret: "secret-456"}, "", "")
 
@@ -24,6 +52,9 @@ func TestBuildTSDProxyConfigOAuth(t *testing.T) {
 	assert.NotContains(t, config, "authKey")
 	assert.Contains(t, config, "dataDir: /data/")
 	assert.Contains(t, config, "unix:///var/run/docker.sock")
+	// Apps share the once network with tsdproxy, so it must reach them by their
+	// container IP rather than falling back to host.docker.internal.
+	assert.Contains(t, config, "tryDockerInternalNetwork: true")
 }
 
 func TestBuildTSDProxyConfigControlSeam(t *testing.T) {

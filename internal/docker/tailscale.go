@@ -86,7 +86,10 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 	}
 
 	t.Settings = &settings
-	return nil
+
+	// Retrofit running apps so they appear on the tailnet immediately, not just
+	// on their next deploy. once-tsdproxy now exists, so the roll injects labels.
+	return t.namespace.RollApplications(ctx)
 }
 
 // Disable stops and removes once-tsdproxy but keeps the once-tsdproxy-data
@@ -96,7 +99,23 @@ func (t *Tailscale) Disable(ctx context.Context) error {
 		return err
 	}
 	t.Settings = nil
-	return nil
+
+	// Roll running apps to strip the tsdproxy.* labels — once-tsdproxy is gone,
+	// so Enabled() is now false and the roll recreates them without the labels.
+	return t.namespace.RollApplications(ctx)
+}
+
+// Enabled is implicit in the existence of the once-tsdproxy container (the same
+// doctrine the proxy follows).
+func (t *Tailscale) Enabled(ctx context.Context) (bool, error) {
+	_, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
+	if err == nil {
+		return true, nil
+	}
+	if errdefs.IsNotFound(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspecting tsdproxy container: %w", err)
 }
 
 // Destroy removes both the container and the data volume (full cleanup, used by
@@ -233,6 +252,22 @@ func (t *Tailscale) removeContainer(ctx context.Context) error {
 
 // Helpers
 
+// tsdproxyLabels returns the labels that expose an app on the tailnet under its
+// own Magic DNS name. Nil when Tailscale is disabled, so app containers carry
+// the labels only while once-tsdproxy is running. The 80/http upstream matches
+// Once's port-80 assumption; ephemeral nodes self-clean when the app is deleted.
+func tsdproxyLabels(appName string, enabled bool) map[string]string {
+	if !enabled {
+		return nil
+	}
+	return map[string]string{
+		"tsdproxy.enable":    "true",
+		"tsdproxy.name":      appName,
+		"tsdproxy.port.1":    "80/http:80/http",
+		"tsdproxy.ephemeral": "true",
+	}
+}
+
 // buildTSDProxyConfig renders the tsdproxy YAML config. When controlURL and
 // authKey are set (the hidden control seam), they replace OAuth entirely —
 // OAuth is Tailscale-SaaS-only and cannot reach a headscale control plane.
@@ -253,6 +288,7 @@ docker:
   local:
     host: unix:///var/run/docker.sock
     targetHostname: host.docker.internal
+    tryDockerInternalNetwork: true
     defaultProxyProvider: default
 tailscale:
   providers:

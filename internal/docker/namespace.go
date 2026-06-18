@@ -198,6 +198,25 @@ func (n *Namespace) Refresh(ctx context.Context) error {
 	return n.restoreState(ctx)
 }
 
+// RollApplications recreates every running app container (zero-downtime) so they
+// pick up the current tsdproxy.* label state. It refreshes from Docker first so
+// the roll covers apps regardless of whether they were preloaded — the retrofit
+// behind once tailscale enable/disable.
+func (n *Namespace) RollApplications(ctx context.Context) error {
+	if err := n.Refresh(ctx); err != nil {
+		return err
+	}
+	for _, app := range n.applications {
+		if !app.Running {
+			continue
+		}
+		if err := app.Roll(ctx, nil); err != nil {
+			return fmt.Errorf("rolling %s: %w", app.Settings.Name, err)
+		}
+	}
+	return nil
+}
+
 func (n *Namespace) DockerRootDir(ctx context.Context) (string, error) {
 	info, err := n.client.Info(ctx)
 	if err != nil {
