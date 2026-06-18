@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # App container `tsdproxy.*` label injection + retrofit roll on enable/disable
 
