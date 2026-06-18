@@ -27,6 +27,7 @@ type Namespace struct {
 	name         string
 	client       *client.Client
 	proxy        *Proxy
+	tailscale    *Tailscale
 	applications []*Application
 }
 
@@ -59,6 +60,7 @@ func NewNamespace(name string, opts ...NamespaceOption) (*Namespace, error) {
 		client: c,
 	}
 	ns.proxy = NewProxy(ns)
+	ns.tailscale = NewTailscale(ns)
 
 	for _, opt := range opts {
 		opt(ns)
@@ -93,6 +95,10 @@ func (n *Namespace) addApplication(settings ApplicationSettings) *Application {
 
 func (n *Namespace) Proxy() *Proxy {
 	return n.proxy
+}
+
+func (n *Namespace) Tailscale() *Tailscale {
+	return n.tailscale
 }
 
 func (n *Namespace) Application(name string) *Application {
@@ -180,12 +186,35 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 		return err
 	}
 
+	if err := n.tailscale.Destroy(ctx); err != nil {
+		return err
+	}
+
 	return n.client.NetworkRemove(ctx, n.name)
 }
 
 func (n *Namespace) Refresh(ctx context.Context) error {
 	n.applications = nil
 	return n.restoreState(ctx)
+}
+
+// RollApplications recreates every running app container (zero-downtime) so they
+// pick up the current tsdproxy.* label state. It refreshes from Docker first so
+// the roll covers apps regardless of whether they were preloaded — the retrofit
+// behind once tailscale enable/disable.
+func (n *Namespace) RollApplications(ctx context.Context) error {
+	if err := n.Refresh(ctx); err != nil {
+		return err
+	}
+	for _, app := range n.applications {
+		if !app.Running {
+			continue
+		}
+		if err := app.Roll(ctx, nil); err != nil {
+			return fmt.Errorf("rolling %s: %w", app.Settings.Name, err)
+		}
+	}
+	return nil
 }
 
 func (n *Namespace) DockerRootDir(ctx context.Context) (string, error) {

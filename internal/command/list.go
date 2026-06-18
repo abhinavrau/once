@@ -29,7 +29,9 @@ func newListCommand() *listCommand {
 
 // Private
 
-func (l *listCommand) run(_ context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
+func (l *listCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
+	tailnet := tailnetURLs(ctx, ns)
+
 	for _, app := range ns.Applications() {
 		status := "stopped"
 		if app.Running {
@@ -38,8 +40,34 @@ func (l *listCommand) run(_ context.Context, ns *docker.Namespace, cmd *cobra.Co
 
 		host := hostStyle.Hyperlink(app.URL()).Render(app.Settings.Host)
 
-		fmt.Printf("%s (%s)\n", host, status)
+		line := fmt.Sprintf("%s (%s)", host, status)
+		if url := tailnet[app.Settings.Name]; url != "" {
+			line += " " + hostStyle.Hyperlink(url).Render(url)
+		}
+		fmt.Println(line)
 	}
 
 	return nil
+}
+
+// Helpers
+
+// tailnetURLs maps app name to tailnet URL when Tailscale is enabled. Best
+// effort: any failure returns nil so list still prints the public/local lines.
+func tailnetURLs(ctx context.Context, ns *docker.Namespace) map[string]string {
+	enabled, err := ns.Tailscale().Enabled(ctx)
+	if err != nil || !enabled {
+		return nil
+	}
+
+	proxies, err := ns.Tailscale().Proxies(ctx)
+	if err != nil {
+		return nil
+	}
+
+	urls := make(map[string]string, len(proxies))
+	for _, p := range proxies {
+		urls[p.Name] = p.URL
+	}
+	return urls
 }

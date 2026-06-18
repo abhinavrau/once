@@ -1,0 +1,15 @@
+# Tailscale Integration Architecture
+
+To enable applications deployed via Once to be securely accessible on a private virtual network, we decided to integrate Tailscale.
+
+We chose to deploy a single **Tailscale Docker Proxy (TSDProxy)** container (`once-tsdproxy`) running Tailscale's embedded `tsnet` library. TSDProxy watches the Docker daemon via `/var/run/docker.sock` and automatically exposes containers labeled with `tsdproxy.enable=true` to the tailnet as virtual Tailscale nodes with unique Magic DNS names. This eliminates the need for a dedicated sidecar container per application.
+
+To keep container execution portable and secure, the virtual Tailscale nodes run in **Userspace Networking Mode** natively via `tsnet`, avoiding host `/dev/net/tun` dependencies or container net admin privileges.
+
+To authenticate virtual nodes, we use **Tailscale OAuth Client Credentials** configured globally in Once. Once configures TSDProxy with these credentials, enabling it to dynamically request short-lived, single-use auth keys from the Tailscale API. Local Tailscale state is persisted in a single shared volume (`once-tsdproxy-data`) managed by TSDProxy.
+
+All virtual nodes are registered as **ephemeral** (`tsdproxy.ephemeral=true`) rather than de-registered explicitly via the Tailscale cloud API. When an app is deleted its node goes offline and Tailscale auto-removes it, keeping the admin console clean and freeing the Magic DNS name — which is what prevents `writebook-1`-style suffix collisions on re-registration. Quick restarts retain node identity via the persisted state volume. The accepted trade-off: extended server downtime also removes nodes, which then re-register under the same freed name when the server returns. The alternative (non-ephemeral nodes plus explicit device-delete API calls) was rejected because it adds a cloud-API dependency, an offline failure path at delete time, and broader OAuth scopes.
+
+To manage configurations securely without opening host TCP ports, the **Once Admin Web App** is exposed via an Nginx proxy container (`once-admin`) on the private Docker bridge network, mounting a Unix domain socket to communicate with the host's background daemon. TSDProxy is labeled to expose this Nginx container to the tailnet, keeping the admin interface strictly private to the tailnet. Funnel access is toggled dynamically by updating the target container's labels, which TSDProxy automatically detects and reconciles.
+
+To display the registered tailnet URLs (FQDNs) for the admin web app and application containers inside the Once CLI and TUI dashboard, Once queries TSDProxy's local REST API endpoint (`/api/v1/proxies`) via a loopback-only published port (`127.0.0.1:8484 → 8080`), since host processes cannot resolve container DNS names. This is the single deliberate exception to the zero-host-TCP-ports constraint — the binding is unreachable from any network interface. URL discovery stays self-contained and independent of the global Tailscale cloud API.
