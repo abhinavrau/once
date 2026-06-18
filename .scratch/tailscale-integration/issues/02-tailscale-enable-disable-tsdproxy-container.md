@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # `once tailscale enable`/`disable` + `once-tsdproxy` container lifecycle
 

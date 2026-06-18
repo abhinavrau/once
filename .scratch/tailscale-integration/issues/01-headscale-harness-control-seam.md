@@ -1,5 +1,5 @@
 Status: ready-for-agent
-
+Status: done
 # Headscale integration test harness + control-plane backend abstraction
 
 ## Parent
