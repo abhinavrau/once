@@ -1,6 +1,9 @@
 package docker
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,7 +11,7 @@ import (
 )
 
 func TestTailscaleSettingsRoundTrip(t *testing.T) {
-	settings := TailscaleSettings{ClientID: "id-123", ClientSecret: "secret-456"}
+	settings := TailscaleSettings{ClientID: "id-123", ClientSecret: "secret-456", APIKey: "key-789"}
 
 	parsed, err := UnmarshalTailscaleSettings(settings.Marshal())
 	require.NoError(t, err)
@@ -41,6 +44,43 @@ func TestContainerConfigInjectsTSDProxyLabels(t *testing.T) {
 	disabled := app.containerConfig(nil, false)
 	assert.Equal(t, app.Settings.Marshal(), disabled.Labels[labelKey])
 	assert.NotContains(t, disabled.Labels, "tsdproxy.enable")
+}
+
+func TestBuildTSDProxyConfigIncludesAPIKey(t *testing.T) {
+	config := buildTSDProxyConfig(TailscaleSettings{ClientID: "id", ClientSecret: "secret", APIKey: "key-789"}, "", "")
+
+	assert.Contains(t, config, `apiKey: "key-789"`)
+}
+
+func TestFetchProxies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/proxies", r.URL.Path)
+		assert.Equal(t, "Bearer key-789", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"proxies":[
+			{"name":"writebook","url":"https://writebook.tailnet.ts.net","status":"Running","ports":[{"funnel":true}]},
+			{"name":"books","url":"https://books.tailnet.ts.net","status":"Stopped","ports":[{"funnel":false}]}
+		]}`))
+	}))
+	defer srv.Close()
+
+	proxies, err := fetchProxies(context.Background(), srv.URL, "key-789")
+	require.NoError(t, err)
+
+	assert.Equal(t, []TailnetProxy{
+		{Name: "writebook", URL: "https://writebook.tailnet.ts.net", Status: "Running", Funnel: true},
+		{Name: "books", URL: "https://books.tailnet.ts.net", Status: "Stopped", Funnel: false},
+	}, proxies)
+}
+
+func TestFetchProxiesUnauthorized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := fetchProxies(context.Background(), srv.URL, "wrong-key")
+	require.Error(t, err)
 }
 
 func TestBuildTSDProxyConfigOAuth(t *testing.T) {

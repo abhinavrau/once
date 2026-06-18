@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 
 	"github.com/containerd/errdefs"
@@ -14,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/go-connections/nat"
 )
 
 // tsdproxyImage is pinned to an exact version, the same doctrine as proxyImage.
@@ -21,6 +23,18 @@ import (
 const tsdproxyImage = "almeidapaulopt/tsdproxy:2.3.4"
 
 const tsdproxyConfigName = "tsdproxy.yaml"
+
+// The tsdproxy HTTP API serves /api/v1/proxies on port 8080 inside the
+// container. We publish it bound to loopback only — the single deliberate
+// exception to the zero-host-TCP-ports constraint, unreachable from any network
+// interface — because the host cannot resolve container DNS names (and macOS
+// Docker Desktop cannot reach bridge IPs).
+const (
+	tsdproxyAPIPort     = "8080"
+	tsdproxyAPIHostBind = "127.0.0.1"
+	tsdproxyAPIHostPort = "8484"
+	tsdproxyAPIBaseURL  = "http://127.0.0.1:8484"
+)
 
 // Hidden control-server seam: when these env vars are set, the tsdproxy is
 // configured with controlUrl + authKey instead of OAuth. No CLI/TUI exposes
@@ -34,6 +48,10 @@ const (
 type TailscaleSettings struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`
+	// APIKey authenticates host lookups to the tsdproxy API. Generated at enable
+	// time and configured into tsdproxy; the host client sends it as a Bearer
+	// token (connections via the published port are not seen as localhost).
+	APIKey string `json:"apiKey,omitempty"`
 }
 
 func UnmarshalTailscaleSettings(s string) (TailscaleSettings, error) {
@@ -66,15 +84,24 @@ func NewTailscale(ns *Namespace) *Tailscale {
 func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) error {
 	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
 	if err == nil {
-		if info.Config.Labels[labelKey] == settings.Marshal() {
+		existing, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
+		if existing.ClientID == settings.ClientID && existing.ClientSecret == settings.ClientSecret {
 			return t.ensureRunning(ctx, info)
 		}
-		// Credentials changed: recreate the container, keep the data volume.
+		// Credentials changed: recreate the container, keep the data volume. Keep
+		// the existing API key so host lookups (CLI/TUI) keep working.
+		settings.APIKey = existing.APIKey
 		if err := t.removeContainer(ctx); err != nil {
 			return err
 		}
 	} else if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspecting tsdproxy container: %w", err)
+	}
+
+	if settings.APIKey == "" {
+		if settings.APIKey, err = randomID(32); err != nil {
+			return fmt.Errorf("generating tsdproxy API key: %w", err)
+		}
 	}
 
 	if err := t.pullImage(ctx); err != nil {
@@ -116,6 +143,29 @@ func (t *Tailscale) Enabled(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("inspecting tsdproxy container: %w", err)
+}
+
+// TailnetProxy is one entry from tsdproxy's lookup API: an app (or helper)
+// exposed on the tailnet under its Magic DNS name.
+type TailnetProxy struct {
+	Name   string // matches the app's Settings.Name (the tsdproxy.name label)
+	URL    string // tailnet URL, e.g. https://writebook.tailnet-name.ts.net
+	Status string // tsdproxy proxy status, e.g. "Running"
+	Funnel bool   // true when any port has Funnel enabled
+}
+
+// Proxies queries the once-tsdproxy lookup API over the loopback-published port
+// and returns the registered tailnet proxies. Requires Tailscale enabled.
+func (t *Tailscale) Proxies(ctx context.Context) ([]TailnetProxy, error) {
+	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
+	if err != nil {
+		return nil, fmt.Errorf("inspecting tsdproxy container: %w", err)
+	}
+	settings, err := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
+	if err != nil {
+		return nil, fmt.Errorf("reading tsdproxy settings: %w", err)
+	}
+	return fetchProxies(ctx, tsdproxyAPIBaseURL, settings.APIKey)
 }
 
 // Destroy removes both the container and the data volume (full cleanup, used by
@@ -168,6 +218,7 @@ func (t *Tailscale) create(ctx context.Context, settings TailscaleSettings) erro
 			Labels: map[string]string{
 				labelKey: settings.Marshal(),
 			},
+			ExposedPorts: nat.PortSet{nat.Port(tsdproxyAPIPort + "/tcp"): struct{}{}},
 		},
 		&container.HostConfig{
 			// ponytail: no /dev/net/tun, no NET_ADMIN — tsnet runs userspace natively.
@@ -176,6 +227,11 @@ func (t *Tailscale) create(ctx context.Context, settings TailscaleSettings) erro
 			Binds:         []string{"/var/run/docker.sock:/var/run/docker.sock"},
 			Mounts: []mount.Mount{
 				{Type: mount.TypeVolume, Source: t.dataVolumeName(), Target: "/data"},
+			},
+			PortBindings: nat.PortMap{
+				nat.Port(tsdproxyAPIPort + "/tcp"): []nat.PortBinding{
+					{HostIP: tsdproxyAPIHostBind, HostPort: tsdproxyAPIHostPort},
+				},
 			},
 		},
 		&network.NetworkingConfig{
@@ -268,6 +324,50 @@ func tsdproxyLabels(appName string, enabled bool) map[string]string {
 	}
 }
 
+// fetchProxies queries the tsdproxy lookup API and returns the visible proxies.
+// baseURL is parameterised so tests can point it at an httptest server.
+func fetchProxies(ctx context.Context, baseURL, apiKey string) ([]TailnetProxy, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v1/proxies", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("querying tsdproxy API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tsdproxy API returned %s", resp.Status)
+	}
+
+	var body struct {
+		Proxies []struct {
+			Name   string `json:"name"`
+			URL    string `json:"url"`
+			Status string `json:"status"`
+			Ports  []struct {
+				Funnel bool `json:"funnel"`
+			} `json:"ports"`
+		} `json:"proxies"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decoding tsdproxy API response: %w", err)
+	}
+
+	proxies := make([]TailnetProxy, 0, len(body.Proxies))
+	for _, p := range body.Proxies {
+		var funnel bool
+		for _, port := range p.Ports {
+			funnel = funnel || port.Funnel
+		}
+		proxies = append(proxies, TailnetProxy{Name: p.Name, URL: p.URL, Status: p.Status, Funnel: funnel})
+	}
+	return proxies, nil
+}
+
 // buildTSDProxyConfig renders the tsdproxy YAML config. When controlURL and
 // authKey are set (the hidden control seam), they replace OAuth entirely —
 // OAuth is Tailscale-SaaS-only and cannot reach a headscale control plane.
@@ -278,12 +378,14 @@ func buildTSDProxyConfig(settings TailscaleSettings, controlURL, authKey string)
 	} else {
 		provider = fmt.Sprintf("      clientId: \"%s\"\n      clientSecret: \"%s\"\n", settings.ClientID, settings.ClientSecret)
 	}
-	return fmt.Sprintf(tsdproxyConfigTmpl, provider)
+	return fmt.Sprintf(tsdproxyConfigTmpl, settings.APIKey, provider)
 }
 
 // tsdproxyConfigTmpl matches the config proven against tsdproxy:2 in the
-// integration harness. %s is the provider auth block (indented 6 spaces).
+// integration harness. %[1]s is the API key (Bearer auth for the lookup API),
+// %[2]s is the provider auth block (indented 6 spaces).
 const tsdproxyConfigTmpl = `defaultProxyProvider: default
+apiKey: "%[1]s"
 docker:
   local:
     host: unix:///var/run/docker.sock
@@ -293,7 +395,7 @@ docker:
 tailscale:
   providers:
     default:
-%s  dataDir: /data/
+%[2]s  dataDir: /data/
 http:
   hostname: 0.0.0.0
   port: 8080

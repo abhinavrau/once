@@ -468,6 +468,54 @@ func TestAppReachableViaMagicDNS(t *testing.T) {
 		"whoami should echo the app container hostname proving the tailnet data path")
 }
 
+// TestLookupAPIReportsRunningFQDN enables Tailscale via the control seam, then
+// queries the loopback-published lookup API and asserts it reports the app proxy
+// as Running with a non-empty tailnet FQDN — the host-side discovery path that
+// once tailscale status and once list rely on.
+func TestLookupAPIReportsRunningFQDN(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-lookup-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cp := newControlPlane(t, ctx, ns)
+	key, err := cp.authKey(ctx)
+	require.NoError(t, err)
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", cp.controlURL())
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", key)
+
+	deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name:  "whoami",
+		Image: whoamiImage,
+		Host:  "whoami.localhost",
+	})
+	require.NoError(t, ns.Tailscale().Enable(ctx, docker.TailscaleSettings{
+		ClientID:     "unused-with-control-seam",
+		ClientSecret: "unused-with-control-seam",
+	}))
+
+	var whoami docker.TailnetProxy
+	require.Eventually(t, func() bool {
+		proxies, err := ns.Tailscale().Proxies(ctx)
+		if err != nil {
+			return false
+		}
+		for _, p := range proxies {
+			if p.Name == "whoami" && p.Status == "Running" {
+				whoami = p
+				return true
+			}
+		}
+		return false
+	}, 90*time.Second, 2*time.Second, "lookup API never reported whoami as Running")
+
+	assert.NotEmpty(t, whoami.URL, "running proxy should report a tailnet FQDN")
+}
+
 func TestWhoamiDeploysViaHarness(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

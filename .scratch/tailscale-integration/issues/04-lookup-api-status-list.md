@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Local lookup API client + loopback API port/key + `once tailscale status` + `once list` tailnet URL
 
