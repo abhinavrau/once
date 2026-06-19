@@ -142,7 +142,7 @@ func (n *Namespace) UniqueName(base string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		candidate := fmt.Sprintf("%s.%s", base, id)
+		candidate := fmt.Sprintf("%s-%s", base, id)
 		if n.Application(candidate) == nil {
 			return candidate, nil
 		}

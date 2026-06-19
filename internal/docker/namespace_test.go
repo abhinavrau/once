@@ -13,8 +13,11 @@ func TestUniqueName(t *testing.T) {
 
 	name, err := ns.UniqueName("myapp")
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(name, "myapp."))
-	assert.Len(t, name, len("myapp.")+6)
+	assert.True(t, strings.HasPrefix(name, "myapp-"))
+	assert.Len(t, name, len("myapp-")+6)
+	// The name becomes the tsdproxy.name label, which must be a valid RFC 1123
+	// hostname — no dots (regression guard: a "." separator broke tailnet registration).
+	assert.NotContains(t, name, ".")
 
 	name2, err := ns.UniqueName("myapp")
 	require.NoError(t, err)
