@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/basecamp/once/internal/background"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -514,6 +516,77 @@ func TestLookupAPIReportsRunningFQDN(t *testing.T) {
 	}, 90*time.Second, 2*time.Second, "lookup API never reported whoami as Running")
 
 	assert.NotEmpty(t, whoami.URL, "running proxy should report a tailnet FQDN")
+}
+
+// TestAdminReachableViaMagicDNS proves the zero-host-port admin path end to end:
+// the daemon serves a health endpoint on a Unix socket, the once-admin nginx
+// container (no published ports) proxies port 80 to that socket, and TSDProxy
+// exposes it on the tailnet. A tailscale client curls once-admin's Magic DNS
+// name and gets the health response back.
+func TestAdminReachableViaMagicDNS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-admin-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	t.Cleanup(func() { cli.Close() })
+
+	cp := newControlPlane(t, ctx, ns)
+	key, err := cp.authKey(ctx)
+	require.NoError(t, err)
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", cp.controlURL())
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", key)
+
+	// Run the daemon's admin socket server in-process against a bind-mountable
+	// temp dir, then wait for the socket so once-admin's mount sees a socket (not
+	// a directory Docker would otherwise create).
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+	adminCtx, stopAdmin := context.WithCancel(ctx)
+	t.Cleanup(stopAdmin)
+	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
+	require.Eventually(t, func() bool {
+		_, err := net.Dial("unix", docker.AdminSocketPath())
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+
+	require.NoError(t, ns.Tailscale().Enable(ctx, docker.TailscaleSettings{
+		ClientID:     "unused-with-control-seam",
+		ClientSecret: "unused-with-control-seam",
+	}))
+	require.NoError(t, ns.Admin().Boot(ctx))
+
+	require.Eventually(t, func() bool {
+		found, online, err := cp.nodeOnline(ctx, "once-admin")
+		return err == nil && found && online
+	}, 90*time.Second, 2*time.Second, "once-admin node never came online")
+
+	clientName := startTailscaleClient(t, ctx, cli, ns, cp, key)
+
+	url := fmt.Sprintf("http://once-admin.%s/up", magicDNSBaseDom)
+	var body string
+	var lastErr error
+	ok := assert.Eventually(t, func() bool {
+		out, err := execCapture(ctx, cli, clientName, "sh", "-c",
+			"http_proxy=http://localhost:1055 wget -T 5 -qO- "+url)
+		if err != nil {
+			lastErr = err
+			return false
+		}
+		body = out
+		return true
+	}, 120*time.Second, 3*time.Second)
+	if !ok {
+		status, _ := execCapture(ctx, cli, clientName, "tailscale", "status")
+		t.Logf("last wget error: %v\ntailscale status:\n%s", lastErr, status)
+		t.Fatal("never reached once-admin via Magic DNS")
+	}
+
+	assert.Contains(t, body, "ok", "admin health endpoint should be reachable through the tailnet")
 }
 
 func TestWhoamiDeploysViaHarness(t *testing.T) {

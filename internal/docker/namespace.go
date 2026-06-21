@@ -28,6 +28,7 @@ type Namespace struct {
 	client       *client.Client
 	proxy        *Proxy
 	tailscale    *Tailscale
+	admin        *Admin
 	applications []*Application
 }
 
@@ -61,6 +62,7 @@ func NewNamespace(name string, opts ...NamespaceOption) (*Namespace, error) {
 	}
 	ns.proxy = NewProxy(ns)
 	ns.tailscale = NewTailscale(ns)
+	ns.admin = NewAdmin(ns)
 
 	for _, opt := range opts {
 		opt(ns)
@@ -99,6 +101,10 @@ func (n *Namespace) Proxy() *Proxy {
 
 func (n *Namespace) Tailscale() *Tailscale {
 	return n.tailscale
+}
+
+func (n *Namespace) Admin() *Admin {
+	return n.admin
 }
 
 func (n *Namespace) Application(name string) *Application {
@@ -187,6 +193,10 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 	}
 
 	if err := n.tailscale.Destroy(ctx); err != nil {
+		return err
+	}
+
+	if err := n.admin.Destroy(ctx); err != nil {
 		return err
 	}
 

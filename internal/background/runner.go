@@ -30,6 +30,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	scraper := userstats.NewScraper(r.namespace)
 	go scraper.Run(ctx)
 
+	go func() {
+		if err := NewAdminServer().Run(ctx); err != nil {
+			slog.Error("Admin socket server stopped", "error", err)
+		}
+	}()
+
 	ticker := time.NewTicker(CheckInterval)
 	defer ticker.Stop()
 

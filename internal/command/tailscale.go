@@ -60,11 +60,19 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 		return fmt.Errorf("enabling Tailscale: %w", err)
 	}
 
+	if err := ns.Admin().Boot(ctx); err != nil {
+		return fmt.Errorf("booting once-admin: %w", err)
+	}
+
 	fmt.Println("Tailscale enabled")
 	return nil
 }
 
 func (t *tailscaleCommand) disable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
+	if err := ns.Admin().Destroy(ctx); err != nil {
+		return fmt.Errorf("removing once-admin: %w", err)
+	}
+
 	if err := ns.Tailscale().Disable(ctx); err != nil {
 		return fmt.Errorf("disabling Tailscale: %w", err)
 	}
