@@ -82,6 +82,12 @@ func (s ApplicationSettings) FunnelEnabled() bool {
 	return s.FunnelExpiresAt != nil
 }
 
+// FunnelExpired reports whether a set Funnel expiry has passed, so the daemon
+// can tear it down. False when no Funnel is active.
+func (s ApplicationSettings) FunnelExpired(now time.Time) bool {
+	return s.FunnelExpiresAt != nil && !s.FunnelExpiresAt.After(now)
+}
+
 func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 	if s.Name != other.Name || s.Image != other.Image || s.Host != other.Host || s.DisableTLS != other.DisableTLS {
 		return false

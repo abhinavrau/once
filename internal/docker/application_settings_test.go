@@ -8,6 +8,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestFunnelExpired(t *testing.T) {
+	now := time.Now()
+
+	assert.False(t, ApplicationSettings{}.FunnelExpired(now))
+
+	future := now.Add(time.Minute)
+	assert.False(t, ApplicationSettings{FunnelExpiresAt: &future}.FunnelExpired(now))
+
+	past := now.Add(-time.Minute)
+	assert.True(t, ApplicationSettings{FunnelExpiresAt: &past}.FunnelExpired(now))
+}
+
 func TestBuildEnvWithSMTP(t *testing.T) {
 	settings := ApplicationSettings{
 		SMTP: SMTPSettings{

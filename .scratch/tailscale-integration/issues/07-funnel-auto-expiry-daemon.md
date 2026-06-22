@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Funnel auto-expiry in the background daemon
 

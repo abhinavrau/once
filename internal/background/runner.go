@@ -36,15 +36,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}()
 
-	ticker := time.NewTicker(CheckInterval)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("Shutting down")
 			return nil
-		case <-ticker.C:
+		default:
+		}
+
+		timer := time.NewTimer(r.nextWake(ctx))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			slog.Info("Shutting down")
+			return nil
+		case <-timer.C:
 			if updated, err := r.check(ctx); err != nil {
 				slog.Error("Check failed", "error", err)
 			} else if updated {
@@ -78,9 +84,46 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 
 		r.checkUpdate(ctx, app, state)
 		r.checkBackup(ctx, app, state)
+		r.checkFunnelExpiry(ctx, app)
 	}
 
 	return false, nil
+}
+
+// nextWake returns how long to sleep before the next check: the regular
+// interval, shortened to the soonest pending Funnel expiry so a forgotten
+// Funnel closes on time. Falls back to the regular interval if state can't be
+// loaded — the next tick will retry. An already-passed expiry yields a zero
+// wait, so a Funnel that expired while the daemon was down is torn down on the
+// next check.
+func (r *Runner) nextWake(ctx context.Context) time.Duration {
+	ns, err := docker.RestoreNamespace(ctx, r.namespace)
+	if err != nil {
+		return CheckInterval
+	}
+
+	var expiries []time.Time
+	for _, app := range ns.Applications() {
+		if app.Running && app.Settings.FunnelExpiresAt != nil {
+			expiries = append(expiries, *app.Settings.FunnelExpiresAt)
+		}
+	}
+
+	return wakeInterval(time.Now(), expiries, CheckInterval)
+}
+
+func (r *Runner) checkFunnelExpiry(ctx context.Context, app *docker.Application) {
+	if !app.Settings.FunnelExpired(time.Now()) {
+		return
+	}
+
+	slog.Info("Closing expired funnel", "app", app.Settings.Name)
+
+	if err := app.DisableFunnel(ctx); err != nil {
+		slog.Error("Funnel teardown failed", "app", app.Settings.Name, "error", err)
+	} else {
+		slog.Info("Funnel closed", "app", app.Settings.Name)
+	}
 }
 
 func (r *Runner) checkSelfUpdate(ctx context.Context, ns *docker.Namespace, state *docker.State) bool {
@@ -148,4 +191,18 @@ func (r *Runner) checkBackup(ctx context.Context, app *docker.Application, state
 	if err := app.TrimBackups(); err != nil {
 		slog.Error("Backup trim failed", "app", app.Settings.Name, "error", err)
 	}
+}
+
+// Helpers
+
+// wakeInterval returns interval shortened to the soonest future expiry, clamped
+// to zero so a past expiry wakes the daemon immediately.
+func wakeInterval(now time.Time, expiries []time.Time, interval time.Duration) time.Duration {
+	wake := interval
+	for _, e := range expiries {
+		if d := e.Sub(now); d < wake {
+			wake = d
+		}
+	}
+	return max(wake, 0)
 }
