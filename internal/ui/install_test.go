@@ -382,6 +382,26 @@ func TestBlockWidthEmpty(t *testing.T) {
 
 // Helpers
 
+func TestInstall_TailscaleOverlayOpensFromAppList(t *testing.T) {
+	m := newTestInstall()
+	m, _ = updateInstall(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m, _ = updateInstall(m, keyPressMsg("t"))
+	require.NotNil(t, m.overlay)
+
+	m, _ = updateInstall(m, TailscaleFormCloseMsg{})
+	assert.Nil(t, m.overlay)
+}
+
+func TestInstall_TailscaleKeyIgnoredOutsideAppList(t *testing.T) {
+	m := newTestInstall()
+	m, _ = updateInstall(m, InstallAppSelectedMsg{ImageRef: "ghcr.io/basecamp/once-campfire"})
+	require.Equal(t, installStateHostname, m.state)
+
+	m, _ = updateInstall(m, keyPressMsg("t"))
+	assert.Nil(t, m.overlay)
+}
+
 func newTestInstall() Install {
 	return NewInstall(newTestNamespace(), "")
 }

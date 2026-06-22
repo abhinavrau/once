@@ -3,15 +3,19 @@ package integration
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/docker/docker/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/basecamp/once/internal/background"
 	"github.com/basecamp/once/internal/docker"
 	"github.com/basecamp/once/internal/ui"
 )
@@ -85,6 +89,104 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.waitForView("There are no applications installed", 30*time.Second)
 }
 
+// TestUITailscaleFormEnablesViaControlSeam drives the dashboard's global
+// Tailscale settings form (the `t` overlay) end to end: open it, fill the
+// credentials, submit, and assert it ran the same enable lifecycle the CLI uses
+// — once-tsdproxy boots, the deployed app retrofits its tsdproxy.* labels and
+// registers a node, and once-admin comes up. It also checks esc dismissal and
+// that re-opening the form pre-populates from the stored settings.
+func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-ui-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	t.Cleanup(func() { cli.Close() })
+
+	cp := newControlPlane(t, ctx, ns)
+	key, err := cp.authKey(ctx)
+	require.NoError(t, err)
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", cp.controlURL())
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", key)
+
+	// Enable boots once-admin, which bind-mounts the daemon's Unix socket; run the
+	// admin server in-process and wait for the socket so Boot doesn't fail.
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+	adminCtx, stopAdmin := context.WithCancel(ctx)
+	t.Cleanup(stopAdmin)
+	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
+	require.Eventually(t, func() bool {
+		_, err := net.Dial("unix", docker.AdminSocketPath())
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+
+	deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name:  "whoami",
+		Image: whoamiImage,
+		Host:  "whoami.localhost",
+	})
+
+	app := ui.NewApp(ns, "")
+	d := newAppDriver(t, app)
+	d.start()
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	// -- esc dismisses the overlay --
+	d.send(keyMsg("t"))
+	d.waitForView("OAuth Client ID", 5*time.Second)
+	d.send(keyMsg("esc"))
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "OAuth Client ID")
+	}, 5*time.Second)
+
+	// -- open the form and enable Tailscale --
+	d.send(keyMsg("t"))
+	d.waitForView("OAuth Client ID", 5*time.Second)
+	d.send(keyMsg("space")) // toggle Enable Tailscale on
+	d.send(keyMsg("tab"))   // → OAuth Client ID
+	d.typeText("unused-with-control-seam")
+	d.send(keyMsg("tab")) // → OAuth Client Secret
+	d.typeText("unused-with-control-seam")
+	d.send(keyMsg("tab"))   // → Save
+	d.send(keyMsg("enter")) // submit
+
+	// The form runs the real EnableTailscale and stays open (showing progress,
+	// which replaces the field labels) until the lifecycle finishes, then closes.
+	// Wait on the overlay's "esc close" help, which is present in both the form
+	// and progress states but gone once closed. Pump the UI while it runs; on a
+	// failure the form stays open with an error and this times out.
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "close")
+	}, 3*time.Minute)
+
+	// once-tsdproxy booted and the retrofitted app registered a node.
+	_, err = cli.ContainerInspect(ctx, ns.Name()+"-tsdproxy")
+	require.NoError(t, err, "once-tsdproxy should be running after enabling via the form")
+
+	require.Eventually(t, func() bool {
+		names, err := cp.nodeNames(ctx)
+		return err == nil && slices.Contains(names, "whoami")
+	}, 90*time.Second, 2*time.Second, "app never registered a node after enabling via the form")
+
+	assertAppLabels(t, ctx, cli, ns, hasTSDProxyLabels)
+
+	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
+	require.NoError(t, err, "once-admin should be running after enabling via the form")
+
+	// -- re-opening the form pre-populates from the stored settings --
+	d.send(keyMsg("t"))
+	d.waitForView("OAuth Client ID", 5*time.Second)
+	view := d.viewContent()
+	assert.Contains(t, view, "unused-with-control-seam", "form should pre-populate the stored client ID")
+	assert.Contains(t, view, "[✓]", "Enable checkbox should be checked when Tailscale is already enabled")
+}
+
 // appDriver drives a ui.App outside of tea.Program by manually executing
 // commands and feeding their results back through a message channel.
 type appDriver struct {
@@ -141,6 +243,27 @@ func (d *appDriver) waitForView(target string, timeout time.Duration) {
 		case <-deadline:
 			d.t.Fatalf("timed out waiting for view to contain %q\n\nView:\n%s",
 				target, d.viewContent())
+		}
+	}
+}
+
+// waitUntil pumps messages on the test goroutine until cond holds, or fails at
+// timeout. Unlike waitForView it can wait for a view to *stop* containing
+// something (e.g. an overlay closing).
+func (d *appDriver) waitUntil(cond func() bool, timeout time.Duration) {
+	d.t.Helper()
+	deadline := time.After(timeout)
+	for {
+		d.flush()
+		if cond() {
+			return
+		}
+		select {
+		case msg := <-d.msgCh:
+			d.processMsg(msg)
+		case <-deadline:
+			d.t.Fatalf("timed out waiting for condition\n\nView:\n%s", d.viewContent())
+		case <-time.After(50 * time.Millisecond):
 		}
 	}
 }

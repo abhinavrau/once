@@ -15,11 +15,13 @@ import (
 )
 
 var installKeys = struct {
-	Help key.Binding
-	Back key.Binding
+	Help      key.Binding
+	Tailscale key.Binding
+	Back      key.Binding
 }{
-	Help: WithHelp(NewKeyBinding("f1"), "F1", "help"),
-	Back: WithHelp(NewKeyBinding("esc"), "esc", "back"),
+	Help:      WithHelp(NewKeyBinding("f1"), "F1", "help"),
+	Tailscale: WithHelp(NewKeyBinding("t", "T"), "t", "tailscale"),
+	Back:      WithHelp(NewKeyBinding("esc"), "esc", "back"),
 }
 
 type installState int
@@ -46,6 +48,7 @@ type Install struct {
 	hostnameForm  InstallHostnameForm
 	activity      *InstallActivity
 	popupHelp     *PopupHelp
+	overlay       Component
 	starfield     *Starfield
 	logo          *Logo
 	err           error
@@ -106,6 +109,20 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 	}
 
+	if m.overlay != nil {
+		if _, ok := msg.(TailscaleFormCloseMsg); ok {
+			m.overlay = nil
+			return m, nil
+		}
+		var overlayCmd tea.Cmd
+		m.overlay, overlayCmd = m.overlay.Update(msg)
+		if ws, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = ws.Width, ws.Height
+			return m, tea.Batch(overlayCmd, m.updateCurrentScreen(ws))
+		}
+		return m, overlayCmd
+	}
+
 	m.updateHelpBindings()
 
 	switch msg := msg.(type) {
@@ -159,6 +176,12 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 					m.popupHelp = &ph
 					return m, nil
 				}
+			}
+			if m.state == installStateAppList && key.Matches(msg, installKeys.Tailscale) {
+				m.overlay = NewTailscaleForm(m.namespace)
+				var cmd tea.Cmd
+				m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+				return m, tea.Batch(m.overlay.Init(), cmd)
 			}
 			if key.Matches(msg, installKeys.Back) {
 				return m.handleBack()
@@ -263,6 +286,9 @@ func (m Install) View() string {
 		result = lipgloss.JoinVertical(lipgloss.Left, titleLine, "", middle, helpLine)
 	}
 
+	if m.overlay != nil {
+		return OverlayCenter(result, m.overlay.View(), m.width, m.height)
+	}
 	if m.popupHelp != nil {
 		return OverlayCenter(result, m.popupHelp.View(), m.width, m.height)
 	}
@@ -465,11 +491,15 @@ func (m Install) writeOverlayRow(sb *strings.Builder, row, left, width int, line
 }
 
 func (m *Install) updateHelpBindings() {
+	var bindings []key.Binding
 	if _, content := m.helpForState(); content != "" {
-		m.help.SetBindings([]key.Binding{installKeys.Help, installKeys.Back})
-	} else {
-		m.help.SetBindings([]key.Binding{installKeys.Back})
+		bindings = append(bindings, installKeys.Help)
 	}
+	if m.state == installStateAppList {
+		bindings = append(bindings, installKeys.Tailscale)
+	}
+	bindings = append(bindings, installKeys.Back)
+	m.help.SetBindings(bindings)
 }
 
 func (m Install) helpForState() (string, string) {
