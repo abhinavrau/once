@@ -64,6 +64,15 @@ func TestContainerConfigInjectsTSDProxyLabels(t *testing.T) {
 	assert.NotContains(t, disabled.Labels, "tsdproxy.enable")
 }
 
+func TestContainerConfigRespectsPerAppExposure(t *testing.T) {
+	app := &Application{Settings: ApplicationSettings{Name: "writebook", Image: "writebook:1", TailscaleExcluded: true}}
+
+	// Even with Tailscale globally enabled, an opted-out app gets no tsdproxy labels.
+	cfg := app.containerConfig(nil, true)
+	assert.NotContains(t, cfg.Labels, "tsdproxy.enable")
+	assert.Equal(t, app.Settings.Marshal(), cfg.Labels[labelKey])
+}
+
 func TestContainerConfigFunnelLabelTracksSettings(t *testing.T) {
 	expires := time.Now().Add(time.Hour)
 	app := &Application{Settings: ApplicationSettings{Name: "writebook", Image: "writebook:1", FunnelExpiresAt: &expires}}

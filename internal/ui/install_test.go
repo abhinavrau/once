@@ -107,7 +107,7 @@ func TestInstall_FailureReturnsToHostname(t *testing.T) {
 func TestInstall_ErrorClearsOnKeypress(t *testing.T) {
 	m := newTestInstall()
 	m.state = installStateHostname
-	m.hostnameForm = NewInstallHostnameForm("ghcr.io/basecamp/once-campfire:latest", "")
+	m.hostnameForm = NewInstallHostnameForm("ghcr.io/basecamp/once-campfire:latest", "", false)
 	m.err = errors.New("some error")
 
 	m, _ = updateInstall(m, keyPressMsg("a"))

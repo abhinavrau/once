@@ -39,31 +39,33 @@ type InstallActivityFailedMsg struct {
 }
 
 type InstallActivity struct {
-	namespace     *docker.Namespace
-	imageRef      string
-	hostname      string
-	width, height int
-	stage         installStage
-	percentage    int
-	progress      Progress
-	progressChan  chan installProgressMsg
-	doneChan      chan installDoneMsg
-	ctx           context.Context
-	cancel        context.CancelFunc
+	namespace         *docker.Namespace
+	imageRef          string
+	hostname          string
+	tailscaleExcluded bool
+	width, height     int
+	stage             installStage
+	percentage        int
+	progress          Progress
+	progressChan      chan installProgressMsg
+	doneChan          chan installDoneMsg
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
-func NewInstallActivity(ns *docker.Namespace, imageRef, hostname string) *InstallActivity {
+func NewInstallActivity(ns *docker.Namespace, imageRef, hostname string, tailscaleExcluded bool) *InstallActivity {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &InstallActivity{
-		namespace:    ns,
-		imageRef:     imageRef,
-		hostname:     hostname,
-		stage:        stagePreparing,
-		progress:     NewProgress(0, Colors.Primary),
-		progressChan: make(chan installProgressMsg, 10),
-		doneChan:     make(chan installDoneMsg, 1),
-		ctx:          ctx,
-		cancel:       cancel,
+		namespace:         ns,
+		imageRef:          imageRef,
+		hostname:          hostname,
+		tailscaleExcluded: tailscaleExcluded,
+		stage:             stagePreparing,
+		progress:          NewProgress(0, Colors.Primary),
+		progressChan:      make(chan installProgressMsg, 10),
+		doneChan:          make(chan installDoneMsg, 1),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 }
 
@@ -176,10 +178,11 @@ func (m *InstallActivity) runInstall(ctx context.Context) {
 	hostname := m.hostname
 
 	app := docker.NewApplication(m.namespace, docker.ApplicationSettings{
-		Name:       appName,
-		Image:      m.imageRef,
-		Host:       hostname,
-		AutoUpdate: true,
+		Name:              appName,
+		Image:             m.imageRef,
+		Host:              hostname,
+		AutoUpdate:        true,
+		TailscaleExcluded: m.tailscaleExcluded,
 	})
 
 	progress := func(p docker.DeployProgress) {

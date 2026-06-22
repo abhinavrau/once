@@ -34,38 +34,43 @@ const (
 )
 
 type InstallFormSubmitMsg struct {
-	ImageRef string
-	Hostname string
+	ImageRef          string
+	Hostname          string
+	TailscaleExcluded bool
 }
 
 type Install struct {
-	namespace     *docker.Namespace
-	width, height int
-	help          Help
-	state         installState
-	appList       InstallAppList
-	imageForm     InstallImageForm
-	hostnameForm  InstallHostnameForm
-	activity      *InstallActivity
-	popupHelp     *PopupHelp
-	overlay       Component
-	starfield     *Starfield
-	logo          *Logo
-	err           error
-	cliMode       bool
-	customImage   bool
-	installFlag   string
+	namespace        *docker.Namespace
+	width, height    int
+	help             Help
+	state            installState
+	appList          InstallAppList
+	imageForm        InstallImageForm
+	hostnameForm     InstallHostnameForm
+	activity         *InstallActivity
+	popupHelp        *PopupHelp
+	overlay          Component
+	starfield        *Starfield
+	logo             *Logo
+	err              error
+	cliMode          bool
+	customImage      bool
+	installFlag      string
+	tailscaleEnabled bool
 }
 
 func NewInstall(ns *docker.Namespace, imageRef string) Install {
 	h := NewHelp()
 	h.SetBindings([]key.Binding{installKeys.Back})
 
+	tailscaleEnabled, _ := ns.Tailscale().Enabled(context.Background())
+
 	m := Install{
-		namespace:   ns,
-		help:        h,
-		cliMode:     imageRef != "",
-		installFlag: imageRef,
+		namespace:        ns,
+		help:             h,
+		cliMode:          imageRef != "",
+		installFlag:      imageRef,
+		tailscaleEnabled: tailscaleEnabled,
 	}
 
 	if imageRef != "" {
@@ -73,7 +78,7 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 			imageRef = expanded
 		}
 		m.state = installStateHostname
-		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag)
+		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag, m.tailscaleEnabled)
 	} else {
 		m.state = installStateAppList
 		m.appList = NewInstallAppList()
@@ -189,7 +194,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case InstallAppSelectedMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "")
+		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled)
 		m.customImage = false
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -200,7 +205,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, m.initScreenWithSize()
 
 	case InstallImageSubmitMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "")
+		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled)
 		m.customImage = true
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -226,7 +231,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, nil
 		}
 		m.state = installStateActivity
-		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, msg.Hostname)
+		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, msg.Hostname, msg.TailscaleExcluded)
 		m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return m, m.activity.Init()
 

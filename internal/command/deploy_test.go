@@ -3,6 +3,7 @@ package command
 import (
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -62,6 +63,40 @@ func TestBuildSettingsImageRequired(t *testing.T) {
 	f := &settingsFlags{}
 	_, err := f.buildSettings("", "app.example.com")
 	assert.ErrorIs(t, err, docker.ErrImageRequired)
+}
+
+func TestBuildSettingsTailscaleExposure(t *testing.T) {
+	exposed := &settingsFlags{tailscale: true}
+	s, err := exposed.buildSettings("image:latest", "app.example.com")
+	require.NoError(t, err)
+	assert.True(t, s.TailscaleExposed())
+
+	hidden := &settingsFlags{tailscale: false}
+	s, err = hidden.buildSettings("image:latest", "app.example.com")
+	require.NoError(t, err)
+	assert.False(t, s.TailscaleExposed())
+}
+
+func TestApplyChangesTailscaleOnlyWhenFlagSet(t *testing.T) {
+	cmd := &cobra.Command{}
+	f := &settingsFlags{}
+	f.register(cmd)
+	require.NoError(t, cmd.Flags().Parse([]string{"--tailscale=false"}))
+
+	existing := docker.ApplicationSettings{Name: "app", Image: "image:1"}
+	s, err := f.applyChanges(cmd, existing, "image:1")
+	require.NoError(t, err)
+	assert.False(t, s.TailscaleExposed())
+
+	// Unset flag leaves the existing exposure untouched.
+	cmd2 := &cobra.Command{}
+	f2 := &settingsFlags{}
+	f2.register(cmd2)
+	require.NoError(t, cmd2.Flags().Parse(nil))
+	hidden := docker.ApplicationSettings{Name: "app", Image: "image:1", TailscaleExcluded: true}
+	s, err = f2.applyChanges(cmd2, hidden, "image:1")
+	require.NoError(t, err)
+	assert.False(t, s.TailscaleExposed())
 }
 
 func TestBuildSettingsAutoBackupRequiresPath(t *testing.T) {

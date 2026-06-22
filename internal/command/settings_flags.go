@@ -24,6 +24,7 @@ type settingsFlags struct {
 	autoUpdate   bool
 	backupPath   string
 	autoBackup   bool
+	tailscale    bool
 }
 
 func (f *settingsFlags) register(cmd *cobra.Command) {
@@ -38,6 +39,7 @@ func (f *settingsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "CPU limit for the container")
 	cmd.Flags().IntVar(&f.memory, "memory", 0, "memory limit in MB for the container")
 	cmd.Flags().BoolVar(&f.autoUpdate, "auto-update", true, "automatically update the application")
+	cmd.Flags().BoolVar(&f.tailscale, "tailscale", true, "expose this application on the tailnet when Tailscale is enabled")
 	cmd.Flags().StringVar(&f.backupPath, "backup-path", "", "path for backups")
 	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", false, "enable automatic backups")
 }
@@ -68,7 +70,8 @@ func (f *settingsFlags) buildSettings(image, host string) (docker.ApplicationSet
 			CPUs:     f.cpus,
 			MemoryMB: f.memory,
 		},
-		AutoUpdate: f.autoUpdate,
+		AutoUpdate:        f.autoUpdate,
+		TailscaleExcluded: !f.tailscale,
 		Backup: docker.BackupSettings{
 			Path:       f.backupPath,
 			AutoBackup: f.autoBackup,
@@ -123,6 +126,9 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 	}
 	if cmd.Flags().Changed("auto-update") {
 		s.AutoUpdate = f.autoUpdate
+	}
+	if cmd.Flags().Changed("tailscale") {
+		s.TailscaleExcluded = !f.tailscale
 	}
 	if cmd.Flags().Changed("backup-path") {
 		if f.backupPath != "" && !filepath.IsAbs(f.backupPath) {

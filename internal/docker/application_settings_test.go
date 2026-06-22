@@ -111,6 +111,27 @@ func TestBackupSettingsEqualDiffers(t *testing.T) {
 	assert.False(t, base.Equal(noBackup))
 }
 
+func TestTailscaleExposedDefaultsToExposed(t *testing.T) {
+	// Zero value (and apps deployed before this field existed) stay exposed,
+	// preserving the prior all-or-nothing behavior.
+	assert.True(t, ApplicationSettings{Name: "app"}.TailscaleExposed())
+
+	restored, err := UnmarshalApplicationSettings(`{"name":"app"}`)
+	require.NoError(t, err)
+	assert.True(t, restored.TailscaleExposed())
+
+	excluded := ApplicationSettings{Name: "app", TailscaleExcluded: true}
+	assert.False(t, excluded.TailscaleExposed())
+	roundTripped, err := UnmarshalApplicationSettings(excluded.Marshal())
+	require.NoError(t, err)
+	assert.False(t, roundTripped.TailscaleExposed())
+}
+
+func TestTailscaleExcludedEqualDiffers(t *testing.T) {
+	base := ApplicationSettings{Name: "app"}
+	assert.False(t, base.Equal(ApplicationSettings{Name: "app", TailscaleExcluded: true}))
+}
+
 func TestFunnelExpiresAtEqualDiffers(t *testing.T) {
 	t1 := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
 	t2 := t1.Add(time.Hour)

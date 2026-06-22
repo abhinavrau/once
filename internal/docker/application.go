@@ -464,7 +464,10 @@ func (a *Application) volumeMounts(vol *ApplicationVolume) []mount.Mount {
 
 func (a *Application) containerConfig(env []string, tailscaleEnabled bool) *container.Config {
 	labels := map[string]string{labelKey: a.Settings.Marshal()}
-	maps.Copy(labels, tsdproxyLabels(a.Settings.Name, tailscaleEnabled, a.Settings.FunnelEnabled()))
+	// Opting an app out of the tailnet drops all tsdproxy labels, which also
+	// supersedes any Funnel (Funnel is meaningless off the tailnet).
+	exposed := tailscaleEnabled && a.Settings.TailscaleExposed()
+	maps.Copy(labels, tsdproxyLabels(a.Settings.Name, exposed, a.Settings.FunnelEnabled()))
 	return &container.Config{
 		Image:  a.Settings.Image,
 		Labels: labels,
