@@ -181,6 +181,34 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 	return err
 }
 
+// EnableTailscale is the full enable lifecycle shared by the CLI and TUI: bring
+// up the network, boot once-tsdproxy with the given credentials, and boot
+// once-admin.
+func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) error {
+	if err := n.EnsureNetwork(ctx); err != nil {
+		return fmt.Errorf("ensuring network: %w", err)
+	}
+	if err := n.tailscale.Enable(ctx, settings); err != nil {
+		return fmt.Errorf("enabling Tailscale: %w", err)
+	}
+	if err := n.admin.Boot(ctx); err != nil {
+		return fmt.Errorf("booting once-admin: %w", err)
+	}
+	return nil
+}
+
+// DisableTailscale is the full disable lifecycle shared by the CLI and TUI:
+// remove once-admin, then once-tsdproxy (keeping its data volume).
+func (n *Namespace) DisableTailscale(ctx context.Context) error {
+	if err := n.admin.Destroy(ctx); err != nil {
+		return fmt.Errorf("removing once-admin: %w", err)
+	}
+	if err := n.tailscale.Disable(ctx); err != nil {
+		return fmt.Errorf("disabling Tailscale: %w", err)
+	}
+	return nil
+}
+
 func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 	for _, app := range n.applications {
 		if err := app.Destroy(ctx, destroyVolumes); err != nil {

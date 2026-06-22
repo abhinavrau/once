@@ -20,23 +20,25 @@ import (
 var dashboardShowDetails = true
 
 var dashboardKeys = struct {
-	Up       key.Binding
-	Down     key.Binding
-	Settings key.Binding
-	Actions  key.Binding
-	NewApp   key.Binding
-	Logs     key.Binding
-	Details  key.Binding
-	Quit     key.Binding
+	Up        key.Binding
+	Down      key.Binding
+	Settings  key.Binding
+	Actions   key.Binding
+	NewApp    key.Binding
+	Logs      key.Binding
+	Details   key.Binding
+	Tailscale key.Binding
+	Quit      key.Binding
 }{
-	Up:       WithHelp(NewKeyBinding("up", "k"), "↑/k", "up"),
-	Down:     WithHelp(NewKeyBinding("down", "j"), "↓/j", "down"),
-	Settings: WithHelp(NewKeyBinding("s"), "s", "settings"),
-	Actions:  WithHelp(NewKeyBinding("a"), "a", "actions"),
-	NewApp:   WithHelp(NewKeyBinding("n"), "n", "new app"),
-	Logs:     WithHelp(NewKeyBinding("g"), "g", "logs"),
-	Details:  WithHelp(NewKeyBinding("d"), "d", "toggle details"),
-	Quit:     WithHelp(NewKeyBinding("esc"), "esc", "quit"),
+	Up:        WithHelp(NewKeyBinding("up", "k"), "↑/k", "up"),
+	Down:      WithHelp(NewKeyBinding("down", "j"), "↓/j", "down"),
+	Settings:  WithHelp(NewKeyBinding("s"), "s", "settings"),
+	Actions:   WithHelp(NewKeyBinding("a"), "a", "actions"),
+	NewApp:    WithHelp(NewKeyBinding("n"), "n", "new app"),
+	Logs:      WithHelp(NewKeyBinding("g"), "g", "logs"),
+	Details:   WithHelp(NewKeyBinding("d"), "d", "toggle details"),
+	Tailscale: WithHelp(NewKeyBinding("t", "T"), "t", "tailscale"),
+	Quit:      WithHelp(NewKeyBinding("esc"), "esc", "quit"),
 }
 
 type Dashboard struct {
@@ -162,6 +164,12 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if key.Matches(msg, dashboardKeys.Logs) && len(m.apps) > 0 {
 			return m, func() tea.Msg { return NavigateToLogsMsg{App: m.apps[m.selectedIndex]} }
 		}
+		if key.Matches(msg, dashboardKeys.Tailscale) {
+			m.overlay = NewTailscaleForm(m.namespace)
+			var cmd tea.Cmd
+			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			return m, tea.Batch(m.overlay.Init(), cmd)
+		}
 		if key.Matches(msg, dashboardKeys.Details) && len(m.apps) > 0 {
 			dashboardShowDetails = !dashboardShowDetails
 			m.updateViewportSize()
@@ -170,6 +178,9 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case SettingsMenuCloseMsg:
+		m.overlay = nil
+
+	case TailscaleFormCloseMsg:
 		m.overlay = nil
 
 	case SettingsMenuSelectMsg:
@@ -284,10 +295,10 @@ func (m Dashboard) helpBindings() []key.Binding {
 	if len(m.apps) > 0 {
 		return []key.Binding{
 			dashboardKeys.Up, dashboardKeys.Down, dashboardKeys.Actions,
-			dashboardKeys.Settings, dashboardKeys.Logs, dashboardKeys.Details, dashboardKeys.NewApp, dashboardKeys.Quit,
+			dashboardKeys.Settings, dashboardKeys.Logs, dashboardKeys.Details, dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Quit,
 		}
 	}
-	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Quit}
+	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Quit}
 }
 
 func (m Dashboard) runStartStop(app *docker.Application) tea.Cmd {

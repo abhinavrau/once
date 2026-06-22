@@ -171,6 +171,16 @@ func (t *Tailscale) Enabled(ctx context.Context) (bool, error) {
 	return false, fmt.Errorf("inspecting tsdproxy container: %w", err)
 }
 
+// LoadSettings reads the Tailscale settings stored in the once-tsdproxy
+// container label, for pre-populating UIs. Errors if Tailscale isn't enabled.
+func (t *Tailscale) LoadSettings(ctx context.Context) (TailscaleSettings, error) {
+	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
+	if err != nil {
+		return TailscaleSettings{}, fmt.Errorf("inspecting tsdproxy container: %w", err)
+	}
+	return UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
+}
+
 // TailnetProxy is one entry from tsdproxy's lookup API: an app (or helper)
 // exposed on the tailnet under its Magic DNS name.
 type TailnetProxy struct {
