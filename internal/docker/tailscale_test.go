@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,7 @@ func TestTailscaleSettingsRoundTrip(t *testing.T) {
 }
 
 func TestTSDProxyLabelsWhenEnabled(t *testing.T) {
-	labels := tsdproxyLabels("writebook", true)
+	labels := tsdproxyLabels("writebook", true, false)
 
 	assert.Equal(t, map[string]string{
 		"tsdproxy.enable":    "true",
@@ -29,8 +30,25 @@ func TestTSDProxyLabelsWhenEnabled(t *testing.T) {
 	}, labels)
 }
 
+func TestTSDProxyLabelsWithFunnel(t *testing.T) {
+	labels := tsdproxyLabels("writebook", true, true)
+
+	assert.Equal(t, "443/https:80/http, tailscale_funnel", labels["tsdproxy.port.1"])
+	assert.Equal(t, "true", labels["tsdproxy.enable"])
+}
+
 func TestTSDProxyLabelsWhenDisabled(t *testing.T) {
-	assert.Nil(t, tsdproxyLabels("writebook", false))
+	assert.Nil(t, tsdproxyLabels("writebook", false, false))
+	// Funnel only matters when Tailscale is enabled.
+	assert.Nil(t, tsdproxyLabels("writebook", false, true))
+}
+
+func TestValidateFunnelDuration(t *testing.T) {
+	assert.NoError(t, ValidateFunnelDuration(DefaultFunnelDuration))
+	assert.NoError(t, ValidateFunnelDuration(MaxFunnelDuration))
+	assert.ErrorIs(t, ValidateFunnelDuration(0), ErrFunnelDurationInvalid)
+	assert.ErrorIs(t, ValidateFunnelDuration(-time.Minute), ErrFunnelDurationInvalid)
+	assert.ErrorIs(t, ValidateFunnelDuration(MaxFunnelDuration+time.Minute), ErrFunnelDurationTooLong)
 }
 
 func TestContainerConfigInjectsTSDProxyLabels(t *testing.T) {
@@ -44,6 +62,18 @@ func TestContainerConfigInjectsTSDProxyLabels(t *testing.T) {
 	disabled := app.containerConfig(nil, false)
 	assert.Equal(t, app.Settings.Marshal(), disabled.Labels[labelKey])
 	assert.NotContains(t, disabled.Labels, "tsdproxy.enable")
+}
+
+func TestContainerConfigFunnelLabelTracksSettings(t *testing.T) {
+	expires := time.Now().Add(time.Hour)
+	app := &Application{Settings: ApplicationSettings{Name: "writebook", Image: "writebook:1", FunnelExpiresAt: &expires}}
+
+	withFunnel := app.containerConfig(nil, true)
+	assert.Equal(t, "443/https:80/http, tailscale_funnel", withFunnel.Labels["tsdproxy.port.1"])
+
+	app.Settings.FunnelExpiresAt = nil
+	withoutFunnel := app.containerConfig(nil, true)
+	assert.Equal(t, "80/http:80/http", withoutFunnel.Labels["tsdproxy.port.1"])
 }
 
 func TestBuildTSDProxyConfigIncludesAPIKey(t *testing.T) {

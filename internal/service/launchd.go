@@ -46,6 +46,10 @@ func (l *Launchd) IsInstalled(name string) bool {
 	return err == nil
 }
 
+func (l *Launchd) IsRunning(name string) bool {
+	return exec.Command("launchctl", "print", "system/"+l.label(name)).Run() == nil
+}
+
 func (l *Launchd) Install(ctx context.Context, name, execPath, namespace string) error {
 	label := l.label(name)
 	path := l.plistPath(name)

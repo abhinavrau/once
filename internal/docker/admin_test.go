@@ -28,7 +28,7 @@ func TestAdminPathsDefaultToVarRun(t *testing.T) {
 }
 
 func TestAdminCarriesTSDProxyLabels(t *testing.T) {
-	labels := tsdproxyLabels("once-admin", true)
+	labels := tsdproxyLabels("once-admin", true, false)
 
 	assert.Equal(t, "true", labels["tsdproxy.enable"])
 	assert.Equal(t, "once-admin", labels["tsdproxy.name"])

@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"strconv"
+	"time"
 )
 
 type SMTPSettings struct {
@@ -46,6 +47,10 @@ type ApplicationSettings struct {
 	Resources  ContainerResources `json:"resources"`
 	AutoUpdate bool               `json:"autoUpdate"`
 	Backup     BackupSettings     `json:"backup"`
+	// FunnelExpiresAt, when set, marks the app as publicly exposed via Tailscale
+	// Funnel until this time. Written atomically with the tailscale_funnel label
+	// option in the same container recreation, so the two never drift apart.
+	FunnelExpiresAt *time.Time `json:"funnelExpiresAt,omitempty"`
 }
 
 func UnmarshalApplicationSettings(s string) (ApplicationSettings, error) {
@@ -73,6 +78,10 @@ func (s ApplicationSettings) TLSEnabled() bool {
 	return s.Host != "" && !s.DisableTLS && !IsLocalhost(s.Host)
 }
 
+func (s ApplicationSettings) FunnelEnabled() bool {
+	return s.FunnelExpiresAt != nil
+}
+
 func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 	if s.Name != other.Name || s.Image != other.Image || s.Host != other.Host || s.DisableTLS != other.DisableTLS {
 		return false
@@ -87,6 +96,9 @@ func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 		return false
 	}
 	if s.Backup != other.Backup {
+		return false
+	}
+	if !funnelExpiryEqual(s.FunnelExpiresAt, other.FunnelExpiresAt) {
 		return false
 	}
 	if len(s.EnvVars) != len(other.EnvVars) {
@@ -122,4 +134,13 @@ func (s ApplicationSettings) BuildEnv(vol ApplicationVolumeSettings) []string {
 	}
 
 	return env
+}
+
+// Helpers
+
+func funnelExpiryEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
 }

@@ -99,7 +99,7 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 	resp, err := a.namespace.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:  adminImage,
-			Labels: tsdproxyLabels("once-admin", true),
+			Labels: tsdproxyLabels("once-admin", true, false),
 		},
 		&container.HostConfig{
 			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyAlways},

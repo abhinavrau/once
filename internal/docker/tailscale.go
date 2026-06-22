@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
@@ -23,6 +25,30 @@ import (
 const tsdproxyImage = "almeidapaulopt/tsdproxy:2.3.4"
 
 const tsdproxyConfigName = "tsdproxy.yaml"
+
+// Funnel durations: a short default so apps don't stay public by accident, and
+// a hard 24h cap (see PRD "Out of Scope").
+const (
+	DefaultFunnelDuration = 10 * time.Minute
+	MaxFunnelDuration     = 24 * time.Hour
+)
+
+var (
+	ErrFunnelDurationInvalid = errors.New("funnel duration must be positive")
+	ErrFunnelDurationTooLong = fmt.Errorf("funnel duration must not exceed %s", MaxFunnelDuration)
+)
+
+// ValidateFunnelDuration enforces the positive/≤24h bounds on a requested
+// Funnel duration.
+func ValidateFunnelDuration(d time.Duration) error {
+	if d <= 0 {
+		return ErrFunnelDurationInvalid
+	}
+	if d > MaxFunnelDuration {
+		return ErrFunnelDurationTooLong
+	}
+	return nil
+}
 
 // The tsdproxy HTTP API serves /api/v1/proxies on port 8080 inside the
 // container. We publish it bound to loopback only — the single deliberate
@@ -166,6 +192,22 @@ func (t *Tailscale) Proxies(ctx context.Context) ([]TailnetProxy, error) {
 		return nil, fmt.Errorf("reading tsdproxy settings: %w", err)
 	}
 	return fetchProxies(ctx, tsdproxyAPIBaseURL, settings.APIKey)
+}
+
+// ProxyByName returns the tailnet proxy tsdproxy reports for the named app, with
+// found=false when it isn't (yet) listed. Used to surface the real Funnel state
+// rather than assuming activation succeeded.
+func (t *Tailscale) ProxyByName(ctx context.Context, name string) (TailnetProxy, bool, error) {
+	proxies, err := t.Proxies(ctx)
+	if err != nil {
+		return TailnetProxy{}, false, err
+	}
+	for _, p := range proxies {
+		if p.Name == name {
+			return p, true, nil
+		}
+	}
+	return TailnetProxy{}, false, nil
 }
 
 // Destroy removes both the container and the data volume (full cleanup, used by
@@ -312,14 +354,21 @@ func (t *Tailscale) removeContainer(ctx context.Context) error {
 // own Magic DNS name. Nil when Tailscale is disabled, so app containers carry
 // the labels only while once-tsdproxy is running. The 80/http upstream matches
 // Once's port-80 assumption; ephemeral nodes self-clean when the app is deleted.
-func tsdproxyLabels(appName string, enabled bool) map[string]string {
+//
+// When funnel is set, the port label gains the tailscale_funnel option and the
+// public side becomes 443/https (Funnel only serves HTTPS publicly).
+func tsdproxyLabels(appName string, enabled, funnel bool) map[string]string {
 	if !enabled {
 		return nil
+	}
+	port := "80/http:80/http"
+	if funnel {
+		port = "443/https:80/http, tailscale_funnel"
 	}
 	return map[string]string{
 		"tsdproxy.enable":    "true",
 		"tsdproxy.name":      appName,
-		"tsdproxy.port.1":    "80/http:80/http",
+		"tsdproxy.port.1":    port,
 		"tsdproxy.ephemeral": "true",
 	}
 }

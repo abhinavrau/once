@@ -2,6 +2,7 @@ package docker
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,6 +97,17 @@ func TestBackupSettingsEqualDiffers(t *testing.T) {
 
 	noBackup := ApplicationSettings{Name: "app"}
 	assert.False(t, base.Equal(noBackup))
+}
+
+func TestFunnelExpiresAtEqualDiffers(t *testing.T) {
+	t1 := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Hour)
+
+	base := ApplicationSettings{Name: "app", FunnelExpiresAt: &t1}
+	assert.True(t, base.Equal(ApplicationSettings{Name: "app", FunnelExpiresAt: &t1}))
+	assert.False(t, base.Equal(ApplicationSettings{Name: "app", FunnelExpiresAt: &t2}))
+	assert.False(t, base.Equal(ApplicationSettings{Name: "app"}))
+	assert.True(t, ApplicationSettings{Name: "app"}.Equal(ApplicationSettings{Name: "app"}))
 }
 
 func TestBuildEnvWithVAPIDKeys(t *testing.T) {

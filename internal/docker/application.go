@@ -210,6 +210,22 @@ func (a *Application) Roll(ctx context.Context, progress DeployProgressCallback)
 	return a.deployWithVolume(ctx, vol, progress)
 }
 
+// EnableFunnel grants temporary public access via Tailscale Funnel. Setting
+// FunnelExpiresAt and recreating the container writes both the expiry (in the
+// once label) and the tailscale_funnel port option in one atomic recreation, so
+// the funnel state and its expiry can never drift apart.
+func (a *Application) EnableFunnel(ctx context.Context, expiresAt time.Time) error {
+	a.Settings.FunnelExpiresAt = &expiresAt
+	return a.Roll(ctx, nil)
+}
+
+// DisableFunnel revokes public access immediately by clearing FunnelExpiresAt
+// and recreating the container without the tailscale_funnel option.
+func (a *Application) DisableFunnel(ctx context.Context) error {
+	a.Settings.FunnelExpiresAt = nil
+	return a.Roll(ctx, nil)
+}
+
 func (a *Application) VerifyHTTPOrRemove(ctx context.Context) error {
 	if err := a.verifyHTTP(ctx); err != nil {
 		if cleanupErr := a.Remove(context.Background(), true); cleanupErr != nil {
@@ -448,7 +464,7 @@ func (a *Application) volumeMounts(vol *ApplicationVolume) []mount.Mount {
 
 func (a *Application) containerConfig(env []string, tailscaleEnabled bool) *container.Config {
 	labels := map[string]string{labelKey: a.Settings.Marshal()}
-	maps.Copy(labels, tsdproxyLabels(a.Settings.Name, tailscaleEnabled))
+	maps.Copy(labels, tsdproxyLabels(a.Settings.Name, tailscaleEnabled, a.Settings.FunnelEnabled()))
 	return &container.Config{
 		Image:  a.Settings.Image,
 		Labels: labels,
