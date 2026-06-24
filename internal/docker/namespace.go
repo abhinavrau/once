@@ -185,6 +185,9 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 // up the network, boot once-tsdproxy with the given credentials, and boot
 // once-admin.
 func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) error {
+	if err := n.admin.RequireDaemon(); err != nil {
+		return err
+	}
 	if err := n.EnsureNetwork(ctx); err != nil {
 		return fmt.Errorf("ensuring network: %w", err)
 	}

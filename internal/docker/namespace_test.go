@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -22,6 +23,20 @@ func TestUniqueName(t *testing.T) {
 	name2, err := ns.UniqueName("myapp")
 	require.NoError(t, err)
 	assert.NotEqual(t, name, name2)
+}
+
+func TestEnableTailscaleFailsFastWithoutDaemon(t *testing.T) {
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+
+	ns := &Namespace{name: "test"}
+	ns.admin = NewAdmin(ns)
+
+	// The daemon precondition must run before any Docker work; a nil client would
+	// panic in EnsureNetwork/tailscale.Enable if the check were reordered below it.
+	err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "background daemon running")
 }
 
 func TestApplicationLookup(t *testing.T) {

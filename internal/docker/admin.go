@@ -43,18 +43,28 @@ func NewAdmin(ns *Namespace) *Admin {
 	return &Admin{namespace: ns}
 }
 
+// RequireDaemon checks that the background daemon has published the socket and
+// nginx config once-admin bind-mounts. It's the precondition for Boot, exposed
+// so the enable lifecycle can fail fast before booting anything else.
+func (a *Admin) RequireDaemon() error {
+	if !isSocket(AdminSocketPath()) {
+		return fmt.Errorf("once-admin socket %s not found; is the background daemon running?", AdminSocketPath())
+	}
+	if _, err := os.Stat(AdminNginxConfPath()); err != nil {
+		return fmt.Errorf("once-admin nginx config %s not found; is the background daemon running?", AdminNginxConfPath())
+	}
+	return nil
+}
+
 // Boot starts once-admin from the pinned nginx image on the once network with no
 // host ports, bind-mounting the daemon socket and generated config. The daemon
 // must be running (the socket is the thing being exposed), so a missing socket or
 // config is a clear error rather than a silent broken mount.
 func (a *Admin) Boot(ctx context.Context) error {
+	if err := a.RequireDaemon(); err != nil {
+		return err
+	}
 	socket, conf := AdminSocketPath(), AdminNginxConfPath()
-	if !isSocket(socket) {
-		return fmt.Errorf("once-admin socket %s not found; is the background daemon running?", socket)
-	}
-	if _, err := os.Stat(conf); err != nil {
-		return fmt.Errorf("once-admin nginx config %s not found; is the background daemon running?", conf)
-	}
 
 	info, err := a.namespace.client.ContainerInspect(ctx, a.containerName())
 	if err == nil {
