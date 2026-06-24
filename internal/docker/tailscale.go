@@ -33,6 +33,14 @@ const (
 	MaxFunnelDuration     = 24 * time.Hour
 )
 
+// funnelActivation bounds how long we wait for tsdproxy to report a Funnel
+// active before surfacing a failure. ponytail: fixed poll, fine for an
+// interactive enable; lengthen if first-time activation proves slower.
+const (
+	funnelActivationTimeout = 15 * time.Second
+	funnelActivationPoll    = time.Second
+)
+
 var (
 	ErrFunnelDurationInvalid = errors.New("funnel duration must be positive")
 	ErrFunnelDurationTooLong = fmt.Errorf("funnel duration must not exceed %s", MaxFunnelDuration)
@@ -218,6 +226,36 @@ func (t *Tailscale) ProxyByName(ctx context.Context, name string) (TailnetProxy,
 		}
 	}
 	return TailnetProxy{}, false, nil
+}
+
+// WaitForFunnelActive polls until tsdproxy reports the named app's Funnel
+// active, or returns an error on timeout. Funnel needs the tailnet ACL's funnel
+// node attribute, which Once can't manage — surfacing this prevents reporting a
+// Funnel active when activation actually failed.
+func (t *Tailscale) WaitForFunnelActive(ctx context.Context, name string) error {
+	deadline := time.Now().Add(funnelActivationTimeout)
+	var last TailnetProxy
+	var found bool
+	for {
+		p, ok, err := t.ProxyByName(ctx, name)
+		if err == nil && ok {
+			last, found = p, true
+			if p.Funnel {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			if found {
+				return fmt.Errorf("funnel did not activate (proxy status %q); check that your tailnet ACL grants the funnel node attribute", last.Status)
+			}
+			return fmt.Errorf("funnel did not activate; check that the once-tsdproxy container is running and your tailnet ACL grants the funnel node attribute")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(funnelActivationPoll):
+		}
+	}
 }
 
 // Destroy removes both the container and the data volume (full cleanup, used by

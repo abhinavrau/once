@@ -59,9 +59,19 @@ type Dashboard struct {
 	progress      Progress
 	help          Help
 	overlay       Component
+
+	tailscaleEnabled bool
+	tailnetURLs      map[string]string // app name -> tailnet URL, from the lookup API
 }
 
 type dashboardTickMsg struct{}
+
+type tailscaleInfoMsg struct {
+	enabled bool
+	urls    map[string]string
+}
+
+type tailscaleRefreshMsg struct{}
 
 type startStopFinishedMsg struct {
 	err error
@@ -96,7 +106,7 @@ func NewDashboard(ns *docker.Namespace, apps []*docker.Application, selectedInde
 }
 
 func (m Dashboard) Init() tea.Cmd {
-	return m.scheduleNextDashboardTick()
+	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
 }
 
 func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
@@ -220,6 +230,14 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		m.rebuildViewportContent()
 		cmds = append(cmds, m.scheduleNextDashboardTick())
 
+	case tailscaleInfoMsg:
+		m.tailscaleEnabled = msg.enabled
+		m.tailnetURLs = msg.urls
+		m.rebuildViewportContent()
+
+	case tailscaleRefreshMsg:
+		cmds = append(cmds, m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
+
 	case ProgressTickMsg:
 		if m.toggling {
 			var cmd tea.Cmd
@@ -317,6 +335,31 @@ func (m Dashboard) scheduleNextDashboardTick() tea.Cmd {
 	return tea.Every(time.Second, func(time.Time) tea.Msg { return dashboardTickMsg{} })
 }
 
+func (m Dashboard) scheduleTailscaleRefresh() tea.Cmd {
+	return tea.Every(5*time.Second, func(time.Time) tea.Msg { return tailscaleRefreshMsg{} })
+}
+
+// fetchTailscaleInfo asynchronously reads the global enabled state and the
+// per-app tailnet URLs from the lookup API so the details card can stay current
+// without blocking the UI. Failures degrade to "not enabled".
+func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
+	ns := m.namespace
+	return func() tea.Msg {
+		ctx := context.Background()
+		enabled, err := ns.Tailscale().Enabled(ctx)
+		if err != nil || !enabled {
+			return tailscaleInfoMsg{enabled: false}
+		}
+		urls := map[string]string{}
+		if proxies, err := ns.Tailscale().Proxies(ctx); err == nil {
+			for _, p := range proxies {
+				urls[p.Name] = p.URL
+			}
+		}
+		return tailscaleInfoMsg{enabled: true, urls: urls}
+	}
+}
+
 func (m *Dashboard) selectPanel(index int) {
 	m.selectedIndex = max(0, min(index, len(m.apps)-1))
 	m.rebuildViewportContent()
@@ -343,6 +386,8 @@ func (m *Dashboard) rebuildViewportContent() {
 	scales := m.computeScales()
 	var views []string
 	for i := range m.panels {
+		m.panels[i].tailscaleEnabled = m.tailscaleEnabled
+		m.panels[i].tailnetURL = m.tailnetURLs[m.panels[i].app.Settings.Name]
 		toggling := m.toggling && m.togglingApp == m.panels[i].app.Settings.Name
 		views = append(views, m.panels[i].View(i == m.selectedIndex, toggling, dashboardShowDetails, m.width, scales))
 	}

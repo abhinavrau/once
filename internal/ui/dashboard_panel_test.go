@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
@@ -121,6 +122,55 @@ func TestRenderBar(t *testing.T) {
 
 func TestRenderBarZeroWidth(t *testing.T) {
 	assert.Empty(t, renderBar(50, 0, 100, Colors.Success, 0))
+}
+
+func TestDashboardPanelShowsTailnetRowsWhenEnabled(t *testing.T) {
+	panel := testPanel(true)
+	panel.tailscaleEnabled = true
+	panel.tailnetURL = "https://books.tailnet.ts.net"
+
+	view := ansi.Strip(panel.View(false, false, true, 120, DashboardScales{}))
+
+	assert.Contains(t, view, "Public/Local URL")
+	assert.Contains(t, view, "Tailnet URL")
+	assert.Contains(t, view, "https://books.tailnet.ts.net")
+	assert.Contains(t, view, "Funnel Status")
+	assert.Contains(t, view, "Inactive")
+}
+
+func TestDashboardPanelOmitsTailnetRowsWhenDisabled(t *testing.T) {
+	panel := testPanel(true) // tailscaleEnabled defaults false
+	view := ansi.Strip(panel.View(false, false, true, 120, DashboardScales{}))
+
+	assert.NotContains(t, view, "Tailnet URL")
+}
+
+func TestDashboardPanelOmitsTailnetRowsWhenExcluded(t *testing.T) {
+	panel := testPanel(true)
+	panel.tailscaleEnabled = true
+	panel.app.Settings.TailscaleExcluded = true
+
+	view := ansi.Strip(panel.View(false, false, true, 120, DashboardScales{}))
+	assert.NotContains(t, view, "Tailnet URL")
+}
+
+func TestDashboardPanelHeightGrowsWithTailnetRows(t *testing.T) {
+	panel := testPanel(true)
+	panel.tailscaleEnabled = true
+
+	assert.Equal(t, PanelHeight+tailnetRowCount+2, panel.Height(true))
+	// Collapsed details never show tailnet rows.
+	assert.Equal(t, StoppedPanelHeight+2, panel.Height(false))
+}
+
+func TestDashboardPanelShowsActiveFunnel(t *testing.T) {
+	panel := testPanel(true)
+	panel.tailscaleEnabled = true
+	expiresAt := time.Now().Add(20 * time.Minute)
+	panel.app.Settings.FunnelExpiresAt = &expiresAt
+
+	view := ansi.Strip(panel.View(false, false, true, 120, DashboardScales{}))
+	assert.Contains(t, view, "Active (Expires in")
 }
 
 // Helpers

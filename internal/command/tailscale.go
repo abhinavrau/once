@@ -11,14 +11,6 @@ import (
 	"github.com/basecamp/once/internal/service"
 )
 
-// funnelActivation bounds how long enable waits for tsdproxy to report the
-// Funnel active before surfacing a failure. ponytail: fixed poll, fine for an
-// interactive command; lengthen if first-time activation proves slower.
-const (
-	funnelActivationTimeout = 15 * time.Second
-	funnelActivationPoll    = time.Second
-)
-
 type tailscaleCommand struct {
 	cmd          *cobra.Command
 	clientID     string
@@ -166,7 +158,7 @@ func (t *tailscaleCommand) funnelEnable(ctx context.Context, ns *docker.Namespac
 	// Surface activation failures: Funnel needs the tailnet ACL's funnel node
 	// attribute, which Once can't manage. Only report it active once tsdproxy
 	// confirms it.
-	if err := waitForFunnelActive(ctx, ns.Tailscale(), app.Settings.Name); err != nil {
+	if err := ns.Tailscale().WaitForFunnelActive(ctx, app.Settings.Name); err != nil {
 		return err
 	}
 
@@ -205,30 +197,4 @@ func requireBackgroundDaemon(namespace string) error {
 		return fmt.Errorf("the background service is not running; run `once background install` before enabling a Funnel so it can be torn down automatically on expiry")
 	}
 	return nil
-}
-
-func waitForFunnelActive(ctx context.Context, ts *docker.Tailscale, name string) error {
-	deadline := time.Now().Add(funnelActivationTimeout)
-	var last docker.TailnetProxy
-	var found bool
-	for {
-		p, ok, err := ts.ProxyByName(ctx, name)
-		if err == nil && ok {
-			last, found = p, true
-			if p.Funnel {
-				return nil
-			}
-		}
-		if time.Now().After(deadline) {
-			if found {
-				return fmt.Errorf("funnel did not activate (proxy status %q); check that your tailnet ACL grants the funnel node attribute", last.Status)
-			}
-			return fmt.Errorf("funnel did not activate; check that the once-tsdproxy container is running and your tailnet ACL grants the funnel node attribute")
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(funnelActivationPoll):
-		}
-	}
 }

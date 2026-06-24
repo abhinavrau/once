@@ -31,3 +31,8 @@ func TestSettingsMenu_TitleCentered(t *testing.T) {
 	require.GreaterOrEqual(t, menuOffset, 0)
 	assert.Greater(t, titleOffset, menuOffset)
 }
+
+func TestSettingsMenu_HasTailscaleFunnel(t *testing.T) {
+	m := NewSettingsMenu(&docker.Application{})
+	assert.Contains(t, ansi.Strip(m.View()), "Tailscale Funnel")
+}

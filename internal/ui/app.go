@@ -56,6 +56,7 @@ const (
 	SettingsSectionUpdates
 	SettingsSectionBackups
 	SettingsSectionTailscale
+	SettingsSectionFunnel
 )
 
 type App struct {
