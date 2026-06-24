@@ -327,6 +327,90 @@ func TestTailscaleEnableBootsTSDProxyViaControlSeam(t *testing.T) {
 	assert.NoError(t, err, "data volume should be retained after disable")
 }
 
+// TestTeardownRemovesTailscaleSystemResources proves the full-cleanup path:
+// after enabling Tailscale and booting once-admin, teardown removes both system
+// containers AND deletes the data volume (unlike disable, which retains it).
+// No control plane is needed — cleanup doesn't depend on tailnet registration.
+func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-teardown-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	t.Cleanup(func() { cli.Close() })
+
+	// Run the daemon's admin socket server so once-admin's bind mount sees a real
+	// socket; point the control seam at a dummy so Enable creates the container
+	// without attempting OAuth.
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", "http://invalid.control.test:8080")
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", "dummy-auth-key")
+	adminCtx, stopAdmin := context.WithCancel(ctx)
+	t.Cleanup(stopAdmin)
+	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
+	require.Eventually(t, func() bool {
+		_, err := net.Dial("unix", docker.AdminSocketPath())
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+
+	require.NoError(t, ns.Tailscale().Enable(ctx, docker.TailscaleSettings{
+		ClientID:     "unused-with-control-seam",
+		ClientSecret: "unused-with-control-seam",
+	}))
+	require.NoError(t, ns.Admin().Boot(ctx))
+
+	tsdproxyName := ns.Name() + "-tsdproxy"
+	adminName := ns.Name() + "-admin"
+	dataVolume := ns.Name() + "-tsdproxy-data"
+
+	_, err = cli.ContainerInspect(ctx, tsdproxyName)
+	require.NoError(t, err, "tsdproxy container should exist after enable")
+	_, err = cli.ContainerInspect(ctx, adminName)
+	require.NoError(t, err, "admin container should exist after boot")
+	_, err = cli.VolumeInspect(ctx, dataVolume)
+	require.NoError(t, err, "data volume should exist after enable")
+
+	require.NoError(t, ns.Teardown(ctx, true))
+
+	_, err = cli.ContainerInspect(ctx, tsdproxyName)
+	assert.True(t, errdefs.IsNotFound(err), "tsdproxy container should be gone after teardown")
+	_, err = cli.ContainerInspect(ctx, adminName)
+	assert.True(t, errdefs.IsNotFound(err), "admin container should be gone after teardown")
+	_, err = cli.VolumeInspect(ctx, dataVolume)
+	assert.True(t, errdefs.IsNotFound(err), "data volume should be deleted by teardown")
+}
+
+// TestTeardownNoopWhenTailscaleNeverEnabled proves teardown is safe and
+// idempotent for the Tailscale resources when Tailscale was never enabled: no
+// tsdproxy/admin containers or data volume exist, and teardown still succeeds.
+func TestTeardownNoopWhenTailscaleNeverEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-teardown-noop-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	t.Cleanup(func() { cli.Close() })
+
+	require.NoError(t, ns.Teardown(ctx, true), "teardown should no-op for absent Tailscale resources")
+
+	_, err = cli.ContainerInspect(ctx, ns.Name()+"-tsdproxy")
+	assert.True(t, errdefs.IsNotFound(err), "tsdproxy container should be absent")
+	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
+	assert.True(t, errdefs.IsNotFound(err), "admin container should be absent")
+	_, err = cli.VolumeInspect(ctx, ns.Name()+"-tsdproxy-data")
+	assert.True(t, errdefs.IsNotFound(err), "data volume should be absent")
+}
+
 // TestAppRetrofitRollOnEnableAndDisable deploys a real Once-managed whoami app,
 // then enables Tailscale and asserts the retrofit roll injects the tsdproxy.*
 // labels (alongside the existing once label) so the app's ephemeral node
