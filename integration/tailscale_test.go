@@ -600,6 +600,16 @@ func TestLookupAPIReportsRunningFQDN(t *testing.T) {
 	}, 90*time.Second, 2*time.Second, "lookup API never reported whoami as Running")
 
 	assert.NotEmpty(t, whoami.URL, "running proxy should report a tailnet FQDN")
+
+	// The domain suffix is derived from the reported FQDN and persisted into the
+	// tsdproxy settings label, so app tailnet URLs can be built without a lookup.
+	suffix, err := ns.Tailscale().DomainSuffix(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, magicDNSBaseDom, suffix)
+
+	persisted, err := ns.Tailscale().LoadSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, magicDNSBaseDom, persisted.DomainSuffix, "suffix should be persisted on the container label")
 }
 
 // TestAdminReachableViaMagicDNS proves the zero-host-port admin path end to end:

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/containerd/errdefs"
@@ -91,6 +93,19 @@ type TailscaleSettings struct {
 	// time and configured into tsdproxy; the host client sends it as a Bearer
 	// token (connections via the published port are not seen as localhost).
 	APIKey string `json:"apiKey,omitempty"`
+	// DomainSuffix is the tailnet's MagicDNS base (e.g. tailnet-name.ts.net),
+	// learned from the first tailnet URL tsdproxy reports. With it stored, app
+	// tailnet URLs can be built without waiting on a per-app lookup.
+	DomainSuffix string `json:"domainSuffix,omitempty"`
+}
+
+// TailnetURL builds an app's https://<app>.<suffix> tailnet URL from the stored
+// domain suffix, or "" when the suffix isn't known yet.
+func (s TailscaleSettings) TailnetURL(appName string) string {
+	if s.DomainSuffix == "" {
+		return ""
+	}
+	return "https://" + appName + "." + s.DomainSuffix
 }
 
 func UnmarshalTailscaleSettings(s string) (TailscaleSettings, error) {
@@ -108,8 +123,9 @@ func (s TailscaleSettings) Marshal() string {
 // container's existence is the source of truth for "Tailscale enabled"; its
 // settings live in the once label on the container itself.
 type Tailscale struct {
-	namespace *Namespace
-	Settings  *TailscaleSettings
+	namespace    *Namespace
+	Settings     *TailscaleSettings
+	domainSuffix string // in-memory cache so a learned suffix survives a failed persist
 }
 
 func NewTailscale(ns *Namespace) *Tailscale {
@@ -233,6 +249,47 @@ func (t *Tailscale) ProxyByName(ctx context.Context, name string) (TailnetProxy,
 	return TailnetProxy{}, false, nil
 }
 
+// DomainSuffix returns the tailnet's MagicDNS suffix (e.g. tailnet-name.ts.net).
+// It prefers the value persisted in settings; otherwise it derives the suffix
+// from the first tailnet URL tsdproxy reports and persists it so later lookups
+// (and apps whose node isn't up) can build URLs without a live proxy. Returns ""
+// when no node has registered yet, so the suffix can't be known.
+func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
+	if t.domainSuffix != "" {
+		return t.domainSuffix, nil
+	}
+
+	settings, err := t.LoadSettings(ctx)
+	if err != nil {
+		return "", err
+	}
+	if settings.DomainSuffix != "" {
+		t.domainSuffix = settings.DomainSuffix
+		return settings.DomainSuffix, nil
+	}
+
+	proxies, err := t.Proxies(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range proxies {
+		suffix := domainSuffixFromURL(p.URL)
+		if suffix == "" {
+			continue
+		}
+		// ponytail: Docker labels are immutable, so baking the suffix into the
+		// settings label means one container recreate; ephemeral proxies
+		// re-register on restart, so the churn is a one-time blip. Cache the suffix
+		// first so a failed persist still short-circuits here next time rather than
+		// recreating on every poll.
+		t.domainSuffix = suffix
+		settings.DomainSuffix = suffix
+		_ = t.persistSettings(ctx, settings)
+		return suffix, nil
+	}
+	return "", nil
+}
+
 // WaitForFunnelActive polls until tsdproxy reports the named app's Funnel
 // active, or returns an error on timeout. Funnel needs the tailnet ACL's funnel
 // node attribute, which Once can't manage — surfacing this prevents reporting a
@@ -286,6 +343,21 @@ func (t *Tailscale) containerName() string {
 
 func (t *Tailscale) dataVolumeName() string {
 	return t.namespace.name + "-tsdproxy-data"
+}
+
+// persistSettings rewrites the once-tsdproxy container's settings label by
+// recreating it (Docker labels are immutable on a live container), keeping the
+// data volume so node identities survive. Used to bake in a newly-learned domain
+// suffix.
+func (t *Tailscale) persistSettings(ctx context.Context, settings TailscaleSettings) error {
+	if err := t.removeContainer(ctx); err != nil {
+		return err
+	}
+	if err := t.create(ctx, settings); err != nil {
+		return err
+	}
+	t.Settings = &settings
+	return nil
 }
 
 func (t *Tailscale) ensureRunning(ctx context.Context, info container.InspectResponse) error {
@@ -424,6 +496,20 @@ func tsdproxyLabels(appName string, enabled, funnel bool) map[string]string {
 		"tsdproxy.port.1":    port,
 		"tsdproxy.ephemeral": "true",
 	}
+}
+
+// domainSuffixFromURL derives the tailnet MagicDNS suffix from a node URL by
+// stripping the leading host label: https://writebook.foo.ts.net -> foo.ts.net.
+func domainSuffixFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	_, suffix, ok := strings.Cut(u.Hostname(), ".")
+	if !ok {
+		return ""
+	}
+	return suffix
 }
 
 // fetchProxies queries the tsdproxy lookup API and returns the visible proxies.

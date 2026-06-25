@@ -12,11 +12,25 @@ import (
 )
 
 func TestTailscaleSettingsRoundTrip(t *testing.T) {
-	settings := TailscaleSettings{ClientID: "id-123", ClientSecret: "secret-456", APIKey: "key-789"}
+	settings := TailscaleSettings{ClientID: "id-123", ClientSecret: "secret-456", APIKey: "key-789", DomainSuffix: "tailnet-name.ts.net"}
 
 	parsed, err := UnmarshalTailscaleSettings(settings.Marshal())
 	require.NoError(t, err)
 	assert.Equal(t, settings, parsed)
+}
+
+func TestDomainSuffixFromURL(t *testing.T) {
+	assert.Equal(t, "tailnet-name.ts.net", domainSuffixFromURL("https://writebook.tailnet-name.ts.net"))
+	assert.Equal(t, "tailnet.test", domainSuffixFromURL("http://whoami.tailnet.test:8080"))
+	assert.Empty(t, domainSuffixFromURL("https://singlelabel"))
+	assert.Empty(t, domainSuffixFromURL(""))
+}
+
+func TestTailnetURL(t *testing.T) {
+	assert.Equal(t, "https://books.tailnet-name.ts.net",
+		TailscaleSettings{DomainSuffix: "tailnet-name.ts.net"}.TailnetURL("books"))
+	// No suffix known yet -> no URL to construct.
+	assert.Empty(t, TailscaleSettings{}.TailnetURL("books"))
 }
 
 func TestTSDProxyLabelsWhenEnabled(t *testing.T) {

@@ -62,6 +62,7 @@ type Dashboard struct {
 
 	tailscaleEnabled bool
 	tailnetURLs      map[string]string // app name -> tailnet URL, from the lookup API
+	tailnetSuffix    string            // tailnet MagicDNS suffix, for apps not yet in the lookup
 }
 
 type dashboardTickMsg struct{}
@@ -69,6 +70,7 @@ type dashboardTickMsg struct{}
 type tailscaleInfoMsg struct {
 	enabled bool
 	urls    map[string]string
+	suffix  string
 }
 
 type tailscaleRefreshMsg struct{}
@@ -233,6 +235,7 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case tailscaleInfoMsg:
 		m.tailscaleEnabled = msg.enabled
 		m.tailnetURLs = msg.urls
+		m.tailnetSuffix = msg.suffix
 		m.rebuildViewportContent()
 
 	case tailscaleRefreshMsg:
@@ -356,7 +359,8 @@ func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
 				urls[p.Name] = p.URL
 			}
 		}
-		return tailscaleInfoMsg{enabled: true, urls: urls}
+		suffix, _ := ns.Tailscale().DomainSuffix(ctx)
+		return tailscaleInfoMsg{enabled: true, urls: urls, suffix: suffix}
 	}
 }
 
@@ -387,7 +391,14 @@ func (m *Dashboard) rebuildViewportContent() {
 	var views []string
 	for i := range m.panels {
 		m.panels[i].tailscaleEnabled = m.tailscaleEnabled
-		m.panels[i].tailnetURL = m.tailnetURLs[m.panels[i].app.Settings.Name]
+		app := m.panels[i].app.Settings
+		url := m.tailnetURLs[app.Name]
+		// Fall back to the suffix-built URL for an exposed app whose node hasn't
+		// reported to the lookup API yet, so we can show where it will live.
+		if url == "" && app.TailscaleExposed() {
+			url = (docker.TailscaleSettings{DomainSuffix: m.tailnetSuffix}).TailnetURL(app.Name)
+		}
+		m.panels[i].tailnetURL = url
 		toggling := m.toggling && m.togglingApp == m.panels[i].app.Settings.Name
 		views = append(views, m.panels[i].View(i == m.selectedIndex, toggling, dashboardShowDetails, m.width, scales))
 	}
