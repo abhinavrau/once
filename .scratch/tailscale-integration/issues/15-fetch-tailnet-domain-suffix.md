@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Fetch the tailnet domain suffix from the Tailscale API on enable
 
