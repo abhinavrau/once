@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Validate Tailscale OAuth credentials before enabling
 

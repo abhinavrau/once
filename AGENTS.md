@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Use `gh-axi` for GitHub and `chrome-devtools-axi` for browser automation.
+
 ## Project Overview
 
 Once is a CLI/TUI tool for installing and managing web applications from Docker
@@ -60,6 +62,23 @@ Run a single test:
 ```bash
 go test -v -run TestName ./internal/...
 ```
+
+## Testing notes
+
+- The integration suite runs under a 10-minute total `go test` timeout. A single
+  hung test consumes the whole budget and the suite reports as a timeout panic,
+  masking the real culprit. When this happens, read the goroutine dump for the
+  goroutine stuck in the test body (e.g. `appDriver.waitUntil`), not the alarm or
+  the background `scraper.go` stats-stream goroutines that always appear.
+- TUI forms are integration-tested in `integration/ui_test.go` by driving fields
+  in tab order. Adding, removing, or reordering a form field silently breaks those
+  drivers: a form that rejects submit (e.g. a new required field left empty) stays
+  open, so the test hangs in `waitUntil` until timeout rather than failing fast.
+  When you change a form's fields, update its integration driver in the same change.
+- Tailscale SaaS paths (the OAuth probe against `api.tailscale.com`) can't run in
+  CI — the integration harness only exercises the headscale control seam, which
+  skips OAuth. Cover SaaS-only logic with httptest unit tests, and keep any request
+  that must match tsdproxy's real API call byte-compatible with it.
 
 ## Coding Style
 
