@@ -188,6 +188,9 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	if err := n.admin.RequireDaemon(); err != nil {
 		return err
 	}
+	if err := validateTailscaleCredentials(ctx, settings); err != nil {
+		return err
+	}
 	if err := n.EnsureNetwork(ctx); err != nil {
 		return fmt.Errorf("ensuring network: %w", err)
 	}

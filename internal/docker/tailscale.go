@@ -82,6 +82,11 @@ const (
 type TailscaleSettings struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`
+	// Tag is the Tailscale tag (e.g. tag:once) tsdproxy stamps on the auth keys it
+	// mints via OAuth. A tagged OAuth client can only mint keys for tags it owns,
+	// so this must be a tag the client owns in the tailnet ACL. Empty on the
+	// headscale control seam, which uses a pre-minted auth key instead.
+	Tag string `json:"tag,omitempty"`
 	// APIKey authenticates host lookups to the tsdproxy API. Generated at enable
 	// time and configured into tsdproxy; the host client sends it as a Bearer
 	// token (connections via the published port are not seen as localhost).
@@ -119,7 +124,7 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
 	if err == nil {
 		existing, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
-		if existing.ClientID == settings.ClientID && existing.ClientSecret == settings.ClientSecret {
+		if existing.ClientID == settings.ClientID && existing.ClientSecret == settings.ClientSecret && existing.Tag == settings.Tag {
 			return t.ensureRunning(ctx, info)
 		}
 		// Credentials changed: recreate the container, keep the data volume. Keep
@@ -474,6 +479,9 @@ func buildTSDProxyConfig(settings TailscaleSettings, controlURL, authKey string)
 		provider = fmt.Sprintf("      authKey: \"%s\"\n      authKeyFile: \"\"\n      controlUrl: %s\n", authKey, controlURL)
 	} else {
 		provider = fmt.Sprintf("      clientId: \"%s\"\n      clientSecret: \"%s\"\n", settings.ClientID, settings.ClientSecret)
+		if settings.Tag != "" {
+			provider += fmt.Sprintf("      tags: \"%s\"\n", settings.Tag)
+		}
 	}
 	return fmt.Sprintf(tsdproxyConfigTmpl, settings.APIKey, provider)
 }

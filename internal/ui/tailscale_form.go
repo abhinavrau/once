@@ -15,6 +15,7 @@ const (
 	tailscaleEnableField = iota
 	tailscaleClientIDField
 	tailscaleClientSecretField
+	tailscaleTagField
 )
 
 var tailscaleFormCloseKey = WithHelp(NewKeyBinding("esc"), "esc", "close")
@@ -25,6 +26,7 @@ type tailscaleFormSubmitMsg struct {
 	enable bool
 	id     string
 	secret string
+	tag    string
 }
 
 type tailscaleFormFinishedMsg struct {
@@ -60,6 +62,9 @@ func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 	clientSecretField.SetValue(current.ClientSecret)
 	clientSecretField.SetEchoPassword()
 
+	tagField := NewTextField("Tag the OAuth client owns, e.g. tag:once")
+	tagField.SetValue(current.Tag)
+
 	h := NewHelp()
 	h.SetBindings([]key.Binding{tailscaleFormCloseKey})
 
@@ -69,6 +74,7 @@ func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 			FormItem{Label: "Enable Tailscale", Field: enableField},
 			FormItem{Label: "OAuth Client ID", Field: clientIDField},
 			FormItem{Label: "OAuth Client Secret", Field: clientSecretField},
+			FormItem{Label: "Tag", Field: tagField},
 		),
 		help:     h,
 		progress: NewProgress(0, Colors.Border),
@@ -80,6 +86,7 @@ func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 				enable: f.CheckboxField(tailscaleEnableField).Checked(),
 				id:     f.TextField(tailscaleClientIDField).Value(),
 				secret: f.TextField(tailscaleClientSecretField).Value(),
+				tag:    f.TextField(tailscaleTagField).Value(),
 			}
 		}
 	})
@@ -118,8 +125,8 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case tailscaleFormSubmitMsg:
-		if msg.enable && (msg.id == "" || msg.secret == "") {
-			m.err = errors.New("OAuth Client ID and Secret are required")
+		if msg.enable && (msg.id == "" || msg.secret == "" || msg.tag == "") {
+			m.err = errors.New("OAuth Client ID, Secret, and Tag are required")
 			return m, nil
 		}
 		m.running = true
@@ -180,7 +187,7 @@ func (m TailscaleForm) run(msg tailscaleFormSubmitMsg) tea.Cmd {
 		ctx := context.Background()
 		var err error
 		if msg.enable {
-			err = m.namespace.EnableTailscale(ctx, docker.TailscaleSettings{ClientID: msg.id, ClientSecret: msg.secret})
+			err = m.namespace.EnableTailscale(ctx, docker.TailscaleSettings{ClientID: msg.id, ClientSecret: msg.secret, Tag: msg.tag})
 		} else {
 			err = m.namespace.DisableTailscale(ctx)
 		}

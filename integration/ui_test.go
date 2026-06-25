@@ -153,6 +153,8 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	d.typeText("unused-with-control-seam")
 	d.send(keyMsg("tab")) // → OAuth Client Secret
 	d.typeText("unused-with-control-seam")
+	d.send(keyMsg("tab")) // → Tag (required by the form; unused under the control seam)
+	d.typeText("tag:once")
 	d.send(keyMsg("tab"))   // → Save
 	d.send(keyMsg("enter")) // submit
 

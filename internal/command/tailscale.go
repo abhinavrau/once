@@ -15,6 +15,7 @@ type tailscaleCommand struct {
 	cmd          *cobra.Command
 	clientID     string
 	clientSecret string
+	tag          string
 	duration     time.Duration
 }
 
@@ -32,8 +33,10 @@ func newTailscaleCommand() *tailscaleCommand {
 	}
 	enable.Flags().StringVar(&t.clientID, "client-id", "", "Tailscale OAuth client ID")
 	enable.Flags().StringVar(&t.clientSecret, "client-secret", "", "Tailscale OAuth client secret")
+	enable.Flags().StringVar(&t.tag, "tag", "", "Tailscale tag the OAuth client owns (e.g. tag:once)")
 	enable.MarkFlagRequired("client-id")
 	enable.MarkFlagRequired("client-secret")
+	enable.MarkFlagRequired("tag")
 
 	disable := &cobra.Command{
 		Use:   "disable",
@@ -79,7 +82,7 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 // Private
 
 func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	settings := docker.TailscaleSettings{ClientID: t.clientID, ClientSecret: t.clientSecret}
+	settings := docker.TailscaleSettings{ClientID: t.clientID, ClientSecret: t.clientSecret, Tag: t.tag}
 	if err := ns.EnableTailscale(ctx, settings); err != nil {
 		return err
 	}

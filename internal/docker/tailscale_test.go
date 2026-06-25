@@ -123,10 +123,13 @@ func TestFetchProxiesUnauthorized(t *testing.T) {
 }
 
 func TestBuildTSDProxyConfigOAuth(t *testing.T) {
-	config := buildTSDProxyConfig(TailscaleSettings{ClientID: "id-123", ClientSecret: "secret-456"}, "", "")
+	config := buildTSDProxyConfig(TailscaleSettings{ClientID: "id-123", ClientSecret: "secret-456", Tag: "tag:once"}, "", "")
 
 	assert.Contains(t, config, `clientId: "id-123"`)
 	assert.Contains(t, config, `clientSecret: "secret-456"`)
+	// OAuth requires a tag tsdproxy stamps on its minted keys, else it errors
+	// "must define tags to use OAuth" and never registers.
+	assert.Contains(t, config, `tags: "tag:once"`)
 	assert.NotContains(t, config, "controlUrl")
 	assert.NotContains(t, config, "authKey")
 	assert.Contains(t, config, "dataDir: /data/")
