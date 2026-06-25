@@ -16,6 +16,12 @@ graph TD
     09["09 · TUI details URLs + Funnel sub-form"]
     10["10 · teardown full cleanup"]
     11["11 · SaaS smoke pass"]
+    12["12 · Enable Tailscale with no apps"]
+    13["13 · Per-app tailnet opt in/out"]
+    14["14 · Validate OAuth credentials on enable"]
+    15["15 · Fetch tailnet domain suffix"]
+    16["16 · Headscale control server enable"]
+    17["17 · TUI Headscale control server fields"]
 
     01 --> 02
     02 --> 03
@@ -34,14 +40,17 @@ graph TD
     06 --> 11
     07 --> 09
     07 --> 11
+    14 --> 15
+    16 --> 17
 
     classDef done fill:#2e7d32,stroke:#1b5e20,color:#fff;
     classDef ready fill:#1565c0,stroke:#0d47a1,color:#fff;
     classDef needsinfo fill:#f9a825,stroke:#f57f17,color:#000;
+    classDef triage fill:#6d4c41,stroke:#4e342e,color:#fff;
 
-    class 01,02,03,04 done;
-    class 05,06,07,08,09,10 ready;
+    class 01,02,03,04,05,06,07,08,09,10,12,13 done;
     class 11 needsinfo;
+    class 14,15,16,17 ready;
 ```
 
 ## Legend
@@ -51,6 +60,7 @@ graph TD
 | 🟩 Green | `done` |
 | 🟦 Blue | `ready-for-agent` |
 | 🟨 Yellow | `needs-info` |
+| 🟫 Brown | `needs-triage` |
 
 ## Status snapshot
 
@@ -60,14 +70,16 @@ graph TD
 | 02 | `once tailscale enable/disable` + tsdproxy container | done | 01 |
 | 03 | App `tsdproxy.*` labels + retrofit roll | done | 02 |
 | 04 | Lookup API + `status` + `list` tailnet URL | done | 02, 03 |
-| 05 | Admin socket daemon + `once-admin` nginx | ready-for-agent | 02, 03 |
-| 06 | Funnel toggle + `FunnelExpiresAt` | ready-for-agent | 03 |
-| 07 | Funnel auto-expiry daemon | ready-for-agent | 06 |
-| 08 | TUI global Tailscale settings form | ready-for-agent | 02 |
-| 09 | TUI details URLs + Funnel sub-form | ready-for-agent | 04, 06, 07 |
-| 10 | `once teardown` full cleanup | ready-for-agent | 02, 05 |
+| 05 | Admin socket daemon + `once-admin` nginx | done | 02, 03 |
+| 06 | Funnel toggle + `FunnelExpiresAt` | done | 03 |
+| 07 | Funnel auto-expiry daemon | done | 06 |
+| 08 | TUI global Tailscale settings form | done | 02 |
+| 09 | TUI details URLs + Funnel sub-form | done | 04, 06, 07 |
+| 10 | `once teardown` full cleanup | done | 02, 05 |
 | 11 | SaaS smoke pass | needs-info | 04, 06, 07 |
-| 14 | Validate OAuth credentials before enabling | needs-triage | — |
-| 15 | Fetch tailnet domain suffix on enable | needs-triage | 14 |
-| 16 | Headscale control server enable (model + CLI) | needs-triage | — |
-| 17 | TUI Headscale control server fields | needs-triage | 16 |
+| 12 | Enable Tailscale with no apps | done | — |
+| 13 | Per-app tailnet opt in/out | done | — |
+| 14 | Validate OAuth credentials before enabling | ready-for-agent | — |
+| 15 | Fetch tailnet domain suffix on enable | ready-for-agent | 14 |
+| 16 | Headscale control server enable (model + CLI) | ready-for-agent | — |
+| 17 | TUI Headscale control server fields | ready-for-agent | 16 |
