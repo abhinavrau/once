@@ -19,6 +19,19 @@ func TestTailscaleSettingsRoundTrip(t *testing.T) {
 	assert.Equal(t, settings, parsed)
 }
 
+func TestNormalizeTag(t *testing.T) {
+	normalize := func(tag string) string {
+		return TailscaleSettings{Tag: tag}.normalizeTag()
+	}
+	assert.Equal(t, "tag:once", normalize("once"))
+	assert.Equal(t, "tag:once", normalize("tag:once"))
+	assert.Equal(t, "tag:once,tag:admin", normalize("once,tag:admin"))
+	assert.Equal(t, "tag:once,tag:admin", normalize(" once , tag:admin "))
+	// Empty or whitespace-only collapses to "" so the "tag is required" check fires.
+	assert.Empty(t, normalize(""))
+	assert.Empty(t, normalize("  "))
+}
+
 func TestDomainSuffixFromURL(t *testing.T) {
 	assert.Equal(t, "tailnet-name.ts.net", domainSuffixFromURL("https://writebook.tailnet-name.ts.net"))
 	assert.Equal(t, "tailnet.test", domainSuffixFromURL("http://whoami.tailnet.test:8080"))

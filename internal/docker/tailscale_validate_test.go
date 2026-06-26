@@ -73,6 +73,20 @@ func TestValidateOAuthCredentialsSuccess(t *testing.T) {
 	assert.Equal(t, "/tailnet/-/keys/k123", p.deletedKey)
 }
 
+func TestValidateOAuthCredentialsUsesNormalizedTag(t *testing.T) {
+	p := newProbeServer(t, true, true)
+
+	// EnableTailscale normalizes before probing; a bare "once" must reach the
+	// create-key body as "tag:once", not the misleading bare name.
+	settings := TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "once,tag:admin"}
+	settings.Tag = settings.normalizeTag()
+	err := validateOAuthCredentials(context.Background(), p.srv.URL, settings)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"tag:once", "tag:admin"},
+		p.keyRequest.Capabilities.Devices.Create.Tags)
+}
+
 func TestValidateOAuthCredentialsRejectsBadCredentials(t *testing.T) {
 	p := newProbeServer(t, false, true)
 

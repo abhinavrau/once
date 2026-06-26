@@ -119,6 +119,28 @@ func (s TailscaleSettings) Marshal() string {
 	return string(b)
 }
 
+// Private
+
+// normalizeTag prepends "tag:" to each comma-separated segment that lacks it, so
+// a bare name like "once" becomes "tag:once" before it reaches the Tailscale API
+// or the tsdproxy config. Already-prefixed segments pass through unchanged. A tag
+// that is empty (or only whitespace) collapses to "" so the downstream "a tag is
+// required" check still fires rather than a blank tag reaching the API.
+func (s TailscaleSettings) normalizeTag() string {
+	if strings.TrimSpace(s.Tag) == "" {
+		return ""
+	}
+	segments := strings.Split(s.Tag, ",")
+	for i, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if !strings.HasPrefix(seg, "tag:") {
+			seg = "tag:" + seg
+		}
+		segments[i] = seg
+	}
+	return strings.Join(segments, ",")
+}
+
 // Tailscale manages the once-tsdproxy helper container, mirroring Proxy. The
 // container's existence is the source of truth for "Tailscale enabled"; its
 // settings live in the once label on the container itself.
