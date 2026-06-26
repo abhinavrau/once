@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Normalize or validate the Tailscale tag before probing
 
