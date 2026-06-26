@@ -14,6 +14,14 @@ import (
 
 const CheckInterval = 5 * time.Minute
 
+// Bounds for restarting the admin socket server after it dies. A transient boot
+// failure self-heals quickly; persistent failures back off so the daemon never
+// busy-loops.
+const (
+	adminRestartMinBackoff = 250 * time.Millisecond
+	adminRestartMaxBackoff = 30 * time.Second
+)
+
 type Runner struct {
 	namespace string
 }
@@ -30,11 +38,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	scraper := userstats.NewScraper(r.namespace)
 	go scraper.Run(ctx)
 
-	go func() {
-		if err := NewAdminServer().Run(ctx); err != nil {
-			slog.Error("Admin socket server stopped", "error", err)
-		}
-	}()
+	go superviseAdminServer(ctx, func(ctx context.Context) error {
+		return NewAdminServer().Run(ctx)
+	})
 
 	for {
 		select {
@@ -194,6 +200,38 @@ func (r *Runner) checkBackup(ctx context.Context, app *docker.Application, state
 }
 
 // Helpers
+
+// superviseAdminServer runs the admin socket server, restarting it with bounded
+// backoff whenever it returns while ctx is still live. Without this a transient
+// failure (a stale socket, a listen race at boot) would silently kill the socket
+// while the daemon stays "active", leaving enable's precondition to wrongly
+// report the daemon down. Returns when ctx is cancelled.
+func superviseAdminServer(ctx context.Context, run func(context.Context) error) {
+	backoff := adminRestartMinBackoff
+	for {
+		start := time.Now()
+		err := run(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		// A server that stayed up well past the cap was healthy, not boot-looping;
+		// reset so an isolated later failure self-heals fast instead of inheriting
+		// the backoff from old, unrelated failures.
+		if time.Since(start) > adminRestartMaxBackoff {
+			backoff = adminRestartMinBackoff
+		}
+		slog.Error("Admin socket server stopped; restarting", "error", err, "backoff", backoff)
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, adminRestartMaxBackoff)
+	}
+}
 
 // wakeInterval returns interval shortened to the soonest future expiry, clamped
 // to zero so a past expiry wakes the daemon immediately.

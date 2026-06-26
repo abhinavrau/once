@@ -36,7 +36,7 @@ func TestEnableTailscaleFailsFastWithoutDaemon(t *testing.T) {
 	err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "background daemon running")
+	assert.Contains(t, err.Error(), "once-admin socket")
 }
 
 func TestApplicationLookup(t *testing.T) {

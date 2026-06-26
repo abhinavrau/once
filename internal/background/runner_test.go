@@ -2,10 +2,13 @@ package background
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRunnerShutdown(t *testing.T) {
@@ -16,6 +19,59 @@ func TestRunnerShutdown(t *testing.T) {
 
 	err := runner.Run(ctx)
 	assert.NoError(t, err)
+}
+
+func TestSuperviseAdminServerRestartsAfterFailure(t *testing.T) {
+	var calls atomic.Int32
+	serving := make(chan struct{})
+	run := func(ctx context.Context) error {
+		if calls.Add(1) == 1 {
+			return errors.New("listen race at boot")
+		}
+		close(serving) // second attempt succeeds and publishes the socket
+		<-ctx.Done()
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { superviseAdminServer(ctx, run); close(done) }()
+
+	select {
+	case <-serving:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server was not restarted after its first failure")
+	}
+	assert.GreaterOrEqual(t, calls.Load(), int32(2))
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not stop on context cancel")
+	}
+}
+
+func TestSuperviseAdminServerStopsWithoutRestartOnCancel(t *testing.T) {
+	var calls atomic.Int32
+	run := func(ctx context.Context) error {
+		calls.Add(1)
+		<-ctx.Done()
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { superviseAdminServer(ctx, run); close(done) }()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not stop on context cancel")
+	}
+	require.Equal(t, int32(1), calls.Load())
 }
 
 func TestCheckInterval(t *testing.T) {

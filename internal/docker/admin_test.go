@@ -36,7 +36,8 @@ func TestRequireDaemonErrorsWhenSocketAbsent(t *testing.T) {
 	err := NewAdmin(nil).RequireDaemon()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "background daemon running")
+	assert.Contains(t, err.Error(), AdminSocketPath())
+	assert.Contains(t, err.Error(), "Admin socket server")
 }
 
 func TestRequireDaemonSucceedsWhenSocketAndConfigPresent(t *testing.T) {

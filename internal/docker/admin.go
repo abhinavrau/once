@@ -48,10 +48,10 @@ func NewAdmin(ns *Namespace) *Admin {
 // so the enable lifecycle can fail fast before booting anything else.
 func (a *Admin) RequireDaemon() error {
 	if !isSocket(AdminSocketPath()) {
-		return fmt.Errorf("once-admin socket %s not found; is the background daemon running?", AdminSocketPath())
+		return fmt.Errorf("once-admin socket %s not found; start the background daemon, or if it is running check its logs for an \"Admin socket server\" error", AdminSocketPath())
 	}
 	if _, err := os.Stat(AdminNginxConfPath()); err != nil {
-		return fmt.Errorf("once-admin nginx config %s not found; is the background daemon running?", AdminNginxConfPath())
+		return fmt.Errorf("once-admin nginx config %s not found; start the background daemon, or if it is running check its logs for an \"Admin socket server\" error", AdminNginxConfPath())
 	}
 	return nil
 }
