@@ -2,10 +2,23 @@ package docker
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFunnelExpired(t *testing.T) {
+	now := time.Now()
+
+	assert.False(t, ApplicationSettings{}.FunnelExpired(now))
+
+	future := now.Add(time.Minute)
+	assert.False(t, ApplicationSettings{FunnelExpiresAt: &future}.FunnelExpired(now))
+
+	past := now.Add(-time.Minute)
+	assert.True(t, ApplicationSettings{FunnelExpiresAt: &past}.FunnelExpired(now))
+}
 
 func TestBuildEnvWithSMTP(t *testing.T) {
 	settings := ApplicationSettings{
@@ -96,6 +109,38 @@ func TestBackupSettingsEqualDiffers(t *testing.T) {
 
 	noBackup := ApplicationSettings{Name: "app"}
 	assert.False(t, base.Equal(noBackup))
+}
+
+func TestTailscaleExposedDefaultsToExposed(t *testing.T) {
+	// Zero value (and apps deployed before this field existed) stay exposed,
+	// preserving the prior all-or-nothing behavior.
+	assert.True(t, ApplicationSettings{Name: "app"}.TailscaleExposed())
+
+	restored, err := UnmarshalApplicationSettings(`{"name":"app"}`)
+	require.NoError(t, err)
+	assert.True(t, restored.TailscaleExposed())
+
+	excluded := ApplicationSettings{Name: "app", TailscaleExcluded: true}
+	assert.False(t, excluded.TailscaleExposed())
+	roundTripped, err := UnmarshalApplicationSettings(excluded.Marshal())
+	require.NoError(t, err)
+	assert.False(t, roundTripped.TailscaleExposed())
+}
+
+func TestTailscaleExcludedEqualDiffers(t *testing.T) {
+	base := ApplicationSettings{Name: "app"}
+	assert.False(t, base.Equal(ApplicationSettings{Name: "app", TailscaleExcluded: true}))
+}
+
+func TestFunnelExpiresAtEqualDiffers(t *testing.T) {
+	t1 := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Hour)
+
+	base := ApplicationSettings{Name: "app", FunnelExpiresAt: &t1}
+	assert.True(t, base.Equal(ApplicationSettings{Name: "app", FunnelExpiresAt: &t1}))
+	assert.False(t, base.Equal(ApplicationSettings{Name: "app", FunnelExpiresAt: &t2}))
+	assert.False(t, base.Equal(ApplicationSettings{Name: "app"}))
+	assert.True(t, ApplicationSettings{Name: "app"}.Equal(ApplicationSettings{Name: "app"}))
 }
 
 func TestBuildEnvWithVAPIDKeys(t *testing.T) {

@@ -14,6 +14,14 @@ import (
 
 const CheckInterval = 5 * time.Minute
 
+// Bounds for restarting the admin socket server after it dies. A transient boot
+// failure self-heals quickly; persistent failures back off so the daemon never
+// busy-loops.
+const (
+	adminRestartMinBackoff = 250 * time.Millisecond
+	adminRestartMaxBackoff = 30 * time.Second
+)
+
 type Runner struct {
 	namespace string
 }
@@ -30,15 +38,25 @@ func (r *Runner) Run(ctx context.Context) error {
 	scraper := userstats.NewScraper(r.namespace)
 	go scraper.Run(ctx)
 
-	ticker := time.NewTicker(CheckInterval)
-	defer ticker.Stop()
+	go superviseAdminServer(ctx, func(ctx context.Context) error {
+		return NewAdminServer().Run(ctx)
+	})
 
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("Shutting down")
 			return nil
-		case <-ticker.C:
+		default:
+		}
+
+		timer := time.NewTimer(r.nextWake(ctx))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			slog.Info("Shutting down")
+			return nil
+		case <-timer.C:
 			if updated, err := r.check(ctx); err != nil {
 				slog.Error("Check failed", "error", err)
 			} else if updated {
@@ -72,9 +90,46 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 
 		r.checkUpdate(ctx, app, state)
 		r.checkBackup(ctx, app, state)
+		r.checkFunnelExpiry(ctx, app)
 	}
 
 	return false, nil
+}
+
+// nextWake returns how long to sleep before the next check: the regular
+// interval, shortened to the soonest pending Funnel expiry so a forgotten
+// Funnel closes on time. Falls back to the regular interval if state can't be
+// loaded — the next tick will retry. An already-passed expiry yields a zero
+// wait, so a Funnel that expired while the daemon was down is torn down on the
+// next check.
+func (r *Runner) nextWake(ctx context.Context) time.Duration {
+	ns, err := docker.RestoreNamespace(ctx, r.namespace)
+	if err != nil {
+		return CheckInterval
+	}
+
+	var expiries []time.Time
+	for _, app := range ns.Applications() {
+		if app.Running && app.Settings.FunnelExpiresAt != nil {
+			expiries = append(expiries, *app.Settings.FunnelExpiresAt)
+		}
+	}
+
+	return wakeInterval(time.Now(), expiries, CheckInterval)
+}
+
+func (r *Runner) checkFunnelExpiry(ctx context.Context, app *docker.Application) {
+	if !app.Settings.FunnelExpired(time.Now()) {
+		return
+	}
+
+	slog.Info("Closing expired funnel", "app", app.Settings.Name)
+
+	if err := app.DisableFunnel(ctx); err != nil {
+		slog.Error("Funnel teardown failed", "app", app.Settings.Name, "error", err)
+	} else {
+		slog.Info("Funnel closed", "app", app.Settings.Name)
+	}
 }
 
 func (r *Runner) checkSelfUpdate(ctx context.Context, ns *docker.Namespace, state *docker.State) bool {
@@ -142,4 +197,50 @@ func (r *Runner) checkBackup(ctx context.Context, app *docker.Application, state
 	if err := app.TrimBackups(); err != nil {
 		slog.Error("Backup trim failed", "app", app.Settings.Name, "error", err)
 	}
+}
+
+// Helpers
+
+// superviseAdminServer runs the admin socket server, restarting it with bounded
+// backoff whenever it returns while ctx is still live. Without this a transient
+// failure (a stale socket, a listen race at boot) would silently kill the socket
+// while the daemon stays "active", leaving enable's precondition to wrongly
+// report the daemon down. Returns when ctx is cancelled.
+func superviseAdminServer(ctx context.Context, run func(context.Context) error) {
+	backoff := adminRestartMinBackoff
+	for {
+		start := time.Now()
+		err := run(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		// A server that stayed up well past the cap was healthy, not boot-looping;
+		// reset so an isolated later failure self-heals fast instead of inheriting
+		// the backoff from old, unrelated failures.
+		if time.Since(start) > adminRestartMaxBackoff {
+			backoff = adminRestartMinBackoff
+		}
+		slog.Error("Admin socket server stopped; restarting", "error", err, "backoff", backoff)
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, adminRestartMaxBackoff)
+	}
+}
+
+// wakeInterval returns interval shortened to the soonest future expiry, clamped
+// to zero so a past expiry wakes the daemon immediately.
+func wakeInterval(now time.Time, expiries []time.Time, interval time.Duration) time.Duration {
+	wake := interval
+	for _, e := range expiries {
+		if d := e.Sub(now); d < wake {
+			wake = d
+		}
+	}
+	return max(wake, 0)
 }

@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Funnel toggle: `FunnelExpiresAt` setting + label generation + `once tailscale funnel enable/disable`
 

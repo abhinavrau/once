@@ -397,7 +397,7 @@ func TestRestore(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the restored app gets a fresh unique name based on the image
-	assert.True(t, strings.HasPrefix(restoredApp.Settings.Name, "once-campfire."), "restored name should start with image base name")
+	assert.True(t, strings.HasPrefix(restoredApp.Settings.Name, "once-campfire-"), "restored name should start with image base name")
 	assert.NotEqual(t, "restoreapp", restoredApp.Settings.Name)
 	assert.Equal(t, imageName, restoredApp.Settings.Image)
 	assert.Equal(t, "restore.localhost", restoredApp.Settings.Host)

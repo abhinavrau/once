@@ -92,6 +92,12 @@ func NewSettings(ns *docker.Namespace, app *docker.Application, sectionType Sett
 		section = NewSettingsFormUpdates(app, appState.LastUpdateResult())
 	case SettingsSectionBackups:
 		section = NewSettingsFormBackups(app, appState.LastBackupResult())
+	case SettingsSectionTailscale:
+		tailscaleEnabled, _ := ns.Tailscale().Enabled(context.Background())
+		section = NewSettingsFormTailscale(app.Settings, tailscaleEnabled)
+	case SettingsSectionFunnel:
+		tailscaleEnabled, _ := ns.Tailscale().Enabled(context.Background())
+		section = NewSettingsFormFunnel(app, ns.Tailscale(), ns.Name(), tailscaleEnabled)
 	}
 
 	h := NewHelp()

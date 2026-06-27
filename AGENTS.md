@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Use `gh-axi` for GitHub and `chrome-devtools-axi` for browser automation.
+
 ## Project Overview
 
 Once is a CLI/TUI tool for installing and managing web applications from Docker
@@ -20,7 +22,7 @@ route traffic to the correct application container.
 
 All containers are namespaced (default namespace: "once"):
 - Proxy: `{namespace}-proxy`
-- Apps: `{namespace}-app-{appName}-{shortID}`
+- Apps: `{namespace}-app-{appName}-{randomID}` (`randomID` is a random suffix, not a truncated container ID)
 
 This allows us to easily identify the app containers, but still allows us to
 boot a second app container without naming collisions when we want to deploy a
@@ -61,6 +63,23 @@ Run a single test:
 go test -v -run TestName ./internal/...
 ```
 
+## Testing notes
+
+- The integration suite runs under a 10-minute total `go test` timeout. A single
+  hung test consumes the whole budget and the suite reports as a timeout panic,
+  masking the real culprit. When this happens, read the goroutine dump for the
+  goroutine stuck in the test body (e.g. `appDriver.waitUntil`), not the alarm or
+  the background `scraper.go` stats-stream goroutines that always appear.
+- TUI forms are integration-tested in `integration/ui_test.go` by driving fields
+  in tab order. Adding, removing, or reordering a form field silently breaks those
+  drivers: a form that rejects submit (e.g. a new required field left empty) stays
+  open, so the test hangs in `waitUntil` until timeout rather than failing fast.
+  When you change a form's fields, update its integration driver in the same change.
+- Tailscale SaaS paths (the OAuth probe against `api.tailscale.com`) can't run in
+  CI — the integration harness only exercises the headscale control seam, which
+  skips OAuth. Cover SaaS-only logic with httptest unit tests, and keep any request
+  that must match tsdproxy's real API call byte-compatible with it.
+
 ## Coding Style
 
 - Always follow idiomatic Go style
@@ -74,20 +93,17 @@ go test -v -run TestName ./internal/...
 - Regularly check your work with the linter and LSP to ensure it follows conventions, and run tests as needed to ensure they pass.
 - Consider opportunities to refactor large methods into smaller pieces, and spot opportunities where it's worth extracting functionality into a new type. But do not go overboard with this.
 
-## Agent behaviour
-
-- Don't make commits, or push changes to remotes. I will take care of this myself.
 
 ## Agent skills
 
 ### Issue tracker
 
-Local markdown file-based issue tracker. See [issue-tracker.md](file:///Users/arau/code/playground/once/docs/agents/issue-tracker.md).
+Local markdown file-based issue tracker. See [issue-tracker.md](docs/agents/issue-tracker.md).
 
 ### Triage labels
 
-State roles mapped to issue metadata labels. See [triage-labels.md](file:///Users/arau/code/playground/once/docs/agents/triage-labels.md).
+State roles mapped to issue metadata labels. See [triage-labels.md](docs/agents/triage-labels.md).
 
 ### Domain docs
 
-Single-context repository layout. See [domain.md](file:///Users/arau/code/playground/once/docs/agents/domain.md).
+Single-context repository layout. See [domain.md](docs/agents/domain.md).

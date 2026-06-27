@@ -20,23 +20,25 @@ import (
 var dashboardShowDetails = true
 
 var dashboardKeys = struct {
-	Up       key.Binding
-	Down     key.Binding
-	Settings key.Binding
-	Actions  key.Binding
-	NewApp   key.Binding
-	Logs     key.Binding
-	Details  key.Binding
-	Quit     key.Binding
+	Up        key.Binding
+	Down      key.Binding
+	Settings  key.Binding
+	Actions   key.Binding
+	NewApp    key.Binding
+	Logs      key.Binding
+	Details   key.Binding
+	Tailscale key.Binding
+	Quit      key.Binding
 }{
-	Up:       WithHelp(NewKeyBinding("up", "k"), "↑/k", "up"),
-	Down:     WithHelp(NewKeyBinding("down", "j"), "↓/j", "down"),
-	Settings: WithHelp(NewKeyBinding("s"), "s", "settings"),
-	Actions:  WithHelp(NewKeyBinding("a"), "a", "actions"),
-	NewApp:   WithHelp(NewKeyBinding("n"), "n", "new app"),
-	Logs:     WithHelp(NewKeyBinding("g"), "g", "logs"),
-	Details:  WithHelp(NewKeyBinding("d"), "d", "toggle details"),
-	Quit:     WithHelp(NewKeyBinding("esc"), "esc", "quit"),
+	Up:        WithHelp(NewKeyBinding("up", "k"), "↑/k", "up"),
+	Down:      WithHelp(NewKeyBinding("down", "j"), "↓/j", "down"),
+	Settings:  WithHelp(NewKeyBinding("s"), "s", "settings"),
+	Actions:   WithHelp(NewKeyBinding("a"), "a", "actions"),
+	NewApp:    WithHelp(NewKeyBinding("n"), "n", "new app"),
+	Logs:      WithHelp(NewKeyBinding("g"), "g", "logs"),
+	Details:   WithHelp(NewKeyBinding("d"), "d", "toggle details"),
+	Tailscale: WithHelp(NewKeyBinding("t", "T"), "t", "tailscale"),
+	Quit:      WithHelp(NewKeyBinding("esc"), "esc", "quit"),
 }
 
 type Dashboard struct {
@@ -57,9 +59,21 @@ type Dashboard struct {
 	progress      Progress
 	help          Help
 	overlay       Component
+
+	tailscaleEnabled bool
+	tailnetURLs      map[string]string // app name -> tailnet URL, from the lookup API
+	tailnetSuffix    string            // tailnet MagicDNS suffix, for apps not yet in the lookup
 }
 
 type dashboardTickMsg struct{}
+
+type tailscaleInfoMsg struct {
+	enabled bool
+	urls    map[string]string
+	suffix  string
+}
+
+type tailscaleRefreshMsg struct{}
 
 type startStopFinishedMsg struct {
 	err error
@@ -94,7 +108,7 @@ func NewDashboard(ns *docker.Namespace, apps []*docker.Application, selectedInde
 }
 
 func (m Dashboard) Init() tea.Cmd {
-	return m.scheduleNextDashboardTick()
+	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
 }
 
 func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
@@ -162,6 +176,12 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if key.Matches(msg, dashboardKeys.Logs) && len(m.apps) > 0 {
 			return m, func() tea.Msg { return NavigateToLogsMsg{App: m.apps[m.selectedIndex]} }
 		}
+		if key.Matches(msg, dashboardKeys.Tailscale) {
+			m.overlay = NewTailscaleForm(m.namespace)
+			var cmd tea.Cmd
+			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			return m, tea.Batch(m.overlay.Init(), cmd)
+		}
 		if key.Matches(msg, dashboardKeys.Details) && len(m.apps) > 0 {
 			dashboardShowDetails = !dashboardShowDetails
 			m.updateViewportSize()
@@ -170,6 +190,9 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case SettingsMenuCloseMsg:
+		m.overlay = nil
+
+	case TailscaleFormCloseMsg:
 		m.overlay = nil
 
 	case SettingsMenuSelectMsg:
@@ -208,6 +231,15 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case dashboardTickMsg:
 		m.rebuildViewportContent()
 		cmds = append(cmds, m.scheduleNextDashboardTick())
+
+	case tailscaleInfoMsg:
+		m.tailscaleEnabled = msg.enabled
+		m.tailnetURLs = msg.urls
+		m.tailnetSuffix = msg.suffix
+		m.rebuildViewportContent()
+
+	case tailscaleRefreshMsg:
+		cmds = append(cmds, m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
 
 	case ProgressTickMsg:
 		if m.toggling {
@@ -284,10 +316,10 @@ func (m Dashboard) helpBindings() []key.Binding {
 	if len(m.apps) > 0 {
 		return []key.Binding{
 			dashboardKeys.Up, dashboardKeys.Down, dashboardKeys.Actions,
-			dashboardKeys.Settings, dashboardKeys.Logs, dashboardKeys.Details, dashboardKeys.NewApp, dashboardKeys.Quit,
+			dashboardKeys.Settings, dashboardKeys.Logs, dashboardKeys.Details, dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Quit,
 		}
 	}
-	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Quit}
+	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Quit}
 }
 
 func (m Dashboard) runStartStop(app *docker.Application) tea.Cmd {
@@ -304,6 +336,32 @@ func (m Dashboard) runStartStop(app *docker.Application) tea.Cmd {
 
 func (m Dashboard) scheduleNextDashboardTick() tea.Cmd {
 	return tea.Every(time.Second, func(time.Time) tea.Msg { return dashboardTickMsg{} })
+}
+
+func (m Dashboard) scheduleTailscaleRefresh() tea.Cmd {
+	return tea.Every(5*time.Second, func(time.Time) tea.Msg { return tailscaleRefreshMsg{} })
+}
+
+// fetchTailscaleInfo asynchronously reads the global enabled state and the
+// per-app tailnet URLs from the lookup API so the details card can stay current
+// without blocking the UI. Failures degrade to "not enabled".
+func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
+	ns := m.namespace
+	return func() tea.Msg {
+		ctx := context.Background()
+		enabled, err := ns.Tailscale().Enabled(ctx)
+		if err != nil || !enabled {
+			return tailscaleInfoMsg{enabled: false}
+		}
+		urls := map[string]string{}
+		if proxies, err := ns.Tailscale().Proxies(ctx); err == nil {
+			for _, p := range proxies {
+				urls[p.Name] = p.URL
+			}
+		}
+		suffix, _ := ns.Tailscale().DomainSuffix(ctx)
+		return tailscaleInfoMsg{enabled: true, urls: urls, suffix: suffix}
+	}
 }
 
 func (m *Dashboard) selectPanel(index int) {
@@ -332,6 +390,15 @@ func (m *Dashboard) rebuildViewportContent() {
 	scales := m.computeScales()
 	var views []string
 	for i := range m.panels {
+		m.panels[i].tailscaleEnabled = m.tailscaleEnabled
+		app := m.panels[i].app.Settings
+		url := m.tailnetURLs[app.Name]
+		// Fall back to the suffix-built URL for an exposed app whose node hasn't
+		// reported to the lookup API yet, so we can show where it will live.
+		if url == "" && app.TailscaleExposed() {
+			url = (docker.TailscaleSettings{DomainSuffix: m.tailnetSuffix}).TailnetURL(app.Name)
+		}
+		m.panels[i].tailnetURL = url
 		toggling := m.toggling && m.togglingApp == m.panels[i].app.Settings.Name
 		views = append(views, m.panels[i].View(i == m.selectedIndex, toggling, dashboardShowDetails, m.width, scales))
 	}

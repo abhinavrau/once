@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # `once teardown` full cleanup of Tailscale system containers + data volume
 

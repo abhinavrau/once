@@ -10,35 +10,40 @@ import (
 type InstallHostnameBackMsg struct{}
 
 type InstallHostnameForm struct {
-	form     Form
-	imageRef string
-	title    string
+	form        Form
+	imageRef    string
+	title       string
+	exposeField int // index of the Tailscale exposure checkbox, -1 when absent
 }
 
-func NewInstallHostnameForm(imageRef, title string) InstallHostnameForm {
+func NewInstallHostnameForm(imageRef, title string, tailscaleEnabled bool) InstallHostnameForm {
 	hostnameField := NewTextField("app.example.com")
 	appName := docker.NameFromImageRef(imageRef)
 	if appName != "" {
 		hostnameField.SetPlaceholder(appName + ".example.com")
 	}
 
+	items := []FormItem{{Label: "Hostname", Field: hostnameField, Required: true}}
+	exposeField := -1
+	if tailscaleEnabled {
+		exposeField = len(items)
+		items = append(items, FormItem{Label: "Tailscale", Field: NewCheckboxField("Expose on the tailnet", true)})
+	}
+
 	m := InstallHostnameForm{
-		form: NewForm("Install",
-			FormItem{
-				Label:    "Hostname",
-				Field:    hostnameField,
-				Required: true,
-			},
-		),
-		imageRef: imageRef,
-		title:    title,
+		form:        NewForm("Install", items...),
+		imageRef:    imageRef,
+		title:       title,
+		exposeField: exposeField,
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
+		excluded := exposeField >= 0 && !f.CheckboxField(exposeField).Checked()
 		return func() tea.Msg {
 			return InstallFormSubmitMsg{
-				ImageRef: imageRef,
-				Hostname: f.TextField(0).Value(),
+				ImageRef:          imageRef,
+				Hostname:          f.TextField(0).Value(),
+				TailscaleExcluded: excluded,
 			}
 		}
 	})

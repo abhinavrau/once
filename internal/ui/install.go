@@ -15,11 +15,13 @@ import (
 )
 
 var installKeys = struct {
-	Help key.Binding
-	Back key.Binding
+	Help      key.Binding
+	Tailscale key.Binding
+	Back      key.Binding
 }{
-	Help: WithHelp(NewKeyBinding("f1"), "F1", "help"),
-	Back: WithHelp(NewKeyBinding("esc"), "esc", "back"),
+	Help:      WithHelp(NewKeyBinding("f1"), "F1", "help"),
+	Tailscale: WithHelp(NewKeyBinding("t", "T"), "t", "tailscale"),
+	Back:      WithHelp(NewKeyBinding("esc"), "esc", "back"),
 }
 
 type installState int
@@ -32,37 +34,43 @@ const (
 )
 
 type InstallFormSubmitMsg struct {
-	ImageRef string
-	Hostname string
+	ImageRef          string
+	Hostname          string
+	TailscaleExcluded bool
 }
 
 type Install struct {
-	namespace     *docker.Namespace
-	width, height int
-	help          Help
-	state         installState
-	appList       InstallAppList
-	imageForm     InstallImageForm
-	hostnameForm  InstallHostnameForm
-	activity      *InstallActivity
-	popupHelp     *PopupHelp
-	starfield     *Starfield
-	logo          *Logo
-	err           error
-	cliMode       bool
-	customImage   bool
-	installFlag   string
+	namespace        *docker.Namespace
+	width, height    int
+	help             Help
+	state            installState
+	appList          InstallAppList
+	imageForm        InstallImageForm
+	hostnameForm     InstallHostnameForm
+	activity         *InstallActivity
+	popupHelp        *PopupHelp
+	overlay          Component
+	starfield        *Starfield
+	logo             *Logo
+	err              error
+	cliMode          bool
+	customImage      bool
+	installFlag      string
+	tailscaleEnabled bool
 }
 
 func NewInstall(ns *docker.Namespace, imageRef string) Install {
 	h := NewHelp()
 	h.SetBindings([]key.Binding{installKeys.Back})
 
+	tailscaleEnabled, _ := ns.Tailscale().Enabled(context.Background())
+
 	m := Install{
-		namespace:   ns,
-		help:        h,
-		cliMode:     imageRef != "",
-		installFlag: imageRef,
+		namespace:        ns,
+		help:             h,
+		cliMode:          imageRef != "",
+		installFlag:      imageRef,
+		tailscaleEnabled: tailscaleEnabled,
 	}
 
 	if imageRef != "" {
@@ -70,7 +78,7 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 			imageRef = expanded
 		}
 		m.state = installStateHostname
-		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag)
+		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag, m.tailscaleEnabled)
 	} else {
 		m.state = installStateAppList
 		m.appList = NewInstallAppList()
@@ -104,6 +112,20 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 			m.popupHelp = &ph
 			return m, cmd
 		}
+	}
+
+	if m.overlay != nil {
+		if _, ok := msg.(TailscaleFormCloseMsg); ok {
+			m.overlay = nil
+			return m, nil
+		}
+		var overlayCmd tea.Cmd
+		m.overlay, overlayCmd = m.overlay.Update(msg)
+		if ws, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = ws.Width, ws.Height
+			return m, tea.Batch(overlayCmd, m.updateCurrentScreen(ws))
+		}
+		return m, overlayCmd
 	}
 
 	m.updateHelpBindings()
@@ -160,13 +182,19 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 					return m, nil
 				}
 			}
+			if m.state == installStateAppList && key.Matches(msg, installKeys.Tailscale) {
+				m.overlay = NewTailscaleForm(m.namespace)
+				var cmd tea.Cmd
+				m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+				return m, tea.Batch(m.overlay.Init(), cmd)
+			}
 			if key.Matches(msg, installKeys.Back) {
 				return m.handleBack()
 			}
 		}
 
 	case InstallAppSelectedMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "")
+		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled)
 		m.customImage = false
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -177,7 +205,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, m.initScreenWithSize()
 
 	case InstallImageSubmitMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "")
+		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled)
 		m.customImage = true
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -203,7 +231,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, nil
 		}
 		m.state = installStateActivity
-		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, msg.Hostname)
+		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, msg.Hostname, msg.TailscaleExcluded)
 		m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return m, m.activity.Init()
 
@@ -263,6 +291,9 @@ func (m Install) View() string {
 		result = lipgloss.JoinVertical(lipgloss.Left, titleLine, "", middle, helpLine)
 	}
 
+	if m.overlay != nil {
+		return OverlayCenter(result, m.overlay.View(), m.width, m.height)
+	}
 	if m.popupHelp != nil {
 		return OverlayCenter(result, m.popupHelp.View(), m.width, m.height)
 	}
@@ -465,11 +496,15 @@ func (m Install) writeOverlayRow(sb *strings.Builder, row, left, width int, line
 }
 
 func (m *Install) updateHelpBindings() {
+	var bindings []key.Binding
 	if _, content := m.helpForState(); content != "" {
-		m.help.SetBindings([]key.Binding{installKeys.Help, installKeys.Back})
-	} else {
-		m.help.SetBindings([]key.Binding{installKeys.Back})
+		bindings = append(bindings, installKeys.Help)
 	}
+	if m.state == installStateAppList {
+		bindings = append(bindings, installKeys.Tailscale)
+	}
+	bindings = append(bindings, installKeys.Back)
+	m.help.SetBindings(bindings)
 }
 
 func (m Install) helpForState() (string, string) {

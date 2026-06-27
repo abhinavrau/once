@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Unix-socket admin daemon listener + `once-admin` nginx container
 

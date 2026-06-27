@@ -27,11 +27,15 @@ const (
 	trafficErrorPct   = 5
 )
 
+const tailnetRowCount = 3
+
 type DashboardPanel struct {
-	app           docker.Application
-	scraper       *metrics.MetricsScraper
-	dockerScraper *docker.Scraper
-	userStats     *userstats.Reader
+	app              docker.Application
+	scraper          *metrics.MetricsScraper
+	dockerScraper    *docker.Scraper
+	userStats        *userstats.Reader
+	tailscaleEnabled bool
+	tailnetURL       string
 }
 
 func NewDashboardPanel(app *docker.Application, scraper *metrics.MetricsScraper, dockerScraper *docker.Scraper, userStats *userstats.Reader) DashboardPanel {
@@ -81,11 +85,17 @@ func (p DashboardPanel) View(selected bool, toggling bool, showDetails bool, wid
 		lines = append(lines, cardViews)
 	}
 
+	if detailed && p.showsTailnet() {
+		lines = append(lines, p.renderTailnetRows())
+	}
+
 	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
 
 	height := PanelHeight
 	if !detailed {
 		height = StoppedPanelHeight
+	} else if p.showsTailnet() {
+		height += tailnetRowCount
 	}
 
 	bodyStyle := lipgloss.NewStyle().
@@ -109,14 +119,42 @@ func (p DashboardPanel) View(selected bool, toggling bool, showDetails bool, wid
 }
 
 func (p DashboardPanel) Height(showDetails bool) int {
-	bodyHeight := PanelHeight
-	if !showDetails || !p.app.Running {
-		bodyHeight = StoppedPanelHeight
+	bodyHeight := StoppedPanelHeight
+	if showDetails && p.app.Running {
+		bodyHeight = PanelHeight
+		if p.showsTailnet() {
+			bodyHeight += tailnetRowCount
+		}
 	}
 	return bodyHeight + 2 // top + bottom transition lines
 }
 
 // Private
+
+// showsTailnet reports whether the app currently has a tailnet presence to
+// surface: Tailscale is enabled globally and the app isn't excluded.
+func (p DashboardPanel) showsTailnet() bool {
+	return p.tailscaleEnabled && p.app.Settings.TailscaleExposed()
+}
+
+func (p DashboardPanel) renderTailnetRows() string {
+	labelStyle := lipgloss.NewStyle().Foreground(Colors.Muted).Width(18)
+
+	row := func(label, value string) string {
+		return labelStyle.Render(label) + value
+	}
+
+	tailnet := p.tailnetURL
+	if tailnet == "" {
+		tailnet = "registering…"
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		row("Public/Local URL", p.app.URL()),
+		row("Tailnet URL", tailnet),
+		row("Funnel Status", funnelStatusText(p.app.Settings.FunnelExpiresAt, time.Now())),
+	)
+}
 
 func (p DashboardPanel) renderHealthBadge(cards [3]MetricCard) string {
 	if !p.app.Running {
@@ -360,6 +398,13 @@ func lastValue(data []float64) float64 {
 		return 0
 	}
 	return data[len(data)-1]
+}
+
+func funnelStatusText(expiresAt *time.Time, now time.Time) string {
+	if expiresAt == nil || !expiresAt.After(now) {
+		return "Inactive"
+	}
+	return fmt.Sprintf("Active (Expires in %s)", formatDuration(expiresAt.Sub(now)))
 }
 
 func formatDuration(d time.Duration) string {
