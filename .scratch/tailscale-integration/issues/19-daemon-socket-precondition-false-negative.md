@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Tailscale enable reports the daemon down when it is actually running
 

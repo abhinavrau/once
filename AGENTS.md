@@ -98,12 +98,12 @@ go test -v -run TestName ./internal/...
 
 ### Issue tracker
 
-Local markdown file-based issue tracker. See [issue-tracker.md](file:///Users/arau/code/playground/once/docs/agents/issue-tracker.md).
+Local markdown file-based issue tracker. See [issue-tracker.md](docs/agents/issue-tracker.md).
 
 ### Triage labels
 
-State roles mapped to issue metadata labels. See [triage-labels.md](file:///Users/arau/code/playground/once/docs/agents/triage-labels.md).
+State roles mapped to issue metadata labels. See [triage-labels.md](docs/agents/triage-labels.md).
 
 ### Domain docs
 
-Single-context repository layout. See [domain.md](file:///Users/arau/code/playground/once/docs/agents/domain.md).
+Single-context repository layout. See [domain.md](docs/agents/domain.md).
