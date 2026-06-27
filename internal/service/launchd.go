@@ -29,7 +29,7 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 		<string>--namespace</string>
 		<string>%s</string>
 	</array>
-	<key>RunAtLoad</key>
+%s	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
@@ -54,7 +54,7 @@ func (l *Launchd) Install(ctx context.Context, name, execPath, namespace string)
 	label := l.label(name)
 	path := l.plistPath(name)
 
-	plistContent := fmt.Sprintf(plistTemplate, label, execPath, namespace)
+	plistContent := renderPlist(label, execPath, namespace, os.Getenv("ONCE_NO_SELF_UPDATE"))
 
 	if err := os.WriteFile(path, []byte(plistContent), 0o644); err != nil {
 		return fmt.Errorf("writing plist file: %w", err)
@@ -101,4 +101,18 @@ func (l *Launchd) launchctl(ctx context.Context, args ...string) error {
 
 func (l *Launchd) plistPath(name string) string {
 	return filepath.Join(launchdDir, l.label(name)+".plist")
+}
+
+// Helpers
+
+// renderPlist builds the launchd plist. When noSelfUpdate is set, it injects an
+// EnvironmentVariables dict carrying ONCE_NO_SELF_UPDATE so the daemon's
+// self-update stays disabled across reinstalls (the plist is rewritten on every
+// `background install`). Absent the var, the block is omitted.
+func renderPlist(label, execPath, namespace, noSelfUpdate string) string {
+	var env string
+	if noSelfUpdate != "" {
+		env = fmt.Sprintf("\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>ONCE_NO_SELF_UPDATE</key>\n\t\t<string>%s</string>\n\t</dict>\n", noSelfUpdate)
+	}
+	return fmt.Sprintf(plistTemplate, label, execPath, namespace, env)
 }

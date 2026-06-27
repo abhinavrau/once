@@ -19,7 +19,7 @@ After=network.target docker.service
 [Service]
 Type=simple
 ExecStart=%s background run --namespace %s
-Restart=always
+%sRestart=always
 RestartSec=5
 
 [Install]
@@ -44,7 +44,7 @@ func (s *Systemd) Install(ctx context.Context, name, execPath, namespace string)
 		return fmt.Errorf("creating systemd directory: %w", err)
 	}
 
-	unitContent := fmt.Sprintf(unitTemplate, namespace, execPath, namespace)
+	unitContent := renderUnit(namespace, execPath, os.Getenv("ONCE_NO_SELF_UPDATE"))
 
 	if err := os.WriteFile(path, []byte(unitContent), 0o644); err != nil {
 		return fmt.Errorf("writing unit file: %w", err)
@@ -93,4 +93,19 @@ func (s *Systemd) systemctl(ctx context.Context, args ...string) error {
 
 func (s *Systemd) unitFilePath(name string) string {
 	return filepath.Join(systemdUnitDir, name+".service")
+}
+
+// Helpers
+
+// renderUnit builds the unit file. When noSelfUpdate is set, it bakes
+// ONCE_NO_SELF_UPDATE into the service environment so the daemon's self-update
+// stays disabled across reinstalls (a hand-edited unit would be overwritten on
+// the next `background install`). Absent the var, the line is omitted and
+// self-update behaves normally.
+func renderUnit(namespace, execPath, noSelfUpdate string) string {
+	var env string
+	if noSelfUpdate != "" {
+		env = fmt.Sprintf("Environment=ONCE_NO_SELF_UPDATE=%s\n", noSelfUpdate)
+	}
+	return fmt.Sprintf(unitTemplate, namespace, execPath, namespace, env)
 }
