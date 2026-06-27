@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -42,6 +43,26 @@ const (
 	funnelActivationTimeout = 15 * time.Second
 	funnelActivationPoll    = time.Second
 )
+
+// registrationVerify bounds the post-enable wait for the first tailnet node (at
+// minimum once-admin) to register. A logged rejection fails fast; otherwise we
+// stop waiting and let `once tailscale status` report progress — a healthy node
+// usually registers in seconds, but we never block enable on a slow tailnet.
+const (
+	registrationVerifyTimeout = 25 * time.Second
+	registrationVerifyPoll    = 2 * time.Second
+)
+
+// tsdproxyRegistrationFailures are substrings tsdproxy/tsnet logs when the
+// control plane rejects a node's registration — the tag-ownership case being the
+// one this exists to catch. ponytail: substring match on tsdproxy's own words;
+// extend the list if new rejection phrasings show up.
+var tsdproxyRegistrationFailures = []string{
+	"tags are invalid or not permitted",
+	"is invalid or not permitted",
+	"invalid authkey",
+	"authkey is invalid",
+}
 
 var (
 	ErrFunnelDurationInvalid = errors.New("funnel duration must be positive")
@@ -269,6 +290,66 @@ func (t *Tailscale) ProxyByName(ctx context.Context, name string) (TailnetProxy,
 		}
 	}
 	return TailnetProxy{}, false, nil
+}
+
+// VerifyRegistration waits briefly after enable for the first tailnet node to
+// register. The enable-time mint probe proves a key CAN be minted, but the
+// control plane enforces tag ownership (and credential validity) only at
+// registration — so this is where a tag missing from tagOwners, or a revoked
+// credential, actually surfaces. once-admin is always retrofitted on enable, so
+// at least one node attempts to register even with no user apps deployed.
+//
+// Only rejections logged after enable started count: re-running enable after
+// fixing the ACL keeps the same container (credentials unchanged), so its old
+// rejection lines must not fail the retry. Returns nil (inconclusive — proceed)
+// when nothing registers and nothing fresh is rejected before the timeout, so a
+// merely slow tailnet never fails enable.
+func (t *Tailscale) VerifyRegistration(ctx context.Context) error {
+	since := time.Now()
+	deadline := since.Add(registrationVerifyTimeout)
+	for {
+		proxies, err := t.Proxies(ctx)
+		if err == nil {
+			for _, p := range proxies {
+				if p.URL != "" {
+					return nil
+				}
+			}
+		}
+		if msg, _ := t.RegistrationError(ctx, since); msg != "" {
+			return fmt.Errorf("Tailscale node registration was rejected by the control plane: %s; the configured tag must be listed in your tailnet ACL tagOwners (Access Controls → tagOwners) — minting an auth key for a tag does not grant the right to register a node with it; fix the ACL (or the credential) and re-run `once tailscale enable`", msg)
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(registrationVerifyPoll):
+		}
+	}
+}
+
+// RegistrationError returns the most recent once-tsdproxy log line reporting a
+// node-registration rejection, or "" if none. It is the diagnostic behind an
+// empty node list, since the control plane rejects a bad tag or credential only
+// at registration. since bounds how far back to read (zero = the whole tail).
+func (t *Tailscale) RegistrationError(ctx context.Context, since time.Time) (string, error) {
+	opts := container.LogsOptions{ShowStdout: true, ShowStderr: true, Tail: "500"}
+	if !since.IsZero() {
+		opts.Since = since.Format(time.RFC3339)
+	}
+	reader, err := t.namespace.client.ContainerLogs(ctx, t.containerName(), opts)
+	if err != nil {
+		return "", fmt.Errorf("reading tsdproxy logs: %w", err)
+	}
+	defer reader.Close()
+
+	var out bytes.Buffer
+	if _, err := stdcopy.StdCopy(&out, &out, reader); err != nil {
+		return "", fmt.Errorf("reading tsdproxy logs: %w", err)
+	}
+	return scanRegistrationError(out.String()), nil
 }
 
 // DomainSuffix returns the tailnet's MagicDNS suffix (e.g. tailnet-name.ts.net).
@@ -518,6 +599,22 @@ func tsdproxyLabels(appName string, enabled, funnel bool) map[string]string {
 		"tsdproxy.port.1":    port,
 		"tsdproxy.ephemeral": "true",
 	}
+}
+
+// scanRegistrationError returns the most recent tsdproxy log line matching a
+// known registration-rejection signature, or "" when none match.
+func scanRegistrationError(logs string) string {
+	var last string
+	for _, line := range strings.Split(logs, "\n") {
+		lower := strings.ToLower(line)
+		for _, sig := range tsdproxyRegistrationFailures {
+			if strings.Contains(lower, sig) {
+				last = strings.TrimSpace(line)
+				break
+			}
+		}
+	}
+	return last
 }
 
 // domainSuffixFromURL derives the tailnet MagicDNS suffix from a node URL by

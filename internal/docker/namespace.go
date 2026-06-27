@@ -182,8 +182,9 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 }
 
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI: bring
-// up the network, boot once-tsdproxy with the given credentials, and boot
-// once-admin.
+// up the network, boot once-tsdproxy with the given credentials, boot once-admin,
+// then verify a node can actually register — the mint-time credential probe
+// cannot, since the control plane enforces tag ownership only at registration.
 func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) error {
 	if err := n.admin.RequireDaemon(); err != nil {
 		return err
@@ -201,7 +202,7 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	if err := n.admin.Boot(ctx); err != nil {
 		return fmt.Errorf("booting once-admin: %w", err)
 	}
-	return nil
+	return n.tailscale.VerifyRegistration(ctx)
 }
 
 // DisableTailscale is the full disable lifecycle shared by the CLI and TUI:

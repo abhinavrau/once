@@ -115,7 +115,14 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 		return fmt.Errorf("querying Tailscale status: %w", err)
 	}
 	if len(proxies) == 0 {
-		fmt.Println("No tailnet nodes registered")
+		if msg, err := ns.Tailscale().RegistrationError(ctx, time.Time{}); err == nil && msg != "" {
+			fmt.Println("No tailnet nodes registered.")
+			fmt.Printf("once-tsdproxy is rejecting node registration:\n  %s\n", msg)
+			fmt.Println("This is commonly a tag missing from your tailnet ACL tagOwners, or a revoked/expired credential. " +
+				"Fix it (Access Controls → tagOwners) and re-run `once tailscale enable`.")
+			return nil
+		}
+		fmt.Println("No tailnet nodes registered (the tailnet may still be spinning up, or no apps are deployed yet)")
 		return nil
 	}
 

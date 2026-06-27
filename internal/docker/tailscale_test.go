@@ -149,6 +149,24 @@ func TestFetchProxiesUnauthorized(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestScanRegistrationError(t *testing.T) {
+	logs := `2026-06-27 INF tsdproxy starting
+2026-06-27 INF watching docker labels
+2026-06-27 ERR register failed error="requested tags are invalid or not permitted: tag:once"
+2026-06-27 INF retrying`
+
+	// Returns tsdproxy's own rejection line so the user sees the real reason.
+	assert.Equal(t, `2026-06-27 ERR register failed error="requested tags are invalid or not permitted: tag:once"`,
+		scanRegistrationError(logs))
+
+	// Most recent matching line wins when registration is retried repeatedly.
+	repeated := logs + "\n2026-06-27 ERR register failed error=\"tags are invalid or not permitted: tag:two\""
+	assert.Contains(t, scanRegistrationError(repeated), "tag:two")
+
+	// Healthy logs yield no error to surface.
+	assert.Empty(t, scanRegistrationError("2026-06-27 INF node registered as once-admin\n"))
+}
+
 func TestBuildTSDProxyConfigOAuth(t *testing.T) {
 	config := buildTSDProxyConfig(TailscaleSettings{ClientID: "id-123", ClientSecret: "secret-456", Tag: "tag:once"}, "", "")
 
