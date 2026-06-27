@@ -22,7 +22,7 @@ route traffic to the correct application container.
 
 All containers are namespaced (default namespace: "once"):
 - Proxy: `{namespace}-proxy`
-- Apps: `{namespace}-app-{appName}-{shortID}`
+- Apps: `{namespace}-app-{appName}-{randomID}` (`randomID` is a random suffix, not a truncated container ID)
 
 This allows us to easily identify the app containers, but still allows us to
 boot a second app container without naming collisions when we want to deploy a
