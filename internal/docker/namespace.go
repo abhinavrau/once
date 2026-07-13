@@ -181,10 +181,10 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 	return err
 }
 
-// EnableTailscale is the full enable lifecycle shared by the CLI and TUI: bring
-// up the network, boot once-tsdproxy with the given credentials, boot once-admin,
-// then verify a node can actually register — the mint-time credential probe
-// cannot, since the control plane enforces tag ownership only at registration.
+// EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
+// validate the credentials, bring up the network, boot the Docktail topology
+// with the given credentials, then boot once-admin so it is exposed as a
+// Service too.
 func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) error {
 	if err := n.admin.RequireDaemon(); err != nil {
 		return err
@@ -202,11 +202,12 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	if err := n.admin.Boot(ctx); err != nil {
 		return fmt.Errorf("booting once-admin: %w", err)
 	}
-	return n.tailscale.VerifyRegistration(ctx)
+	return nil
 }
 
 // DisableTailscale is the full disable lifecycle shared by the CLI and TUI:
-// remove once-admin, then once-tsdproxy (keeping its data volume).
+// remove once-admin, then the Docktail topology (keeping the sidecar's state
+// volume).
 func (n *Namespace) DisableTailscale(ctx context.Context) error {
 	if err := n.admin.Destroy(ctx); err != nil {
 		return fmt.Errorf("removing once-admin: %w", err)
@@ -245,7 +246,7 @@ func (n *Namespace) Refresh(ctx context.Context) error {
 }
 
 // RollApplications recreates every running app container (zero-downtime) so they
-// pick up the current tsdproxy.* label state. It refreshes from Docker first so
+// pick up the current docktail.* label state. It refreshes from Docker first so
 // the roll covers apps regardless of whether they were preloaded — the retrofit
 // behind once tailscale enable/disable.
 func (n *Namespace) RollApplications(ctx context.Context) error {

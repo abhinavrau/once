@@ -1,5 +1,7 @@
 # Tailscale Integration Architecture
 
+> **Superseded by [ADR-0002](0002-docktail-tailscale-services.md)**: the TSDProxy integration described here was replaced by Docktail and native Tailscale Services.
+
 To enable applications deployed via Once to be securely accessible on a private virtual network, we decided to integrate Tailscale.
 
 We chose to deploy a single **Tailscale Docker Proxy (TSDProxy)** container (`once-tsdproxy`) running Tailscale's embedded `tsnet` library. TSDProxy watches the Docker daemon via `/var/run/docker.sock` and automatically exposes containers labeled with `tsdproxy.enable=true` to the tailnet as virtual Tailscale nodes with unique Magic DNS names. This eliminates the need for a dedicated sidecar container per application.

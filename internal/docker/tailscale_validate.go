@@ -66,7 +66,7 @@ func validateOAuthCredentials(ctx context.Context, baseURL string, settings Tail
 		return err
 	}
 
-	keyID, err := createProbeKey(ctx, baseURL, token, settings.Tag)
+	keyID, _, err := createTailscaleAuthKey(ctx, baseURL, token, settings.Tag)
 	if err != nil {
 		return err
 	}
@@ -78,6 +78,19 @@ func validateOAuthCredentials(ctx context.Context, baseURL string, settings Tail
 	_ = deleteProbeKey(ctx, baseURL, token, keyID)
 
 	return probeServiceDefinition(ctx, baseURL, token, settings.Tag)
+}
+
+// mintSidecarAuthKey mints the tagged auth key the once-tailscale sidecar
+// registers with. It shares createTailscaleAuthKey with the enable-time probe,
+// so the key the sidecar boots with always has exactly the shape the probe
+// proved could be minted.
+func mintSidecarAuthKey(ctx context.Context, baseURL string, settings TailscaleSettings) (string, error) {
+	token, err := tailscaleOAuthToken(ctx, baseURL, settings.ClientID, settings.ClientSecret)
+	if err != nil {
+		return "", err
+	}
+	_, key, err := createTailscaleAuthKey(ctx, baseURL, token, settings.Tag)
+	return key, err
 }
 
 // Helpers
@@ -118,12 +131,12 @@ func tailscaleOAuthToken(ctx context.Context, baseURL, clientID, clientSecret st
 	return body.AccessToken, nil
 }
 
-// createProbeKey mints a tagged auth key of the shape Once uses for the
-// once-tailscale sidecar's TS_AUTHKEY: single-use, non-ephemeral (the sidecar
-// keeps its node state in a volume), preauthorized, tagged. A 403 means the
-// OAuth client lacks the auth_keys scope; any other rejection means it does
-// not own the requested tag.
-func createProbeKey(ctx context.Context, baseURL, token, tag string) (string, error) {
+// createTailscaleAuthKey mints a tagged auth key of the shape Once uses for
+// the once-tailscale sidecar's TS_AUTHKEY: single-use, non-ephemeral (the
+// sidecar keeps its node state in a volume), preauthorized, tagged. A 403
+// means the OAuth client lacks the auth_keys scope; any other rejection means
+// it does not own the requested tag.
+func createTailscaleAuthKey(ctx context.Context, baseURL, token, tag string) (id, key string, err error) {
 	var reqBody tsKeyRequest
 	reqBody.Description = "once-tailscale"
 	reqBody.Capabilities.Devices.Create.Preauthorized = true
@@ -131,27 +144,28 @@ func createProbeKey(ctx context.Context, baseURL, token, tag string) (string, er
 
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	status, body, err := tailscaleAPICall(ctx, http.MethodPost, baseURL+"/tailnet/-/keys", token, payload)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	switch {
 	case status == http.StatusForbidden:
-		return "", fmt.Errorf("the OAuth client is missing the auth_keys scope (Keys -> Auth Keys: Write), needed to mint the Tailscale sidecar's auth key (HTTP %d): %s", status, errorMessage(body))
+		return "", "", fmt.Errorf("the OAuth client is missing the auth_keys scope (Keys -> Auth Keys: Write), needed to mint the Tailscale sidecar's auth key (HTTP %d): %s", status, errorMessage(body))
 	case status != http.StatusOK:
-		return "", fmt.Errorf("Tailscale refused to mint an auth key for tag %q (HTTP %d): %s; ensure the OAuth client is tagged with this tag or owns it via tagOwners (Access Controls -> Tags)", tag, status, errorMessage(body))
+		return "", "", fmt.Errorf("Tailscale refused to mint an auth key for tag %q (HTTP %d): %s; ensure the OAuth client is tagged with this tag or owns it via tagOwners (Access Controls -> Tags)", tag, status, errorMessage(body))
 	}
 
 	var respBody struct {
-		ID string `json:"id"`
+		ID  string `json:"id"`
+		Key string `json:"key"`
 	}
 	if err := json.Unmarshal(body, &respBody); err != nil {
-		return "", fmt.Errorf("decoding Tailscale key response: %w", err)
+		return "", "", fmt.Errorf("decoding Tailscale key response: %w", err)
 	}
-	return respBody.ID, nil
+	return respBody.ID, respBody.Key, nil
 }
 
 func deleteProbeKey(ctx context.Context, baseURL, token, keyID string) error {

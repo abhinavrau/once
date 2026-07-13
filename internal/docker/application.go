@@ -200,7 +200,7 @@ func (a *Application) Deploy(ctx context.Context, progress DeployProgressCallbac
 }
 
 // Roll recreates the app's container in place (zero-downtime, via the normal
-// deploy path) so it picks up label changes such as tsdproxy.* injection. It
+// deploy path) so it picks up label changes such as docktail.* injection. It
 // reuses the running image and the existing volume — no image pull.
 func (a *Application) Roll(ctx context.Context, progress DeployProgressCallback) error {
 	vol, err := a.Volume(ctx)
@@ -212,7 +212,7 @@ func (a *Application) Roll(ctx context.Context, progress DeployProgressCallback)
 
 // EnableFunnel grants temporary public access via Tailscale Funnel. Setting
 // FunnelExpiresAt and recreating the container writes both the expiry (in the
-// once label) and the tailscale_funnel port option in one atomic recreation, so
+// once label) and the docktail.funnel.* labels in one atomic recreation, so
 // the funnel state and its expiry can never drift apart.
 func (a *Application) EnableFunnel(ctx context.Context, expiresAt time.Time) error {
 	a.Settings.FunnelExpiresAt = &expiresAt
@@ -220,7 +220,7 @@ func (a *Application) EnableFunnel(ctx context.Context, expiresAt time.Time) err
 }
 
 // DisableFunnel revokes public access immediately by clearing FunnelExpiresAt
-// and recreating the container without the tailscale_funnel option.
+// and recreating the container without the funnel labels.
 func (a *Application) DisableFunnel(ctx context.Context) error {
 	a.Settings.FunnelExpiresAt = nil
 	return a.Roll(ctx, nil)
@@ -464,10 +464,10 @@ func (a *Application) volumeMounts(vol *ApplicationVolume) []mount.Mount {
 
 func (a *Application) containerConfig(env []string, tailscaleEnabled bool) *container.Config {
 	labels := map[string]string{labelKey: a.Settings.Marshal()}
-	// Opting an app out of the tailnet drops all tsdproxy labels, which also
+	// Opting an app out of the tailnet drops all docktail labels, which also
 	// supersedes any Funnel (Funnel is meaningless off the tailnet).
 	exposed := tailscaleEnabled && a.Settings.TailscaleExposed()
-	maps.Copy(labels, tsdproxyLabels(a.Settings.Name, exposed, a.Settings.FunnelEnabled()))
+	maps.Copy(labels, docktailLabels(a.Settings.Name, a.namespace.name, exposed, a.Settings.FunnelEnabled()))
 	return &container.Config{
 		Image:  a.Settings.Image,
 		Labels: labels,

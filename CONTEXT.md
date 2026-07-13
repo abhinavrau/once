@@ -56,7 +56,7 @@ Pull an Application's image and roll it only if the image changed.
 _Avoid_: upgrade.
 
 **Boot**:
-Bring up a supporting container (Proxy, Admin, TSDProxy) idempotently. Distinct from Deploy, which is for Applications.
+Bring up a supporting container (Proxy, Admin, Docktail, Tailscale sidecar) idempotently. Distinct from Deploy, which is for Applications.
 _Avoid_: start.
 
 **Start / Stop**:
@@ -73,9 +73,12 @@ A private virtual network built using Tailscale.
 **Magic DNS**:
 Tailscale's automatic name registration and resolution service that assigns a unique, secure domain name to each node in a tailnet.
 
-**Tailscale Docker Proxy (TSDProxy)**:
-A single utility container running Tailscale's embedded `tsnet` library that watches Docker events and dynamically exposes containers to the tailnet as virtual Tailscale nodes.
-_Avoid_: Tailscale Sidecar, Tailscale Agent container.
+**Tailscale Service**:
+Tailscale's first-party primitive for exposing a service on the tailnet under a stable `svc:` name with its own Magic DNS entry, advertised by a host node rather than registered as a device of its own.
+
+**Docktail**:
+A single utility container (`once-docktail`) that watches Docker labels and advertises labelled containers as Tailscale Services through one real `tailscaled` - either the host's or the unprivileged `once-tailscale` sidecar Once boots when the host runs none.
+_Avoid_: TSDProxy, Tailscale Docker Proxy.
 
 **Tailscale Funnel**:
 A Tailscale feature that routes public internet traffic to a specific port on a tailnet node, enabling temporary public access.

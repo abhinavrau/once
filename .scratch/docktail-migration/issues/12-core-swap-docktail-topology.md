@@ -13,14 +13,37 @@ The TSDProxy module goes dead but is not deleted (that is ticket 20). Integratio
 
 **Blocked by:** 10 (local daemon interface), 11 (credential probe).
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Enable with no host tailscaled boots sidecar + Docktail; with a host tailscaled boots only Docktail and uses the host socket
-- [ ] Sidecar runs unprivileged userspace networking (no TUN device, no NET_ADMIN, no host networking) per the trimmed configuration research validated in issue 02
-- [ ] Apps, and the Once Admin Web App, carry `docktail.service.*` labels; per-app opt-out produces no labels for that app
-- [ ] TailscaleSettings round-trips with the new mode field and without APIKey; no loopback port is published
-- [ ] DomainSuffix is read from the local daemon and persisted; URLs display without any live lookup
-- [ ] Disable removes Docktail and the Once-managed sidecar (state volume retained) and strips labels via Roll
-- [ ] Integration suite covers the enable/disable lifecycle (containers, volumes, labels, opt-out) with no real tailnet; TUI enable-form driver updated in the same change
-- [ ] ADR-0002 written; ADR-0001 marked superseded
-- [ ] Lint, unit, and integration tests pass
+- [x] Enable with no host tailscaled boots sidecar + Docktail; with a host tailscaled boots only Docktail and uses the host socket
+- [x] Sidecar runs unprivileged userspace networking (no TUN device, no NET_ADMIN, no host networking) per the trimmed configuration research validated in issue 02
+- [x] Apps, and the Once Admin Web App, carry `docktail.service.*` labels; per-app opt-out produces no labels for that app
+- [x] TailscaleSettings round-trips with the new mode field and without APIKey; no loopback port is published
+- [x] DomainSuffix is read from the local daemon and persisted; URLs display without any live lookup
+- [x] Disable removes Docktail and the Once-managed sidecar (state volume retained) and strips labels via Roll
+- [x] Integration suite covers the enable/disable lifecycle (containers, volumes, labels, opt-out) with no real tailnet; TUI enable-form driver updated in the same change
+- [x] ADR-0002 written; ADR-0001 marked superseded
+- [ ] Lint, unit, and integration tests pass (lint + unit green; integration not runnable on this machine - no Docker daemon)
+
+## Comments
+
+2026-07-13: Implemented. `Tailscale` (internal/docker/tailscale.go) now manages the
+Docktail topology: `once-docktail` (ghcr.io/marvinvr/docktail:1.5.0, Docker socket
+read-only) plus, when no host tailscaled socket is detected (dir overridable via
+ONCE_TAILSCALED_DIR for tests), the unprivileged `once-tailscale` sidecar
+(tailscale/tailscale:v1.88.4, TS_USERSPACE=true, state + socket volumes, auth key
+minted with the exact probe shape via the shared createTailscaleAuthKey). The Magic
+DNS suffix is read from the ticket-10 daemon seam at enable with a bounded 20s wait
+and self-heals lazily via DomainSuffix() if the join was slow. WaitForFunnelActive
+was repointed at the daemon's serve status (any-funnel-active; per-app attribution
+is ticket 15). `once tailscale status` interim: prints suffix-computed service URLs
+(states are ticket 14). Deviation from "module goes dead but is not deleted":
+dropping APIKey forced the tsdproxy lookup-API/config/boot chain out (it no longer
+compiled); the pure remnants (tsdproxyLabels, scanRegistrationError) stay for
+ticket 20, and Destroy sweeps legacy once-tsdproxy containers/volumes. Headscale
+registration/data-path/lookup tests were deleted; the suite now covers the
+enable/disable lifecycle, host mode, opt-out, and teardown against headscale via
+the control seam (sidecar-join coverage effectively included ahead of ticket 18).
+Integration suite could not be executed on this machine (no Docker daemon
+installed); it compiles and vets clean - run `make integration` on a Docker host
+before closing.

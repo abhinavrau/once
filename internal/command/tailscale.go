@@ -28,7 +28,7 @@ func newTailscaleCommand() *tailscaleCommand {
 
 	enable := &cobra.Command{
 		Use:   "enable",
-		Short: "Enable Tailscale and boot the tsdproxy container",
+		Short: "Enable Tailscale and boot the Docktail containers",
 		RunE:  WithNamespace(t.enable),
 	}
 	enable.Flags().StringVar(&t.clientID, "client-id", "", "Tailscale OAuth client ID")
@@ -40,13 +40,13 @@ func newTailscaleCommand() *tailscaleCommand {
 
 	disable := &cobra.Command{
 		Use:   "disable",
-		Short: "Disable Tailscale and remove the tsdproxy container",
+		Short: "Disable Tailscale and remove the Docktail containers",
 		RunE:  WithNamespace(t.disable),
 	}
 
 	status := &cobra.Command{
 		Use:   "status",
-		Short: "Show tailnet node FQDNs, status, and active Funnels",
+		Short: "Show the tailnet service URLs of exposed apps",
 		RunE:  WithNamespace(t.status),
 	}
 
@@ -100,6 +100,9 @@ func (t *tailscaleCommand) disable(ctx context.Context, ns *docker.Namespace, cm
 	return nil
 }
 
+// status lists each exposed app's service URL, computed from the Magic DNS
+// suffix stored at enable time - no live lookup. Advertised/approved states
+// come with the status-command work on Docktail (migration ticket 14).
 func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	enabled, err := ns.Tailscale().Enabled(ctx)
 	if err != nil {
@@ -110,28 +113,21 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 		return nil
 	}
 
-	proxies, err := ns.Tailscale().Proxies(ctx)
+	settings, err := ns.Tailscale().LoadSettings(ctx)
 	if err != nil {
-		return fmt.Errorf("querying Tailscale status: %w", err)
+		return fmt.Errorf("reading Tailscale settings: %w", err)
 	}
-	if len(proxies) == 0 {
-		if msg, err := ns.Tailscale().RegistrationError(ctx, time.Time{}); err == nil && msg != "" {
-			fmt.Println("No tailnet nodes registered.")
-			fmt.Printf("once-tsdproxy is rejecting node registration:\n  %s\n", msg)
-			fmt.Println("This is commonly a tag missing from your tailnet ACL tagOwners, or a revoked/expired credential. " +
-				"Fix it (Access Controls → tagOwners) and re-run `once tailscale enable`.")
-			return nil
-		}
-		fmt.Println("No tailnet nodes registered (the tailnet may still be spinning up, or no apps are deployed yet)")
+	if settings.DomainSuffix == "" {
+		fmt.Println("The tailnet's Magic DNS suffix is not known yet (the tailnet may still be spinning up); re-run in a moment")
 		return nil
 	}
 
-	for _, p := range proxies {
-		line := fmt.Sprintf("%s\t%s\t%s", p.Name, p.Status, p.URL)
-		if p.Funnel {
-			line += "\tFunnel: active"
+	fmt.Printf("once-admin\t%s\n", settings.TailnetURL("once-admin"))
+	for _, app := range ns.Applications() {
+		if !app.Settings.TailscaleExposed() {
+			continue
 		}
-		fmt.Println(line)
+		fmt.Printf("%s\t%s\n", app.Settings.Name, settings.TailnetURL(app.Settings.Name))
 	}
 	return nil
 }
@@ -166,9 +162,9 @@ func (t *tailscaleCommand) funnelEnable(ctx context.Context, ns *docker.Namespac
 	}
 
 	// Surface activation failures: Funnel needs the tailnet ACL's funnel node
-	// attribute, which Once can't manage. Only report it active once tsdproxy
-	// confirms it.
-	if err := ns.Tailscale().WaitForFunnelActive(ctx, app.Settings.Name); err != nil {
+	// attribute, which Once can't manage. Only report it active once the local
+	// tailscaled confirms it.
+	if err := ns.Tailscale().WaitForFunnelActive(ctx); err != nil {
 		return err
 	}
 

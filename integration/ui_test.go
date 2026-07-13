@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -92,9 +91,10 @@ func TestUIInstallAndManageApp(t *testing.T) {
 // TestUITailscaleFormEnablesViaControlSeam drives the dashboard's global
 // Tailscale settings form (the `t` overlay) end to end: open it, fill the
 // credentials, submit, and assert it ran the same enable lifecycle the CLI uses
-// — once-tsdproxy boots, the deployed app retrofits its tsdproxy.* labels and
-// registers a node, and once-admin comes up. It also checks esc dismissal and
-// that re-opening the form pre-populates from the stored settings.
+// - the once-tailscale sidecar and once-docktail boot, the deployed app
+// retrofits its docktail.service.* labels, and once-admin comes up. It also
+// checks esc dismissal and that re-opening the form pre-populates from the
+// stored settings.
 func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -110,10 +110,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	t.Cleanup(func() { cli.Close() })
 
 	cp := newControlPlane(t, ctx, ns)
-	key, err := cp.authKey(ctx)
-	require.NoError(t, err)
-	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", cp.controlURL())
-	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", key)
+	useControlSeam(t, ctx, cp)
 
 	// Enable boots once-admin, which bind-mounts the daemon's Unix socket; run the
 	// admin server in-process and wait for the socket so Boot doesn't fail.
@@ -167,16 +164,18 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 		return !strings.Contains(d.viewContent(), "close")
 	}, 3*time.Minute)
 
-	// once-tsdproxy booted and the retrofitted app registered a node.
-	_, err = cli.ContainerInspect(ctx, ns.Name()+"-tsdproxy")
-	require.NoError(t, err, "once-tsdproxy should be running after enabling via the form")
+	// The Docktail topology booted, the sidecar joined the control plane, and
+	// the retrofitted app carries the service labels.
+	_, err = cli.ContainerInspect(ctx, ns.Name()+"-docktail")
+	require.NoError(t, err, "once-docktail should be running after enabling via the form")
 
+	sidecarName := ns.Name() + "-tailscale"
 	require.Eventually(t, func() bool {
-		names, err := cp.nodeNames(ctx)
-		return err == nil && slices.Contains(names, "whoami")
-	}, 90*time.Second, 2*time.Second, "app never registered a node after enabling via the form")
+		found, online, err := cp.nodeOnline(ctx, sidecarName)
+		return err == nil && found && online
+	}, 90*time.Second, 2*time.Second, "sidecar never joined the control plane after enabling via the form")
 
-	assertAppLabels(t, ctx, cli, ns, hasTSDProxyLabels)
+	assertAppLabels(t, ctx, cli, ns, "whoami", hasDocktailLabels("whoami", ns.Name()))
 
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
 	require.NoError(t, err, "once-admin should be running after enabling via the form")

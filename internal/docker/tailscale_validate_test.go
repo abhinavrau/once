@@ -250,3 +250,23 @@ func TestValidateTailscaleCredentialsSkipsControlSeam(t *testing.T) {
 	err := validateTailscaleCredentials(context.Background(), TailscaleSettings{})
 	require.NoError(t, err)
 }
+
+func TestMintSidecarAuthKeyMatchesProbeShape(t *testing.T) {
+	p := newProbeServer(t)
+
+	key, err := mintSidecarAuthKey(context.Background(), p.srv.URL,
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"})
+	require.NoError(t, err)
+	assert.Equal(t, "tskey-auth-xyz", key)
+
+	// Exactly the shape the probe proved: single-use, non-ephemeral,
+	// preauthorized, tagged, described as the sidecar.
+	assert.Equal(t, "once-tailscale", p.keyRequest.Description)
+	assert.True(t, p.keyRequest.Capabilities.Devices.Create.Preauthorized)
+	assert.False(t, p.keyRequest.Capabilities.Devices.Create.Reusable)
+	assert.False(t, p.keyRequest.Capabilities.Devices.Create.Ephemeral)
+	assert.Equal(t, []string{"tag:once"}, p.keyRequest.Capabilities.Devices.Create.Tags)
+
+	// The sidecar registers with this key; unlike the probe's, it is not deleted.
+	assert.Empty(t, p.deletedKey)
+}
