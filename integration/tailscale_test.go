@@ -206,6 +206,13 @@ func useControlSeam(t *testing.T, ctx context.Context, cp controlPlane) {
 	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", key)
 }
 
+// forceSidecarMode points host-tailscaled detection at an empty temp dir, so
+// the test boots the sidecar even when the machine runs its own tailscaled.
+func forceSidecarMode(t *testing.T) {
+	t.Helper()
+	t.Setenv("ONCE_TAILSCALED_DIR", t.TempDir())
+}
+
 // controlSeamSettings are the TailscaleSettings used with the control seam,
 // where OAuth credentials are never exercised.
 func controlSeamSettings() docker.TailscaleSettings {
@@ -238,6 +245,7 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 
 	cp := newControlPlane(t, ctx, ns)
 	useControlSeam(t, ctx, cp)
+	forceSidecarMode(t)
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "whoami",
@@ -378,6 +386,7 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
 	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", "http://invalid.control.test:8080")
 	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", "dummy-auth-key")
+	forceSidecarMode(t)
 	adminCtx, stopAdmin := context.WithCancel(ctx)
 	t.Cleanup(stopAdmin)
 	go func() { _ = background.NewAdminServer().Run(adminCtx) }()

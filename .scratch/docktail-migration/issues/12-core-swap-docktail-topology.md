@@ -13,7 +13,7 @@ The TSDProxy module goes dead but is not deleted (that is ticket 20). Integratio
 
 **Blocked by:** 10 (local daemon interface), 11 (credential probe).
 
-**Status:** in-review
+**Status:** done
 
 - [x] Enable with no host tailscaled boots sidecar + Docktail; with a host tailscaled boots only Docktail and uses the host socket
 - [x] Sidecar runs unprivileged userspace networking (no TUN device, no NET_ADMIN, no host networking) per the trimmed configuration research validated in issue 02
@@ -23,7 +23,7 @@ The TSDProxy module goes dead but is not deleted (that is ticket 20). Integratio
 - [x] Disable removes Docktail and the Once-managed sidecar (state volume retained) and strips labels via Roll
 - [x] Integration suite covers the enable/disable lifecycle (containers, volumes, labels, opt-out) with no real tailnet; TUI enable-form driver updated in the same change
 - [x] ADR-0002 written; ADR-0001 marked superseded
-- [ ] Lint, unit, and integration tests pass (lint + unit green; integration not runnable on this machine - no Docker daemon)
+- [x] Lint, unit, and integration tests pass
 
 ## Comments
 
@@ -47,3 +47,10 @@ the control seam (sidecar-join coverage effectively included ahead of ticket 18)
 Integration suite could not be executed on this machine (no Docker daemon
 installed); it compiles and vets clean - run `make integration` on a Docker host
 before closing.
+
+2026-07-13 (later): Integration suite executed with Docker installed. First run
+surfaced one real gap: the three sidecar-mode tests picked up the dev machine's
+own tailscaled via the default socket path and ran enable in host mode (no
+sidecar booted). Fixed with a forceSidecarMode test helper that points
+ONCE_TAILSCALED_DIR at an empty temp dir. Full suite now green (31 tests), lint
+and unit tests green. Closing.
