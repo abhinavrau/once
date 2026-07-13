@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 )
 
@@ -43,7 +42,7 @@ type tsKeyRequest struct {
 // OAuth credentials work before any container is booted. Skipped on the hidden
 // headscale control seam, which uses a pre-minted auth key, not OAuth.
 func validateTailscaleCredentials(ctx context.Context, settings TailscaleSettings) error {
-	if os.Getenv(envControlURL) != "" && os.Getenv(envAuthKey) != "" {
+	if controlSeamActive() {
 		return nil
 	}
 	return validateOAuthCredentials(ctx, tailscaleAPIBaseURL, settings)

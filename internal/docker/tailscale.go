@@ -484,7 +484,7 @@ func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings)
 // the headscale control seam it runs in manual mode (no cloud API).
 func (t *Tailscale) create(ctx context.Context, settings TailscaleSettings) error {
 	var env []string
-	if os.Getenv(envAuthKey) == "" || os.Getenv(envControlURL) == "" {
+	if !controlSeamActive() {
 		env = []string{
 			"TAILSCALE_OAUTH_CLIENT_ID=" + settings.ClientID,
 			"TAILSCALE_OAUTH_CLIENT_SECRET=" + settings.ClientSecret,
@@ -614,6 +614,12 @@ func docktailLabels(appName, network string, enabled, funnel bool) map[string]st
 		labels["docktail.funnel.port"] = "80"
 	}
 	return labels
+}
+
+// controlSeamActive reports whether the hidden headscale control seam is
+// configured, replacing OAuth credential minting and the Tailscale SaaS API.
+func controlSeamActive() bool {
+	return os.Getenv(envControlURL) != "" && os.Getenv(envAuthKey) != ""
 }
 
 // hostTailscaledDir is the host directory tailscaled publishes its socket in,

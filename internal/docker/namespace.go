@@ -183,8 +183,9 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
 // validate the credentials, bring up the network, boot the Docktail topology
-// with the given credentials, then boot once-admin so it is exposed as a
-// Service too.
+// with the given credentials, boot once-admin so it is exposed as a Service
+// too, then verify every expected service is advertised and approved before
+// reporting success.
 func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) error {
 	if err := n.admin.RequireDaemon(); err != nil {
 		return err
@@ -202,7 +203,7 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	if err := n.admin.Boot(ctx); err != nil {
 		return fmt.Errorf("booting once-admin: %w", err)
 	}
-	return nil
+	return n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices())
 }
 
 // DisableTailscale is the full disable lifecycle shared by the CLI and TUI:
@@ -352,6 +353,20 @@ func (n *Namespace) containerAppName(containerName string) string {
 }
 
 // Private
+
+// expectedTailscaleServices lists the services that should exist on the
+// tailnet after enable: one per running exposed application, plus the Once
+// Admin Web App. Stopped apps aren't advertised by Docktail, so they can't
+// be verified.
+func (n *Namespace) expectedTailscaleServices() []string {
+	expected := []string{"once-admin"}
+	for _, app := range n.applications {
+		if app.Running && app.Settings.TailscaleExposed() {
+			expected = append(expected, app.Settings.Name)
+		}
+	}
+	return expected
+}
 
 type appCandidate struct {
 	app     *Application
