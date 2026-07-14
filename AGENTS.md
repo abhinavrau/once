@@ -1,6 +1,6 @@
 # AGENTS.md
 
-## Gloabl agent instructions
+## Global agent instructions
 
 - Never use the em dash "—". Use plain "-" instead
 - When writing commit messages, NEVER auto-add your agent name as co-author
@@ -10,7 +10,8 @@
 - It something clearly looks off, event it it is not directlry related to what you are doing try to get it fixed along the way.
 - Apply that same high standard of engineering excellence: lint, test failures, and test flakiness. If you see one, even if it is not caused by what you are working on right now, still get it fixed.
 
-- Use `gh-axi` for GitHub and `chrome-devtools-axi` for browser automation.
+- Use `gh-axi` for GitHub instead of `gh` 
+- `chrome-devtools-axi` for browser automation.
 
 ## Project Overview
 
@@ -85,6 +86,15 @@ go test -v -run TestName ./internal/...
   drivers: a form that rejects submit (e.g. a new required field left empty) stays
   open, so the test hangs in `waitUntil` until timeout rather than failing fast.
   When you change a form's fields, update its integration driver in the same change.
+- Integration tests pull images from Docker Hub even when they are cached locally
+  (`ImagePull` always contacts the registry). If tests hang or fail with
+  "failed to fetch anonymous token", "context deadline exceeded" on
+  `images/create`, or a `read tcp [<ipv6>]... connection timed out`, the host's
+  IPv6 route to Docker Hub is flapping - an environment problem, not test
+  flakiness. Confirm with a plain `docker pull hello-world` outside the suite;
+  it will fail the same way. Wait for the route to recover (it usually does
+  within minutes) and re-run, or force dockerd to IPv4 if it keeps recurring.
+  Don't burn time bisecting the tests for this failure signature.
 - Tailscale SaaS paths (the OAuth probe against `api.tailscale.com`) can't run in
   CI — the integration harness only exercises the headscale control seam, which
   skips OAuth. Cover SaaS-only logic with httptest unit tests, and keep any request
