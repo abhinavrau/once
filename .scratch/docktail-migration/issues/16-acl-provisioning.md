@@ -10,11 +10,21 @@
 
 **Blocked by:** 12 (core swap).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Enable offers the API policy write with diff and GitOps warning; decline prints the snippet
-- [ ] Patch touches only the four sections and preserves everything else byte-for-byte including comments; re-running against an already-patched policy is a no-op
-- [ ] Write uses ETag If-Match with bounded retry on 412; server-side validation failure falls back to the snippet
-- [ ] The policy-write credential never appears in any persisted settings or container label
-- [ ] Policy GET/validate/POST requests asserted byte-compatible in httptest unit tests, covering: comment-preserving patch, idempotent re-run, 412 retry, validation-failure fallback
-- [ ] Lint and unit tests pass
+- [x] Enable offers the API policy write with diff and GitOps warning; decline prints the snippet
+- [x] Patch touches only the four sections and preserves everything else byte-for-byte including comments; re-running against an already-patched policy is a no-op
+- [x] Write uses ETag If-Match with bounded retry on 412; server-side validation failure falls back to the snippet
+- [x] The policy-write credential never appears in any persisted settings or container label
+- [x] Policy GET/validate/POST requests asserted byte-compatible in httptest unit tests, covering: comment-preserving patch, idempotent re-run, 412 retry, validation-failure fallback
+- [x] Lint and unit tests pass
+
+## Comments
+
+2026-07-13: Implemented. internal/docker/tailscale_policy.go holds the API plumbing (PlanPolicyUpdate/Apply/PolicySnippet, httptest-seamed via the private planPolicyUpdate); the interactive offer lives in `once tailscale enable` (internal/command/tailscale.go, offerPolicyProvisioning) and is skipped on the headscale control seam and when stdin is not a terminal. Decisions worth recording:
+
+- The patch edits the HuJSON AST directly (append-only members/elements that copy the sibling's indentation and trailing-comma style) instead of hujson's RFC 6902 Patch, which inserts with no whitespace and produced an unreadable one-line diff. Untouched regions still round-trip byte-for-byte.
+- The grant dst is the tag, not per-svc: names: a tag assigned to a Service selects it in grants (kb/1552), and docktail stamps the tag on every Service definition, so one grant covers apps deployed later.
+- The offer runs before the runtime-credential probe (PRD sketched the reverse) because on a fresh tailnet the probe cannot pass until the policy defines the tag.
+- Idempotency is presence-based per entry; array entries are matched by semantic equality with exactly what Once would add (the snippet shares the same builders, so a pasted snippet also makes the re-run a no-op). A hand-written broader rule is not recognized - Once appends its own entry alongside (marked ponytail in ensureElement).
+- Per issue text, a 412 retry re-fetches/re-patches/re-validates without re-prompting (research 08 had sketched re-confirm); concurrent edits are still never clobbered.

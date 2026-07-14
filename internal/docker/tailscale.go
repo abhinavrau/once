@@ -132,6 +132,13 @@ func (s TailscaleSettings) Marshal() string {
 	return string(b)
 }
 
+// TailscaleControlSeamActive reports whether the hidden headscale control seam
+// is configured, so callers can skip Tailscale SaaS-only flows (like the
+// policy API) that do not exist on headscale.
+func TailscaleControlSeamActive() bool {
+	return controlSeamActive()
+}
+
 // Private
 
 // normalizeTag prepends "tag:" to each comma-separated segment that lacks it, so

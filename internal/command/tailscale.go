@@ -3,8 +3,11 @@ package command
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/basecamp/once/internal/docker"
@@ -83,6 +86,7 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 
 func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	settings := docker.TailscaleSettings{ClientID: t.clientID, ClientSecret: t.clientSecret, Tag: t.tag}
+	offerPolicyProvisioning(ctx, t.tag)
 	if err := ns.EnableTailscale(ctx, settings); err != nil {
 		return err
 	}
@@ -208,6 +212,98 @@ func (t *tailscaleCommand) funnelDisable(ctx context.Context, ns *docker.Namespa
 }
 
 // Helpers
+
+// offerPolicyProvisioning offers to write the four tailnet policy sections
+// Once needs via the Tailscale API, so the user never hand-edits HuJSON. It
+// runs before the enable's credential probe on purpose: on a fresh tailnet the
+// probe cannot pass until the policy defines the tag. Best effort by design:
+// any decline or failure prints the copy-paste snippet and enable proceeds,
+// with the credential probe as the enforcement. Skipped when stdin is not a
+// terminal, and on the headscale control seam (no policy API there).
+func offerPolicyProvisioning(ctx context.Context, tag string) {
+	if docker.TailscaleControlSeamActive() {
+		return
+	}
+	if !term.IsTerminal(os.Stdin.Fd()) {
+		fmt.Println("Skipping tailnet policy setup (not a terminal); run `once tailscale enable` interactively to be offered it.")
+		return
+	}
+
+	fmt.Println("Once needs four sections in your tailnet policy file: tagOwners, autoApprovers.services, a grant for the tagged Services, and the funnel nodeAttr.")
+	if !promptYesNo("Apply them now via the Tailscale API?") {
+		printPolicySnippet(tag)
+		return
+	}
+
+	fmt.Println("Enter an OAuth client with the policy_file scope. It can rewrite your entire tailnet policy, so use a throwaway client: it is used once, never stored, and can be revoked afterwards.")
+	clientID := promptLine("Policy OAuth client ID: ")
+	clientSecret := promptSecret("Policy OAuth client secret: ")
+	if clientID == "" || clientSecret == "" {
+		printPolicySnippet(tag)
+		return
+	}
+
+	update, err := docker.PlanPolicyUpdate(ctx, clientID, clientSecret, tag)
+	if err != nil {
+		fmt.Println("Could not plan the policy update:", err)
+		printPolicySnippet(tag)
+		return
+	}
+	if !update.Changed() {
+		fmt.Println("The tailnet policy already contains everything Once needs; nothing to change.")
+		return
+	}
+
+	fmt.Println()
+	fmt.Print(update.Diff())
+	fmt.Println()
+	fmt.Println("Warning: if this tailnet's policy is managed via GitOps, the next pipeline sync will silently revert this write - decline and commit the snippet to your policy repo instead.")
+	if !promptYesNo("Write this policy change?") {
+		printPolicySnippet(tag)
+		return
+	}
+	if err := update.Apply(ctx); err != nil {
+		fmt.Println("The policy write failed:", err)
+		printPolicySnippet(tag)
+		return
+	}
+	fmt.Println("Tailnet policy updated.")
+}
+
+func printPolicySnippet(tag string) {
+	fmt.Println()
+	fmt.Println("Merge this snippet into your tailnet policy file (https://login.tailscale.com/admin/acls), then re-run `once tailscale enable`:")
+	fmt.Println()
+	fmt.Println(docker.PolicySnippet(tag))
+	fmt.Println()
+}
+
+func promptYesNo(question string) bool {
+	fmt.Print(question + " [y/N] ")
+	var answer string
+	_, _ = fmt.Scanln(&answer)
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes"
+}
+
+func promptLine(prompt string) string {
+	fmt.Print(prompt)
+	var line string
+	_, _ = fmt.Scanln(&line)
+	return strings.TrimSpace(line)
+}
+
+// promptSecret reads without echoing, so the policy credential never lands in
+// the terminal scrollback.
+func promptSecret(prompt string) string {
+	fmt.Print(prompt)
+	secret, err := term.ReadPassword(os.Stdin.Fd())
+	fmt.Println()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(secret))
+}
 
 func requireBackgroundDaemon(namespace string) error {
 	svc, err := service.New()
