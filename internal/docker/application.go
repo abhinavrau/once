@@ -187,6 +187,10 @@ func (a *Application) Deploy(ctx context.Context, progress DeployProgressCallbac
 		return ErrHostRequired
 	}
 
+	if err := a.validateTailscaleServiceName(ctx); err != nil {
+		return err
+	}
+
 	if _, err := a.pullImage(ctx, progress); err != nil {
 		return err
 	}
@@ -279,6 +283,20 @@ func (a *Application) Destroy(ctx context.Context, destroyVolumes bool) error {
 }
 
 // Private
+
+// validateTailscaleServiceName rejects a deploy whose app name could never
+// resolve as a tailnet service, but only when Tailscale is enabled and the
+// app is exposed - off the tailnet, any name Docker accepts is fine.
+func (a *Application) validateTailscaleServiceName(ctx context.Context) error {
+	if !a.Settings.TailscaleExposed() {
+		return nil
+	}
+	enabled, err := a.namespace.Tailscale().Enabled(ctx)
+	if err != nil || !enabled {
+		return err
+	}
+	return ValidateTailscaleServiceName(a.Settings.Name)
+}
 
 func (a *Application) saveOperationResult(ctx context.Context, record func(*State)) {
 	state, err := a.namespace.LoadState(ctx)

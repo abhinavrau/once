@@ -182,28 +182,36 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 }
 
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
-// validate the credentials, bring up the network, boot the Docktail topology
-// with the given credentials, boot once-admin so it is exposed as a Service
-// too, then verify every expected service is advertised and approved before
-// reporting success.
-func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) error {
+// validate the exposed app names and the credentials, bring up the network,
+// boot the Docktail topology with the given credentials, boot once-admin so
+// it is exposed as a Service too, then verify every expected service is
+// advertised and approved before reporting success. The returned warnings
+// name any tailnet machines whose Magic DNS entries shadow a service.
+func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) ([]string, error) {
+	exposed := n.exposedTailscaleServices()
+	for _, name := range exposed {
+		if err := ValidateTailscaleServiceName(name); err != nil {
+			return nil, err
+		}
+	}
 	if err := n.admin.RequireDaemon(); err != nil {
-		return err
+		return nil, err
 	}
 	settings.Tag = settings.normalizeTag()
 	if err := validateTailscaleCredentials(ctx, settings); err != nil {
-		return err
+		return nil, err
 	}
 	if err := n.EnsureNetwork(ctx); err != nil {
-		return fmt.Errorf("ensuring network: %w", err)
+		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
 	if err := n.tailscale.Enable(ctx, settings); err != nil {
-		return fmt.Errorf("enabling Tailscale: %w", err)
+		return nil, fmt.Errorf("enabling Tailscale: %w", err)
 	}
 	if err := n.admin.Boot(ctx); err != nil {
-		return fmt.Errorf("booting once-admin: %w", err)
+		return nil, fmt.Errorf("booting once-admin: %w", err)
 	}
-	return n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices())
+	warnings := n.tailscale.ShadowWarnings(ctx, exposed)
+	return warnings, n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices())
 }
 
 // DisableTailscale is the full disable lifecycle shared by the CLI and TUI:
@@ -366,6 +374,20 @@ func (n *Namespace) expectedTailscaleServices() []string {
 		}
 	}
 	return expected
+}
+
+// exposedTailscaleServices lists every service name that appears on the
+// tailnet while Tailscale is enabled: each exposed application (running or
+// not - a stopped app is advertised as soon as it starts) plus the Once
+// Admin Web App.
+func (n *Namespace) exposedTailscaleServices() []string {
+	names := []string{"once-admin"}
+	for _, app := range n.applications {
+		if app.Settings.TailscaleExposed() {
+			names = append(names, app.Settings.Name)
+		}
+	}
+	return names
 }
 
 type appCandidate struct {

@@ -101,7 +101,9 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 	} else {
 		offerPolicyProvisioning(ctx, t.tag)
 	}
-	if err := ns.EnableTailscale(ctx, settings); err != nil {
+	warnings, err := ns.EnableTailscale(ctx, settings)
+	printTailscaleWarnings(warnings)
+	if err != nil {
 		return err
 	}
 
@@ -336,6 +338,12 @@ func provisionPolicy(ctx context.Context, clientID, clientSecret, tag string) {
 		return
 	}
 	fmt.Println("Tailnet policy updated.")
+}
+
+func printTailscaleWarnings(warnings []string) {
+	for _, w := range warnings {
+		fmt.Println("Warning:", w)
+	}
 }
 
 func printPolicySnippet(tag string) {

@@ -18,7 +18,12 @@ const statusJSON = `{
 		"MagicDNSSuffix": "tail1234.ts.net",
 		"MagicDNSEnabled": true
 	},
-	"MagicDNSSuffix": "tail1234.ts.net"
+	"MagicDNSSuffix": "tail1234.ts.net",
+	"Self": {"HostName": "once-tailscale", "DNSName": "once-tailscale.tail1234.ts.net."},
+	"Peer": {
+		"nodekey:aaa": {"HostName": "Grafana-Box", "DNSName": "grafana.tail1234.ts.net."},
+		"nodekey:bbb": {"HostName": "Laptop", "DNSName": ""}
+	}
 }`
 
 func TestFakeTailscaleDaemonMagicDNSSuffix(t *testing.T) {
@@ -46,6 +51,30 @@ func TestFakeTailscaleDaemonMagicDNSSuffixErrors(t *testing.T) {
 
 	daemon = &FakeTailscaleDaemon{StatusErr: assert.AnError}
 	_, err = daemon.MagicDNSSuffix(t.Context())
+	require.ErrorIs(t, err, assert.AnError)
+}
+
+func TestFakeTailscaleDaemonMachineHostnames(t *testing.T) {
+	daemon := &FakeTailscaleDaemon{StatusJSON: statusJSON}
+
+	// The DNSName's first label wins over HostName ("grafana", not
+	// "Grafana-Box"); a node without a DNSName falls back to its lowercased
+	// HostName.
+	names, err := daemon.MachineHostnames(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"grafana", "laptop", "once-tailscale"}, names)
+
+	daemon = &FakeTailscaleDaemon{StatusJSON: `{"BackendState": "NeedsLogin"}`}
+	names, err = daemon.MachineHostnames(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, names)
+
+	daemon = &FakeTailscaleDaemon{StatusJSON: "not json"}
+	_, err = daemon.MachineHostnames(t.Context())
+	require.ErrorContains(t, err, "parsing tailscale status")
+
+	daemon = &FakeTailscaleDaemon{StatusErr: assert.AnError}
+	_, err = daemon.MachineHostnames(t.Context())
 	require.ErrorIs(t, err, assert.AnError)
 }
 

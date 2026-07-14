@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -30,7 +31,8 @@ type tailscaleFormSubmitMsg struct {
 }
 
 type tailscaleFormFinishedMsg struct {
-	err error
+	err      error
+	warnings []string
 }
 
 // TailscaleForm is the dashboard-global overlay for enabling/disabling
@@ -44,6 +46,7 @@ type TailscaleForm struct {
 	running       bool
 	progress      Progress
 	err           error
+	warnings      []string
 }
 
 func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
@@ -118,6 +121,7 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
 		}
 		m.err = nil
+		m.warnings = nil
 
 	case MouseEvent:
 		if m.running {
@@ -138,6 +142,11 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		m.running = false
 		if msg.err != nil {
 			m.err = msg.err
+			return m, nil
+		}
+		// Shadowing warnings keep the form open so the user actually sees them.
+		if len(msg.warnings) > 0 {
+			m.warnings = msg.warnings
 			return m, nil
 		}
 		return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
@@ -171,6 +180,8 @@ func (m TailscaleForm) View() string {
 		var status string
 		if m.err != nil {
 			status = lipgloss.NewStyle().Foreground(Colors.Error).Render(docker.ErrorMessage(m.err))
+		} else if len(m.warnings) > 0 {
+			status = lipgloss.NewStyle().Foreground(Colors.Warning).Render(strings.Join(m.warnings, "\n"))
 		}
 		body = lipgloss.JoinVertical(lipgloss.Left, status, "", m.form.View())
 	}
@@ -185,12 +196,10 @@ func (m TailscaleForm) View() string {
 func (m TailscaleForm) run(msg tailscaleFormSubmitMsg) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		var err error
 		if msg.enable {
-			err = m.namespace.EnableTailscale(ctx, docker.TailscaleSettings{ClientID: msg.id, ClientSecret: msg.secret, Tag: msg.tag})
-		} else {
-			err = m.namespace.DisableTailscale(ctx)
+			warnings, err := m.namespace.EnableTailscale(ctx, docker.TailscaleSettings{ClientID: msg.id, ClientSecret: msg.secret, Tag: msg.tag})
+			return tailscaleFormFinishedMsg{err: err, warnings: warnings}
 		}
-		return tailscaleFormFinishedMsg{err: err}
+		return tailscaleFormFinishedMsg{err: m.namespace.DisableTailscale(ctx)}
 	}
 }

@@ -21,6 +21,9 @@ type TailscaleDaemon interface {
 	// MagicDNSSuffix returns the tailnet's Magic DNS suffix (e.g.
 	// tail1234.ts.net), or "" when the daemon doesn't report one yet.
 	MagicDNSSuffix(ctx context.Context) (string, error)
+	// MachineHostnames returns the Magic DNS labels of every machine on the
+	// tailnet (this node and its peers), lowercased and sorted.
+	MachineHostnames(ctx context.Context) ([]string, error)
 	// ServeStatus returns the daemon's serve config: advertised services and
 	// funnel state.
 	ServeStatus(ctx context.Context) (TailscaleServeStatus, error)
@@ -67,6 +70,17 @@ func (d *cliTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error)
 	return parseMagicDNSSuffix(stripCLIWarnings(res.Stdout))
 }
 
+func (d *cliTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, error) {
+	res, err := d.run(ctx, "status", "--json")
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("tailscale status: %s", strings.TrimSpace(res.Stderr))
+	}
+	return parseMachineHostnames(stripCLIWarnings(res.Stdout))
+}
+
 func (d *cliTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
 	res, err := d.run(ctx, "serve", "status", "--json")
 	if err != nil {
@@ -97,6 +111,13 @@ func (f *FakeTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error
 		return "", f.StatusErr
 	}
 	return parseMagicDNSSuffix(stripCLIWarnings(f.StatusJSON))
+}
+
+func (f *FakeTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, error) {
+	if f.StatusErr != nil {
+		return nil, f.StatusErr
+	}
+	return parseMachineHostnames(stripCLIWarnings(f.StatusJSON))
 }
 
 func (f *FakeTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
@@ -171,6 +192,41 @@ func parseMagicDNSSuffix(statusJSON string) (string, error) {
 		suffix = status.MagicDNSSuffix
 	}
 	return strings.Trim(suffix, "."), nil
+}
+
+// parseMachineHostnames reads the Magic DNS label of every machine (Self and
+// each Peer) from `tailscale status --json` output. The DNSName's first label
+// is the authoritative Magic DNS entry (it can differ from HostName after
+// dedup renames); HostName is the fallback for nodes without one yet.
+func parseMachineHostnames(statusJSON string) ([]string, error) {
+	type node struct {
+		HostName string
+		DNSName  string
+	}
+	var status struct {
+		Self node
+		Peer map[string]node
+	}
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		return nil, fmt.Errorf("parsing tailscale status: %w", err)
+	}
+
+	var names []string
+	add := func(n node) {
+		name, _, _ := strings.Cut(n.DNSName, ".")
+		if name == "" {
+			name = n.HostName
+		}
+		if name != "" {
+			names = append(names, strings.ToLower(name))
+		}
+	}
+	add(status.Self)
+	for _, peer := range status.Peer {
+		add(peer)
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
 }
 
 // parseServeStatus reads advertised services and funnel state from `tailscale

@@ -33,7 +33,7 @@ func TestEnableTailscaleFailsFastWithoutDaemon(t *testing.T) {
 
 	// The daemon precondition must run before any Docker work; a nil client would
 	// panic in EnsureNetwork/tailscale.Enable if the check were reordered below it.
-	err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+	_, err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "once-admin socket")
