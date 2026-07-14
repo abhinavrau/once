@@ -15,11 +15,13 @@ import (
 )
 
 type tailscaleCommand struct {
-	cmd          *cobra.Command
-	clientID     string
-	clientSecret string
-	tag          string
-	duration     time.Duration
+	cmd                   *cobra.Command
+	clientID              string
+	clientSecret          string
+	bootstrapClientID     string
+	bootstrapClientSecret string
+	tag                   string
+	duration              time.Duration
 }
 
 func newTailscaleCommand() *tailscaleCommand {
@@ -36,9 +38,13 @@ func newTailscaleCommand() *tailscaleCommand {
 	}
 	enable.Flags().StringVar(&t.clientID, "client-id", "", "Tailscale OAuth client ID")
 	enable.Flags().StringVar(&t.clientSecret, "client-secret", "", "Tailscale OAuth client secret")
+	enable.Flags().StringVar(&t.bootstrapClientID, "bootstrap-client-id", "", "oauth_keys-scoped bootstrap OAuth client ID; Once mints the runtime and policy clients from it instead of asking for them")
+	enable.Flags().StringVar(&t.bootstrapClientSecret, "bootstrap-client-secret", "", "bootstrap OAuth client secret")
 	enable.Flags().StringVar(&t.tag, "tag", "", "Tailscale tag the OAuth client owns (e.g. tag:once)")
-	enable.MarkFlagRequired("client-id")
-	enable.MarkFlagRequired("client-secret")
+	enable.MarkFlagsRequiredTogether("client-id", "client-secret")
+	enable.MarkFlagsRequiredTogether("bootstrap-client-id", "bootstrap-client-secret")
+	enable.MarkFlagsMutuallyExclusive("client-id", "bootstrap-client-id")
+	enable.MarkFlagsOneRequired("client-id", "bootstrap-client-id")
 	enable.MarkFlagRequired("tag")
 
 	disable := &cobra.Command{
@@ -86,7 +92,15 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 
 func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	settings := docker.TailscaleSettings{ClientID: t.clientID, ClientSecret: t.clientSecret, Tag: t.tag}
-	offerPolicyProvisioning(ctx, t.tag)
+	if t.bootstrapClientID != "" {
+		var err error
+		settings.ClientID, settings.ClientSecret, err = mintFromBootstrap(ctx, t.bootstrapClientID, t.bootstrapClientSecret, t.tag)
+		if err != nil {
+			return err
+		}
+	} else {
+		offerPolicyProvisioning(ctx, t.tag)
+	}
 	if err := ns.EnableTailscale(ctx, settings); err != nil {
 		return err
 	}
@@ -213,25 +227,29 @@ func (t *tailscaleCommand) funnelDisable(ctx context.Context, ns *docker.Namespa
 
 // Helpers
 
+// mintFromBootstrap turns one oauth_keys-scoped credential into the clients
+// enable needs: the policy offer runs first with a one-shot minted policy_file
+// client (a fresh tailnet must define the tag before a tagged client can be
+// minted), then the minimal-scope runtime client is minted and returned. The
+// bootstrap and policy credentials live only in memory; only the runtime
+// credential is persisted (by enable, in the once label).
+func mintFromBootstrap(ctx context.Context, clientID, clientSecret, tag string) (string, string, error) {
+	bootstrap, err := docker.NewTailscaleBootstrap(ctx, clientID, clientSecret)
+	if err != nil {
+		return "", "", err
+	}
+	offerBootstrapPolicyProvisioning(ctx, bootstrap, tag)
+	return bootstrap.MintRuntimeClient(ctx, tag)
+}
+
 // offerPolicyProvisioning offers to write the four tailnet policy sections
 // Once needs via the Tailscale API, so the user never hand-edits HuJSON. It
 // runs before the enable's credential probe on purpose: on a fresh tailnet the
 // probe cannot pass until the policy defines the tag. Best effort by design:
 // any decline or failure prints the copy-paste snippet and enable proceeds,
-// with the credential probe as the enforcement. Skipped when stdin is not a
-// terminal, and on the headscale control seam (no policy API there).
+// with the credential probe as the enforcement.
 func offerPolicyProvisioning(ctx context.Context, tag string) {
-	if docker.TailscaleControlSeamActive() {
-		return
-	}
-	if !term.IsTerminal(os.Stdin.Fd()) {
-		fmt.Println("Skipping tailnet policy setup (not a terminal); run `once tailscale enable` interactively to be offered it.")
-		return
-	}
-
-	fmt.Println("Once needs four sections in your tailnet policy file: tagOwners, autoApprovers.services, a grant for the tagged Services, and the funnel nodeAttr.")
-	if !promptYesNo("Apply them now via the Tailscale API?") {
-		printPolicySnippet(tag)
+	if !policyOfferAccepted(tag) {
 		return
 	}
 
@@ -243,6 +261,56 @@ func offerPolicyProvisioning(ctx context.Context, tag string) {
 		return
 	}
 
+	provisionPolicy(ctx, clientID, clientSecret, tag)
+}
+
+// offerBootstrapPolicyProvisioning is the bootstrap-mode policy offer: instead
+// of prompting for a policy_file credential, it mints a one-shot policy client
+// from the bootstrap credential and deletes it again after the write.
+func offerBootstrapPolicyProvisioning(ctx context.Context, bootstrap *docker.TailscaleBootstrap, tag string) {
+	if !policyOfferAccepted(tag) {
+		return
+	}
+
+	clientID, clientSecret, err := bootstrap.MintPolicyClient(ctx)
+	if err != nil {
+		fmt.Println("Could not mint the policy OAuth client:", err)
+		printPolicySnippet(tag)
+		return
+	}
+	defer func() {
+		if err := bootstrap.DeleteClient(ctx, clientID); err != nil {
+			fmt.Println("Could not delete the one-shot policy OAuth client; revoke it in the admin console (Trust credentials):", err)
+		}
+	}()
+
+	provisionPolicy(ctx, clientID, clientSecret, tag)
+}
+
+// policyOfferAccepted is the shared gate for the policy offer: skipped on the
+// headscale control seam (no policy API there) and when stdin is not a
+// terminal; declining prints the copy-paste snippet.
+func policyOfferAccepted(tag string) bool {
+	if docker.TailscaleControlSeamActive() {
+		return false
+	}
+	if !term.IsTerminal(os.Stdin.Fd()) {
+		fmt.Println("Skipping tailnet policy setup (not a terminal); run `once tailscale enable` interactively to be offered it.")
+		return false
+	}
+
+	fmt.Println("Once needs four sections in your tailnet policy file: tagOwners, autoApprovers.services, a grant for the tagged Services, and the funnel nodeAttr.")
+	if !promptYesNo("Apply them now via the Tailscale API?") {
+		printPolicySnippet(tag)
+		return false
+	}
+	return true
+}
+
+// provisionPolicy plans the policy patch with the given policy_file-scoped
+// credential, shows the diff and GitOps warning, and applies on confirm. Any
+// decline or failure prints the snippet and enable proceeds.
+func provisionPolicy(ctx context.Context, clientID, clientSecret, tag string) {
 	update, err := docker.PlanPolicyUpdate(ctx, clientID, clientSecret, tag)
 	if err != nil {
 		fmt.Println("Could not plan the policy update:", err)
