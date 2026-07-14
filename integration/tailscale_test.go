@@ -307,6 +307,33 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	_, err = cli.VolumeInspect(ctx, stateVolume)
 	require.NoError(t, err, "sidecar state volume should exist after enable")
 
+	// Funnel enable rolls the app with docktail.funnel.* labels, writing the
+	// expiry into the once label in the same atomic recreation; disable strips
+	// the funnel labels again while the service labels stay.
+	require.NoError(t, ns.Refresh(ctx))
+	expiresAt := time.Now().Add(time.Hour)
+	require.NoError(t, ns.Application("whoami").EnableFunnel(ctx, expiresAt))
+	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
+		hasDocktailLabels("whoami", ns.Name())(t, labels)
+		assert.Equal(t, "true", labels["docktail.funnel.enable"])
+		assert.Equal(t, "80", labels["docktail.funnel.port"])
+		appSettings, err := docker.UnmarshalApplicationSettings(labels["once"])
+		require.NoError(t, err)
+		require.NotNil(t, appSettings.FunnelExpiresAt)
+		assert.WithinDuration(t, expiresAt, *appSettings.FunnelExpiresAt, time.Second)
+	})
+
+	require.NoError(t, ns.Refresh(ctx))
+	require.NoError(t, ns.Application("whoami").DisableFunnel(ctx))
+	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
+		hasDocktailLabels("whoami", ns.Name())(t, labels)
+		assert.NotContains(t, labels, "docktail.funnel.enable")
+		assert.NotContains(t, labels, "docktail.funnel.port")
+		appSettings, err := docker.UnmarshalApplicationSettings(labels["once"])
+		require.NoError(t, err)
+		assert.Nil(t, appSettings.FunnelExpiresAt)
+	})
+
 	// Disable removes docktail and the sidecar, keeps the state volume, and
 	// rolls the apps to strip the labels.
 	require.NoError(t, ns.Tailscale().Disable(ctx))

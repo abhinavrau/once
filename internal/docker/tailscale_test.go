@@ -77,6 +77,32 @@ func TestDocktailLabelsWhenDisabled(t *testing.T) {
 	assert.Nil(t, docktailLabels("writebook", "once", false, true))
 }
 
+func TestWaitForFunnelBackend(t *testing.T) {
+	serveJSON := func(backend string) string {
+		return `{
+			"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "` + backend + `"}}}},
+			"AllowFunnel": {"once.tail1234.ts.net:443": true}
+		}`
+	}
+
+	daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON("http://10.0.0.5:80")}
+	err := waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", time.Second, time.Millisecond)
+	require.NoError(t, err)
+
+	// Another app's active Funnel must not count as this app's activation.
+	err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.6:80", 50*time.Millisecond, 10*time.Millisecond)
+	require.ErrorContains(t, err, "funnel did not activate")
+
+	// No funnel at all, or a daemon that keeps erroring, times out the same way.
+	daemon = &FakeTailscaleDaemon{ServeJSON: `{}`}
+	err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
+	require.ErrorContains(t, err, "funnel did not activate")
+
+	daemon = &FakeTailscaleDaemon{ServeErr: assert.AnError}
+	err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
+	require.ErrorContains(t, err, "funnel did not activate")
+}
+
 func TestValidateFunnelDuration(t *testing.T) {
 	assert.NoError(t, ValidateFunnelDuration(DefaultFunnelDuration))
 	assert.NoError(t, ValidateFunnelDuration(MaxFunnelDuration))

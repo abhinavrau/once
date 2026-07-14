@@ -36,6 +36,11 @@ type TailscaleServeStatus struct {
 	Services []string
 	// AllowFunnel maps "host:port" to whether funnel is enabled there.
 	AllowFunnel map[string]bool
+	// FunnelBackends lists the proxy destinations (e.g. http://172.18.0.5:80)
+	// served through funnel-enabled endpoints, sorted. This is what attributes
+	// a funnel to a specific app: funnel is per-node, so AllowFunnel alone
+	// can't say whose backend went public.
+	FunnelBackends []string
 }
 
 // NewHostTailscaleDaemon returns a TailscaleDaemon backed by the host's
@@ -235,6 +240,11 @@ func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
 	var config struct {
 		Services    map[string]json.RawMessage
 		AllowFunnel map[string]bool
+		Web         map[string]struct {
+			Handlers map[string]struct {
+				Proxy string
+			}
+		}
 	}
 	if err := json.Unmarshal([]byte(serveJSON), &config); err != nil {
 		return TailscaleServeStatus{}, fmt.Errorf("parsing tailscale serve status: %w", err)
@@ -246,5 +256,18 @@ func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
 	}
 	slices.Sort(services)
 
-	return TailscaleServeStatus{Services: services, AllowFunnel: config.AllowFunnel}, nil
+	var backends []string
+	for hostPort, enabled := range config.AllowFunnel {
+		if !enabled {
+			continue
+		}
+		for _, handler := range config.Web[hostPort].Handlers {
+			if handler.Proxy != "" {
+				backends = append(backends, handler.Proxy)
+			}
+		}
+	}
+	slices.Sort(backends)
+
+	return TailscaleServeStatus{Services: services, AllowFunnel: config.AllowFunnel, FunnelBackends: backends}, nil
 }

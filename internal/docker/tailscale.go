@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -300,37 +301,21 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 }
 
 // WaitForFunnelActive polls the local tailscaled until it reports a Funnel
-// active, or returns an error on timeout. Funnel needs the tailnet ACL's funnel
-// node attribute, which Once can't manage - surfacing this prevents reporting a
-// Funnel active when activation actually failed.
-// ponytail: Funnel is per-node, so any active funnel counts as activation;
-// per-app attribution lands with the funnel work on Docktail (ticket 15).
-func (t *Tailscale) WaitForFunnelActive(ctx context.Context) error {
+// proxying to the app's container, or returns an error on timeout. Funnel is
+// per-node, so matching the app's backend is what proves *this* app went
+// public - another app's active Funnel must not count. Funnel also needs the
+// tailnet ACL's funnel node attribute, which Once can't manage - surfacing
+// activation failure prevents reporting a Funnel active when it isn't.
+func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) error {
 	settings, err := t.LoadSettings(ctx)
 	if err != nil {
 		return err
 	}
-	daemon := t.daemonFor(settings.Mode)
-
-	deadline := time.Now().Add(funnelActivationTimeout)
-	for {
-		status, err := daemon.ServeStatus(ctx)
-		if err == nil {
-			for _, active := range status.AllowFunnel {
-				if active {
-					return nil
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("funnel did not activate; check that the once-docktail container is running and your tailnet ACL grants the funnel node attribute")
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(funnelActivationPoll):
-		}
+	backend, err := app.funnelBackend(ctx)
+	if err != nil {
+		return err
 	}
+	return waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
 }
 
 // Destroy removes the full topology including the sidecar's state volume (full
@@ -644,6 +629,27 @@ func hostTailscaledDir() string {
 func hostTailscaledPresent() bool {
 	info, err := os.Stat(filepath.Join(hostTailscaledDir(), tailscaledSocketFile))
 	return err == nil && !info.IsDir()
+}
+
+// waitForFunnelBackend polls the local daemon until a funnel-enabled endpoint
+// proxies to backend. Timeout and poll are parameters so tests can run the
+// timeout path fast.
+func waitForFunnelBackend(ctx context.Context, daemon TailscaleDaemon, backend string, timeout, poll time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		status, err := daemon.ServeStatus(ctx)
+		if err == nil && slices.Contains(status.FunnelBackends, backend) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("funnel did not activate; check that the once-docktail container is running and your tailnet ACL grants the funnel node attribute")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
 }
 
 // waitForMagicDNSSuffix polls the local daemon until it reports the tailnet's

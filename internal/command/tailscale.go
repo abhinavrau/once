@@ -199,8 +199,8 @@ func (t *tailscaleCommand) funnelEnable(ctx context.Context, ns *docker.Namespac
 
 	// Surface activation failures: Funnel needs the tailnet ACL's funnel node
 	// attribute, which Once can't manage. Only report it active once the local
-	// tailscaled confirms it.
-	if err := ns.Tailscale().WaitForFunnelActive(ctx); err != nil {
+	// tailscaled confirms a Funnel proxying to this app's container.
+	if err := ns.Tailscale().WaitForFunnelActive(ctx, app); err != nil {
 		return err
 	}
 

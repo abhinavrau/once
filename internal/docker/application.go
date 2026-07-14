@@ -205,7 +205,7 @@ func (a *Application) Deploy(ctx context.Context, progress DeployProgressCallbac
 
 // Roll recreates the app's container in place (zero-downtime, via the normal
 // deploy path) so it picks up label changes such as docktail.* injection. It
-// reuses the running image and the existing volume — no image pull.
+// reuses the running image and the existing volume - no image pull.
 func (a *Application) Roll(ctx context.Context, progress DeployProgressCallback) error {
 	vol, err := a.Volume(ctx)
 	if err != nil {
@@ -296,6 +296,26 @@ func (a *Application) validateTailscaleServiceName(ctx context.Context) error {
 		return err
 	}
 	return ValidateTailscaleServiceName(a.Settings.Name)
+}
+
+// funnelBackend returns the proxy destination docktail programs for this app's
+// Funnel: http://<container-IP-on-namespace-network>:80, per the
+// docktail.funnel.port label. Matching it in the daemon's serve config is what
+// attributes an active Funnel to this app.
+func (a *Application) funnelBackend(ctx context.Context) (string, error) {
+	name, err := a.ContainerName(ctx)
+	if err != nil {
+		return "", err
+	}
+	info, err := a.namespace.client.ContainerInspect(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("inspecting %s: %w", name, err)
+	}
+	endpoint := info.NetworkSettings.Networks[a.namespace.name]
+	if endpoint == nil || endpoint.IPAddress == "" {
+		return "", fmt.Errorf("app %s has no IP address on network %s", a.Settings.Name, a.namespace.name)
+	}
+	return "http://" + endpoint.IPAddress + ":80", nil
 }
 
 func (a *Application) saveOperationResult(ctx context.Context, record func(*State)) {
