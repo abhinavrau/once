@@ -46,7 +46,7 @@ func newTailscaleCommand() *tailscaleCommand {
 
 	status := &cobra.Command{
 		Use:   "status",
-		Short: "Show the tailnet service URLs of exposed apps",
+		Short: "Show each exposed app's tailnet URL and advertised/approved state",
 		RunE:  WithNamespace(t.status),
 	}
 
@@ -100,9 +100,9 @@ func (t *tailscaleCommand) disable(ctx context.Context, ns *docker.Namespace, cm
 	return nil
 }
 
-// status lists each exposed app's service URL, computed from the Magic DNS
-// suffix stored at enable time - no live lookup. Advertised/approved states
-// come with the status-command work on Docktail (migration ticket 14).
+// status lists once-admin and each exposed app with its service URL (from the
+// Magic DNS suffix stored at enable time) and its advertised/approved state,
+// read live from the local daemon and the Tailscale cloud API.
 func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	enabled, err := ns.Tailscale().Enabled(ctx)
 	if err != nil {
@@ -122,12 +122,28 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 		return nil
 	}
 
-	fmt.Printf("once-admin\t%s\n", settings.TailnetURL("once-admin"))
+	names := []string{"once-admin"}
+	var stopped []string
 	for _, app := range ns.Applications() {
 		if !app.Settings.TailscaleExposed() {
 			continue
 		}
-		fmt.Printf("%s\t%s\n", app.Settings.Name, settings.TailnetURL(app.Settings.Name))
+		if app.Running {
+			names = append(names, app.Settings.Name)
+		} else {
+			stopped = append(stopped, app.Settings.Name)
+		}
+	}
+
+	statuses, err := ns.Tailscale().ServiceStatuses(ctx, names)
+	if err != nil {
+		return err
+	}
+	for _, s := range statuses {
+		fmt.Printf("%s\t%s\t%s\n", s.Name, s.URL, s.State)
+	}
+	for _, name := range stopped {
+		fmt.Printf("%s\t%s\t%s\n", name, settings.TailnetURL(name), "not running")
 	}
 	return nil
 }
