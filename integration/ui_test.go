@@ -25,7 +25,9 @@ func TestUIInstallAndManageApp(t *testing.T) {
 
 	ns, err := docker.NewNamespace("once-ui-test")
 	require.NoError(t, err)
-	defer ns.Teardown(ctx, true)
+	// Fresh context: the test's own ctx may already be expired by cleanup time,
+	// which would silently fail every removal and strand the containers.
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
 	proxyPorts := getProxyPorts(t)

@@ -227,26 +227,20 @@ func (n *Namespace) DisableTailscale(ctx context.Context) error {
 	return nil
 }
 
+// Teardown is best effort: every removal is attempted even when an earlier one
+// fails, so one hiccup can't strand the rest of the namespace's containers.
 func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
+	var errs []error
 	for _, app := range n.applications {
-		if err := app.Destroy(ctx, destroyVolumes); err != nil {
-			return err
-		}
+		errs = append(errs, app.Destroy(ctx, destroyVolumes))
 	}
-
-	if err := n.proxy.Destroy(ctx); err != nil {
-		return err
-	}
-
-	if err := n.tailscale.Destroy(ctx); err != nil {
-		return err
-	}
-
-	if err := n.admin.Destroy(ctx); err != nil {
-		return err
-	}
-
-	return n.client.NetworkRemove(ctx, n.name)
+	errs = append(errs,
+		n.proxy.Destroy(ctx),
+		n.tailscale.Destroy(ctx),
+		n.admin.Destroy(ctx),
+		n.client.NetworkRemove(ctx, n.name),
+	)
+	return errors.Join(errs...)
 }
 
 func (n *Namespace) Refresh(ctx context.Context) error {

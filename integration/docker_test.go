@@ -1096,7 +1096,9 @@ func startLocalRegistry(t *testing.T, ctx context.Context) string {
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		c.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true})
+		// RemoveVolumes: registry:2 declares VOLUME /var/lib/registry, which
+		// otherwise strands an anonymous volume per test run.
+		c.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true, RemoveVolumes: true})
 	})
 
 	require.NoError(t, c.ContainerStart(ctx, resp.ID, container.StartOptions{}))
