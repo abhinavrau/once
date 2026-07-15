@@ -98,7 +98,7 @@ go test -v -run TestName ./internal/...
 - Tailscale SaaS paths (the OAuth probe against `api.tailscale.com`) can't run in
   CI — the integration harness only exercises the headscale control seam, which
   skips OAuth. Cover SaaS-only logic with httptest unit tests, and keep any request
-  that must match tsdproxy's real API call byte-compatible with it.
+  that must match docktail's real API call byte-compatible with it.
 
 ## Coding Style
 

@@ -318,6 +318,21 @@ func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) e
 	return waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
 }
 
+// LegacyTSDProxyWarning returns a message telling the user how to move off a
+// pre-Docktail TSDProxy install when its container is still around, or "" when
+// there is none. Once never manages that container: the user re-runs enable to
+// get the Docktail topology and removes the old container by hand (only the
+// full teardown in Destroy sweeps it up). Best effort - any inspect error
+// reads as "not present".
+func (t *Tailscale) LegacyTSDProxyWarning(ctx context.Context) string {
+	name := t.legacyTSDProxyName()
+	if _, err := t.namespace.client.ContainerInspect(ctx, name); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("found a %s container from an older version of Once, which Once no longer manages; re-run `once tailscale enable` to set up the new Tailscale integration, then remove it with `docker rm -f %s` and `docker volume rm %s`",
+		name, name, t.legacyTSDProxyVolumeName())
+}
+
 // Destroy removes the full topology including the sidecar's state volume (full
 // cleanup, used by teardown - unlike Disable, which retains it). It also sweeps
 // up the legacy once-tsdproxy container and volume from installs that predate
@@ -672,51 +687,4 @@ func waitForMagicDNSSuffix(ctx context.Context, daemon TailscaleDaemon) (string,
 		case <-time.After(suffixWaitPoll):
 		}
 	}
-}
-
-// Legacy TSDProxy remnants. Dead since the Docktail swap: nothing injects
-// these labels or scans these logs anymore. Removed with the rest of the
-// TSDProxy teardown (docktail migration ticket 20).
-
-// tsdproxyRegistrationFailures are substrings tsdproxy/tsnet logs when the
-// control plane rejects a node's registration.
-var tsdproxyRegistrationFailures = []string{
-	"tags are invalid or not permitted",
-	"is invalid or not permitted",
-	"invalid authkey",
-	"authkey is invalid",
-}
-
-// tsdproxyLabels returns the labels that exposed an app on the tailnet as its
-// own ephemeral TSDProxy node.
-func tsdproxyLabels(appName string, enabled, funnel bool) map[string]string {
-	if !enabled {
-		return nil
-	}
-	port := "80/http:80/http"
-	if funnel {
-		port = "443/https:80/http, tailscale_funnel"
-	}
-	return map[string]string{
-		"tsdproxy.enable":    "true",
-		"tsdproxy.name":      appName,
-		"tsdproxy.port.1":    port,
-		"tsdproxy.ephemeral": "true",
-	}
-}
-
-// scanRegistrationError returns the most recent tsdproxy log line matching a
-// known registration-rejection signature, or "" when none match.
-func scanRegistrationError(logs string) string {
-	var last string
-	for _, line := range strings.Split(logs, "\n") {
-		lower := strings.ToLower(line)
-		for _, sig := range tsdproxyRegistrationFailures {
-			if strings.Contains(lower, sig) {
-				last = strings.TrimSpace(line)
-				break
-			}
-		}
-	}
-	return last
 }

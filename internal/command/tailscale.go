@@ -34,7 +34,7 @@ func newTailscaleCommand() *tailscaleCommand {
 	enable := &cobra.Command{
 		Use:   "enable",
 		Short: "Enable Tailscale and boot the Docktail containers",
-		RunE:  WithNamespace(t.enable),
+		RunE:  withLegacyTSDProxyWarning(t.enable),
 	}
 	enable.Flags().StringVar(&t.clientID, "client-id", "", "Tailscale OAuth client ID")
 	enable.Flags().StringVar(&t.clientSecret, "client-secret", "", "Tailscale OAuth client secret")
@@ -50,13 +50,13 @@ func newTailscaleCommand() *tailscaleCommand {
 	disable := &cobra.Command{
 		Use:   "disable",
 		Short: "Disable Tailscale and remove the Docktail containers",
-		RunE:  WithNamespace(t.disable),
+		RunE:  withLegacyTSDProxyWarning(t.disable),
 	}
 
 	status := &cobra.Command{
 		Use:   "status",
 		Short: "Show each exposed app's tailnet URL and advertised/approved state",
-		RunE:  WithNamespace(t.status),
+		RunE:  withLegacyTSDProxyWarning(t.status),
 	}
 
 	t.cmd.AddCommand(enable, disable, status, t.newFunnelCommand())
@@ -73,7 +73,7 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 		Use:   "enable <app-name>",
 		Short: "Grant temporary public access to an app via Tailscale Funnel",
 		Args:  cobra.ExactArgs(1),
-		RunE:  WithNamespace(t.funnelEnable),
+		RunE:  withLegacyTSDProxyWarning(t.funnelEnable),
 	}
 	enable.Flags().DurationVar(&t.duration, "duration", docker.DefaultFunnelDuration, "how long the Funnel stays open (max 24h)")
 
@@ -81,7 +81,7 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 		Use:   "disable <app-name>",
 		Short: "Revoke an app's public Funnel access immediately",
 		Args:  cobra.ExactArgs(1),
-		RunE:  WithNamespace(t.funnelDisable),
+		RunE:  withLegacyTSDProxyWarning(t.funnelDisable),
 	}
 
 	funnel.AddCommand(enable, disable)
@@ -228,6 +228,18 @@ func (t *tailscaleCommand) funnelDisable(ctx context.Context, ns *docker.Namespa
 }
 
 // Helpers
+
+// withLegacyTSDProxyWarning runs a tailscale subcommand after surfacing the
+// pre-Docktail upgrade message when a legacy once-tsdproxy container is still
+// around. Once never migrates or removes it; the user does.
+func withLegacyTSDProxyWarning(fn NamespaceRunE) func(*cobra.Command, []string) error {
+	return WithNamespace(func(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
+		if w := ns.Tailscale().LegacyTSDProxyWarning(ctx); w != "" {
+			printTailscaleWarnings([]string{w})
+		}
+		return fn(ctx, ns, cmd, args)
+	})
+}
 
 // mintFromBootstrap turns one oauth_keys-scoped credential into the clients
 // enable needs: the policy offer runs first with a one-shot minted policy_file
