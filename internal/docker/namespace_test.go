@@ -16,8 +16,9 @@ func TestUniqueName(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(name, "myapp-"))
 	assert.Len(t, name, len("myapp-")+6)
-	// The name becomes the tsdproxy.name label, which must be a valid RFC 1123
-	// hostname — no dots (regression guard: a "." separator broke tailnet registration).
+	// The name becomes the docktail.service.name label, which must be a valid
+	// RFC 1123 hostname - no dots (regression guard: a "." separator broke
+	// tailnet registration).
 	assert.NotContains(t, name, ".")
 
 	name2, err := ns.UniqueName("myapp")
@@ -33,7 +34,7 @@ func TestEnableTailscaleFailsFastWithoutDaemon(t *testing.T) {
 
 	// The daemon precondition must run before any Docker work; a nil client would
 	// panic in EnsureNetwork/tailscale.Enable if the check were reordered below it.
-	err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+	_, err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "once-admin socket")

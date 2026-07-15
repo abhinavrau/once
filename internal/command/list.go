@@ -52,22 +52,26 @@ func (l *listCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.
 
 // Helpers
 
-// tailnetURLs maps app name to tailnet URL when Tailscale is enabled. Best
-// effort: any failure returns nil so list still prints the public/local lines.
+// tailnetURLs maps app name to its tailnet service URL, computed from the
+// Magic DNS suffix stored at enable time - no live lookup. Best effort: any
+// failure returns nil so list still prints the public/local lines.
 func tailnetURLs(ctx context.Context, ns *docker.Namespace) map[string]string {
 	enabled, err := ns.Tailscale().Enabled(ctx)
 	if err != nil || !enabled {
 		return nil
 	}
 
-	proxies, err := ns.Tailscale().Proxies(ctx)
+	settings, err := ns.Tailscale().LoadSettings(ctx)
 	if err != nil {
 		return nil
 	}
 
-	urls := make(map[string]string, len(proxies))
-	for _, p := range proxies {
-		urls[p.Name] = p.URL
+	urls := make(map[string]string, len(ns.Applications()))
+	for _, app := range ns.Applications() {
+		if !app.Settings.TailscaleExposed() {
+			continue
+		}
+		urls[app.Settings.Name] = settings.TailnetURL(app.Settings.Name)
 	}
 	return urls
 }

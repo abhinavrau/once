@@ -13,7 +13,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 )
 
-// adminImage is pinned exactly, the same doctrine as proxyImage/tsdproxyImage.
+// adminImage is pinned exactly, the same doctrine as proxyImage/docktailImage.
 const adminImage = "nginx:1.27-alpine"
 
 // Paths inside the once-admin container. The host socket is bind-mounted to the
@@ -33,8 +33,9 @@ func AdminNginxConfPath() string { return filepath.Join(adminRuntimeDir(), "once
 // The daemon writes it next to the socket; once-admin bind-mounts it read-only.
 func AdminNginxConfig() string { return adminNginxConf }
 
-// Admin manages the once-admin nginx helper container, which TSDProxy exposes on
-// the tailnet and which reverse-proxies HTTP to the daemon's Unix socket.
+// Admin manages the once-admin nginx helper container, which Docktail exposes
+// on the tailnet as a Tailscale Service and which reverse-proxies HTTP to the
+// daemon's Unix socket.
 type Admin struct {
 	namespace *Namespace
 }
@@ -109,7 +110,7 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 	resp, err := a.namespace.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:  adminImage,
-			Labels: tsdproxyLabels("once-admin", true, false),
+			Labels: docktailLabels("once-admin", a.namespace.name, true, false),
 		},
 		&container.HostConfig{
 			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyAlways},

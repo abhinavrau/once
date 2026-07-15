@@ -181,32 +181,42 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 	return err
 }
 
-// EnableTailscale is the full enable lifecycle shared by the CLI and TUI: bring
-// up the network, boot once-tsdproxy with the given credentials, boot once-admin,
-// then verify a node can actually register — the mint-time credential probe
-// cannot, since the control plane enforces tag ownership only at registration.
-func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) error {
+// EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
+// validate the exposed app names and the credentials, bring up the network,
+// boot the Docktail topology with the given credentials, boot once-admin so
+// it is exposed as a Service too, then verify every expected service is
+// advertised and approved before reporting success. The returned warnings
+// name any tailnet machines whose Magic DNS entries shadow a service.
+func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) ([]string, error) {
+	exposed := n.exposedTailscaleServices()
+	for _, name := range exposed {
+		if err := ValidateTailscaleServiceName(name); err != nil {
+			return nil, err
+		}
+	}
 	if err := n.admin.RequireDaemon(); err != nil {
-		return err
+		return nil, err
 	}
 	settings.Tag = settings.normalizeTag()
 	if err := validateTailscaleCredentials(ctx, settings); err != nil {
-		return err
+		return nil, err
 	}
 	if err := n.EnsureNetwork(ctx); err != nil {
-		return fmt.Errorf("ensuring network: %w", err)
+		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
 	if err := n.tailscale.Enable(ctx, settings); err != nil {
-		return fmt.Errorf("enabling Tailscale: %w", err)
+		return nil, fmt.Errorf("enabling Tailscale: %w", err)
 	}
 	if err := n.admin.Boot(ctx); err != nil {
-		return fmt.Errorf("booting once-admin: %w", err)
+		return nil, fmt.Errorf("booting once-admin: %w", err)
 	}
-	return n.tailscale.VerifyRegistration(ctx)
+	warnings := n.tailscale.ShadowWarnings(ctx, exposed)
+	return warnings, n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices())
 }
 
 // DisableTailscale is the full disable lifecycle shared by the CLI and TUI:
-// remove once-admin, then once-tsdproxy (keeping its data volume).
+// remove once-admin, then the Docktail topology (keeping the sidecar's state
+// volume).
 func (n *Namespace) DisableTailscale(ctx context.Context) error {
 	if err := n.admin.Destroy(ctx); err != nil {
 		return fmt.Errorf("removing once-admin: %w", err)
@@ -217,26 +227,20 @@ func (n *Namespace) DisableTailscale(ctx context.Context) error {
 	return nil
 }
 
+// Teardown is best effort: every removal is attempted even when an earlier one
+// fails, so one hiccup can't strand the rest of the namespace's containers.
 func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
+	var errs []error
 	for _, app := range n.applications {
-		if err := app.Destroy(ctx, destroyVolumes); err != nil {
-			return err
-		}
+		errs = append(errs, app.Destroy(ctx, destroyVolumes))
 	}
-
-	if err := n.proxy.Destroy(ctx); err != nil {
-		return err
-	}
-
-	if err := n.tailscale.Destroy(ctx); err != nil {
-		return err
-	}
-
-	if err := n.admin.Destroy(ctx); err != nil {
-		return err
-	}
-
-	return n.client.NetworkRemove(ctx, n.name)
+	errs = append(errs,
+		n.proxy.Destroy(ctx),
+		n.tailscale.Destroy(ctx),
+		n.admin.Destroy(ctx),
+		n.client.NetworkRemove(ctx, n.name),
+	)
+	return errors.Join(errs...)
 }
 
 func (n *Namespace) Refresh(ctx context.Context) error {
@@ -245,7 +249,7 @@ func (n *Namespace) Refresh(ctx context.Context) error {
 }
 
 // RollApplications recreates every running app container (zero-downtime) so they
-// pick up the current tsdproxy.* label state. It refreshes from Docker first so
+// pick up the current docktail.* label state. It refreshes from Docker first so
 // the roll covers apps regardless of whether they were preloaded — the retrofit
 // behind once tailscale enable/disable.
 func (n *Namespace) RollApplications(ctx context.Context) error {
@@ -351,6 +355,34 @@ func (n *Namespace) containerAppName(containerName string) string {
 }
 
 // Private
+
+// expectedTailscaleServices lists the services that should exist on the
+// tailnet after enable: one per running exposed application, plus the Once
+// Admin Web App. Stopped apps aren't advertised by Docktail, so they can't
+// be verified.
+func (n *Namespace) expectedTailscaleServices() []string {
+	expected := []string{"once-admin"}
+	for _, app := range n.applications {
+		if app.Running && app.Settings.TailscaleExposed() {
+			expected = append(expected, app.Settings.Name)
+		}
+	}
+	return expected
+}
+
+// exposedTailscaleServices lists every service name that appears on the
+// tailnet while Tailscale is enabled: each exposed application (running or
+// not - a stopped app is advertised as soon as it starts) plus the Once
+// Admin Web App.
+func (n *Namespace) exposedTailscaleServices() []string {
+	names := []string{"once-admin"}
+	for _, app := range n.applications {
+		if app.Settings.TailscaleExposed() {
+			names = append(names, app.Settings.Name)
+		}
+	}
+	return names
+}
 
 type appCandidate struct {
 	app     *Application

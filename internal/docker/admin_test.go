@@ -64,9 +64,10 @@ func TestRequireDaemonErrorsWhenConfigAbsent(t *testing.T) {
 	assert.Contains(t, err.Error(), "nginx config")
 }
 
-func TestAdminCarriesTSDProxyLabels(t *testing.T) {
-	labels := tsdproxyLabels("once-admin", true, false)
+func TestAdminCarriesDocktailLabels(t *testing.T) {
+	labels := docktailLabels("once-admin", "once", true, false)
 
-	assert.Equal(t, "true", labels["tsdproxy.enable"])
-	assert.Equal(t, "once-admin", labels["tsdproxy.name"])
+	assert.Equal(t, "true", labels["docktail.service.enable"])
+	assert.Equal(t, "once-admin", labels["docktail.service.name"])
+	assert.Equal(t, "once", labels["docktail.service.network"])
 }

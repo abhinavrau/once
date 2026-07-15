@@ -61,15 +61,13 @@ type Dashboard struct {
 	overlay       Component
 
 	tailscaleEnabled bool
-	tailnetURLs      map[string]string // app name -> tailnet URL, from the lookup API
-	tailnetSuffix    string            // tailnet MagicDNS suffix, for apps not yet in the lookup
+	tailnetSuffix    string // tailnet MagicDNS suffix, for computing app service URLs
 }
 
 type dashboardTickMsg struct{}
 
 type tailscaleInfoMsg struct {
 	enabled bool
-	urls    map[string]string
 	suffix  string
 }
 
@@ -234,7 +232,6 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 
 	case tailscaleInfoMsg:
 		m.tailscaleEnabled = msg.enabled
-		m.tailnetURLs = msg.urls
 		m.tailnetSuffix = msg.suffix
 		m.rebuildViewportContent()
 
@@ -343,8 +340,8 @@ func (m Dashboard) scheduleTailscaleRefresh() tea.Cmd {
 }
 
 // fetchTailscaleInfo asynchronously reads the global enabled state and the
-// per-app tailnet URLs from the lookup API so the details card can stay current
-// without blocking the UI. Failures degrade to "not enabled".
+// stored Magic DNS suffix so the details card can stay current without
+// blocking the UI. Failures degrade to "not enabled".
 func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
 	ns := m.namespace
 	return func() tea.Msg {
@@ -353,14 +350,8 @@ func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
 		if err != nil || !enabled {
 			return tailscaleInfoMsg{enabled: false}
 		}
-		urls := map[string]string{}
-		if proxies, err := ns.Tailscale().Proxies(ctx); err == nil {
-			for _, p := range proxies {
-				urls[p.Name] = p.URL
-			}
-		}
 		suffix, _ := ns.Tailscale().DomainSuffix(ctx)
-		return tailscaleInfoMsg{enabled: true, urls: urls, suffix: suffix}
+		return tailscaleInfoMsg{enabled: true, suffix: suffix}
 	}
 }
 
@@ -392,10 +383,10 @@ func (m *Dashboard) rebuildViewportContent() {
 	for i := range m.panels {
 		m.panels[i].tailscaleEnabled = m.tailscaleEnabled
 		app := m.panels[i].app.Settings
-		url := m.tailnetURLs[app.Name]
-		// Fall back to the suffix-built URL for an exposed app whose node hasn't
-		// reported to the lookup API yet, so we can show where it will live.
-		if url == "" && app.TailscaleExposed() {
+		// Service URLs are deterministic: computed from the stored Magic DNS
+		// suffix, never looked up live.
+		var url string
+		if app.TailscaleExposed() {
 			url = (docker.TailscaleSettings{DomainSuffix: m.tailnetSuffix}).TailnetURL(app.Name)
 		}
 		m.panels[i].tailnetURL = url
