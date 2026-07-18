@@ -112,7 +112,9 @@ func TestValidateFunnelDuration(t *testing.T) {
 }
 
 func TestContainerConfigInjectsDocktailLabels(t *testing.T) {
-	app := testApplication("writebook")
+	// The advertised service name is the app's Host (the tailnet name knob),
+	// not its unique app name.
+	app := testTailnetApplication("writebook-abc123", "writebook")
 
 	enabled := app.containerConfig(nil, true)
 	assert.Equal(t, app.Settings.Marshal(), enabled.Labels[labelKey])
@@ -125,19 +127,21 @@ func TestContainerConfigInjectsDocktailLabels(t *testing.T) {
 	assert.NotContains(t, disabled.Labels, "docktail.service.enable")
 }
 
-func TestContainerConfigRespectsPerAppExposure(t *testing.T) {
-	app := testApplication("writebook")
-	app.Settings.TailscaleExcluded = true
-
-	// Even with Tailscale globally enabled, an opted-out app gets no docktail labels.
-	cfg := app.containerConfig(nil, true)
-	assert.NotContains(t, cfg.Labels, "docktail.service.enable")
-	assert.Equal(t, app.Settings.Marshal(), cfg.Labels[labelKey])
+func TestContainerConfigExposureExclusivity(t *testing.T) {
+	// Even with Tailscale globally enabled, only tailnet-exposed apps carry
+	// docktail labels.
+	for _, exposure := range []Exposure{ExposureLocal, ExposurePublic} {
+		app := testTailnetApplication("writebook", "writebook.localhost")
+		app.Settings.Exposure = exposure
+		cfg := app.containerConfig(nil, true)
+		assert.NotContains(t, cfg.Labels, "docktail.service.enable")
+		assert.Equal(t, app.Settings.Marshal(), cfg.Labels[labelKey])
+	}
 }
 
 func TestContainerConfigFunnelLabelTracksSettings(t *testing.T) {
 	expires := time.Now().Add(time.Hour)
-	app := testApplication("writebook")
+	app := testTailnetApplication("writebook", "writebook")
 	app.Settings.FunnelExpiresAt = &expires
 
 	withFunnel := app.containerConfig(nil, true)
@@ -148,13 +152,23 @@ func TestContainerConfigFunnelLabelTracksSettings(t *testing.T) {
 	assert.NotContains(t, withoutFunnel.Labels, "docktail.funnel.enable")
 }
 
+func TestEnableFunnelRequiresTailnetExposure(t *testing.T) {
+	app := testTailnetApplication("writebook", "writebook.localhost")
+	app.Settings.Exposure = ExposureLocal
+
+	err := app.EnableFunnel(t.Context(), time.Now().Add(time.Hour))
+	assert.ErrorIs(t, err, ErrFunnelRequiresTailnet)
+	assert.Nil(t, app.Settings.FunnelExpiresAt)
+}
+
 // Helpers
 
-// testApplication builds an app attached to a namespace whose network name the
-// docktail labels reference. No Docker client is needed for label assembly.
-func testApplication(name string) *Application {
+// testTailnetApplication builds a tailnet-exposed app attached to a namespace
+// whose network name the docktail labels reference. No Docker client is needed
+// for label assembly.
+func testTailnetApplication(name, host string) *Application {
 	return &Application{
 		namespace: &Namespace{name: "once-test"},
-		Settings:  ApplicationSettings{Name: name, Image: name + ":1"},
+		Settings:  ApplicationSettings{Name: name, Image: name + ":1", Host: host, Exposure: ExposureTailnet},
 	}
 }

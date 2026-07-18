@@ -80,6 +80,30 @@ func TestCLIDeployPublicRequiresFQDN(t *testing.T) {
 	assert.ErrorIs(t, err, docker.ErrPublicHostRequired)
 }
 
+// TestCLIDeployTailnetRequiresTailscaleEnable proves a tailnet deploy before
+// `once tailscale enable` fails fast with the pointer to the fix and leaves
+// nothing behind.
+func TestCLIDeployTailnetRequiresTailscaleEnable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	nsName := "once-cli-tailnet-test"
+	ns, err := docker.NewNamespace(nsName)
+	require.NoError(t, err)
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+
+	err = runCLI("-n", nsName, "deploy", "ghcr.io/basecamp/once-campfire:main", "--expose", "tailnet")
+	require.ErrorIs(t, err, docker.ErrTailscaleNotEnabled)
+	assert.ErrorContains(t, err, "once tailscale enable")
+
+	restored, err := docker.RestoreNamespace(ctx, nsName)
+	require.NoError(t, err)
+	assert.Empty(t, restored.Applications(), "a refused tailnet deploy must leave no app behind")
+}
+
 func TestCLIRemovedTailscaleFlagNamesReplacement(t *testing.T) {
 	for _, cmd := range [][]string{
 		{"deploy", "ghcr.io/basecamp/once-campfire:main", "--tailscale"},

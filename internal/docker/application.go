@@ -31,8 +31,10 @@ var (
 		msg:         "pull failed",
 		description: "Failed to download the application image. Check that the image name is correct and try again.",
 	}
-	ErrDeployFailed       = errors.New("deploy failed")
-	ErrVerificationFailed = &describedError{
+	ErrDeployFailed          = errors.New("deploy failed")
+	ErrTailscaleNotEnabled   = errors.New("tailnet exposure requires Tailscale; run `once tailscale enable` first")
+	ErrFunnelRequiresTailnet = errors.New("funnel requires tailnet exposure; switch the app with `once update <host> --expose tailnet` first")
+	ErrVerificationFailed    = &describedError{
 		msg:         "verification failed",
 		description: "The application couldn't be verified. Please check that you have a valid DNS record set up.",
 	}
@@ -106,8 +108,10 @@ func (a *Application) Volume(ctx context.Context) (*ApplicationVolume, error) {
 	})
 }
 
+// URL is the app's proxy-routed address. Tailnet apps have none: their only
+// address is the tailnet service URL, computed via TailscaleSettings.TailnetURL.
 func (a *Application) URL() string {
-	if a.Settings.Host == "" {
+	if a.Settings.Host == "" || a.Settings.Exposure == ExposureTailnet {
 		return ""
 	}
 
@@ -187,8 +191,14 @@ func (a *Application) Deploy(ctx context.Context, progress DeployProgressCallbac
 		return ErrHostRequired
 	}
 
-	if err := a.validateTailscaleServiceName(ctx); err != nil {
+	if err := a.validateTailnetExposure(ctx); err != nil {
 		return err
+	}
+
+	// Leaving the tailnet revokes any Funnel: a surviving expiry would
+	// silently re-publish the app if it returned within the window.
+	if a.Settings.Exposure != ExposureTailnet {
+		a.Settings.FunnelExpiresAt = nil
 	}
 
 	if _, err := a.pullImage(ctx, progress); err != nil {
@@ -217,8 +227,12 @@ func (a *Application) Roll(ctx context.Context, progress DeployProgressCallback)
 // EnableFunnel grants temporary public access via Tailscale Funnel. Setting
 // FunnelExpiresAt and recreating the container writes both the expiry (in the
 // once label) and the docktail.funnel.* labels in one atomic recreation, so
-// the funnel state and its expiry can never drift apart.
+// the funnel state and its expiry can never drift apart. Only a tailnet-exposed
+// app has a Service to funnel; permanent public access is `--expose public`.
 func (a *Application) EnableFunnel(ctx context.Context, expiresAt time.Time) error {
+	if a.Settings.Exposure != ExposureTailnet {
+		return ErrFunnelRequiresTailnet
+	}
 	a.Settings.FunnelExpiresAt = &expiresAt
 	return a.Roll(ctx, nil)
 }
@@ -284,18 +298,25 @@ func (a *Application) Destroy(ctx context.Context, destroyVolumes bool) error {
 
 // Private
 
-// validateTailscaleServiceName rejects a deploy whose app name could never
-// resolve as a tailnet service, but only when Tailscale is enabled and the
-// app is exposed - off the tailnet, any name Docker accepts is fine.
-func (a *Application) validateTailscaleServiceName(ctx context.Context) error {
-	if !a.Settings.TailscaleExposed() {
+// validateTailnetExposure rejects a tailnet deploy that could never work:
+// the host must be a valid Magic DNS label (it is the service name), and
+// Tailscale must already be enabled - there is no tailnet to appear on
+// otherwise, so point at the fix instead of deploying an unreachable app.
+func (a *Application) validateTailnetExposure(ctx context.Context) error {
+	if a.Settings.Exposure != ExposureTailnet {
 		return nil
 	}
-	enabled, err := a.namespace.Tailscale().Enabled(ctx)
-	if err != nil || !enabled {
+	if err := ValidateTailscaleServiceName(a.Settings.Host); err != nil {
 		return err
 	}
-	return ValidateTailscaleServiceName(a.Settings.Name)
+	enabled, err := a.namespace.Tailscale().Enabled(ctx)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return ErrTailscaleNotEnabled
+	}
+	return nil
 }
 
 // funnelBackend returns the proxy destination docktail programs for this app's
@@ -415,20 +436,9 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 		return fmt.Errorf("starting container: %w", err)
 	}
 
-	shortContainerID := resp.ID[:12]
-
-	if err := a.namespace.Proxy().Deploy(ctx, DeployOptions{
-		AppName: a.Settings.Name,
-		Target:  shortContainerID,
-		Host:    a.Settings.Host,
-		TLS:     a.Settings.TLSEnabled(),
-	}); err != nil {
+	if err := a.registerRouting(ctx, resp.ID); err != nil {
 		a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-		if strings.Contains(err.Error(), "target not healthy") || strings.Contains(err.Error(), "deploy timed out") {
-			slog.Error("Application failed to start", "app", a.Settings.Name, "error", err)
-			return ErrAppNotStarted
-		}
-		return fmt.Errorf("registering with proxy: %w", err)
+		return err
 	}
 
 	if err := a.removeContainersExcept(ctx, containerName); err != nil {
@@ -439,6 +449,34 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 		progress(DeployProgress{Stage: DeployStageFinished})
 	}
 
+	return nil
+}
+
+// registerRouting puts the new container on the app's single routing path.
+// Local and public apps register a host route with the Proxy; tailnet apps are
+// advertised by Docktail via their container labels instead, so any proxy
+// route left over from a previous exposure is torn down. Exactly one path
+// exists per exposure - never both.
+func (a *Application) registerRouting(ctx context.Context, containerID string) error {
+	if a.Settings.Exposure == ExposureTailnet {
+		if err := a.namespace.Proxy().Remove(ctx, a.Settings.Name); err != nil {
+			return fmt.Errorf("removing proxy route: %w", err)
+		}
+		return nil
+	}
+
+	if err := a.namespace.Proxy().Deploy(ctx, DeployOptions{
+		AppName: a.Settings.Name,
+		Target:  containerID[:12],
+		Host:    a.Settings.Host,
+		TLS:     a.Settings.TLSEnabled(),
+	}); err != nil {
+		if strings.Contains(err.Error(), "target not healthy") || strings.Contains(err.Error(), "deploy timed out") {
+			slog.Error("Application failed to start", "app", a.Settings.Name, "error", err)
+			return ErrAppNotStarted
+		}
+		return fmt.Errorf("registering with proxy: %w", err)
+	}
 	return nil
 }
 
@@ -502,10 +540,10 @@ func (a *Application) volumeMounts(vol *ApplicationVolume) []mount.Mount {
 
 func (a *Application) containerConfig(env []string, tailscaleEnabled bool) *container.Config {
 	labels := map[string]string{labelKey: a.Settings.Marshal()}
-	// Opting an app out of the tailnet drops all docktail labels, which also
-	// supersedes any Funnel (Funnel is meaningless off the tailnet).
-	exposed := tailscaleEnabled && a.Settings.TailscaleExposed()
-	maps.Copy(labels, docktailLabels(a.Settings.Name, a.namespace.name, exposed, a.Settings.FunnelEnabled()))
+	// Only tailnet-exposed apps carry docktail labels, advertised under the
+	// Host (the service name). Off the tailnet there is no Funnel either.
+	exposed := tailscaleEnabled && a.Settings.Exposure == ExposureTailnet
+	maps.Copy(labels, docktailLabels(a.Settings.Host, a.namespace.name, exposed, a.Settings.FunnelEnabled()))
 	return &container.Config{
 		Image:  a.Settings.Image,
 		Labels: labels,

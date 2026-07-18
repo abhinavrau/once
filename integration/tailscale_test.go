@@ -223,18 +223,21 @@ func controlSeamSettings() docker.TailscaleSettings {
 	}
 }
 
-// TestTailscaleEnableBootsDocktailTopology drives the core swap end to end
-// against headscale: enable boots the unprivileged once-tailscale sidecar and
-// once-docktail, the sidecar joins the control plane, the Magic DNS suffix is
-// read from the local daemon and persisted, and the retrofit roll injects
-// docktail.service.* labels into exposed apps only (per-app opt-out respected).
-// Disable tears everything down, keeping the sidecar's state volume, and
-// strips the labels again.
+// TestTailscaleEnableBootsDocktailTopology drives the tailnet exposure end to
+// end against headscale: enable boots the unprivileged once-tailscale sidecar
+// and once-docktail, the sidecar joins the control plane, and the Magic DNS
+// suffix is read from the local daemon and persisted. A `--expose tailnet` app
+// is advertised as a Service named after its Host and registers no proxy
+// route, while local apps route through the proxy and advertise nothing -
+// exactly one routing path per exposure, with `update --expose` moving apps
+// between them. Disable tears everything down, keeping the sidecar's state
+// volume, and strips the labels again.
 func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	ns, err := docker.NewNamespace("once-ts-enable-test")
+	nsName := "once-ts-enable-test"
+	ns, err := docker.NewNamespace(nsName)
 	require.NoError(t, err)
 	require.NoError(t, ns.EnsureNetwork(ctx))
 	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
@@ -248,17 +251,27 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	useControlSeam(t, ctx, cp)
 	forceSidecarMode(t)
 
+	proxyRoutes := func() string {
+		out, err := ns.Proxy().ExecOutput(ctx, []string{"kamal-proxy", "list"})
+		require.NoError(t, err)
+		return out
+	}
+
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
-		Name:  "whoami",
-		Image: whoamiImage,
-		Host:  "whoami.localhost",
+		Name:     "hidden",
+		Image:    whoamiImage,
+		Host:     "hidden.localhost",
+		Exposure: docker.ExposureLocal,
 	})
-	deployApp(t, ctx, ns, docker.ApplicationSettings{
-		Name:              "hidden",
-		Image:             whoamiImage,
-		Host:              "hidden.localhost",
-		TailscaleExcluded: true,
+
+	// A tailnet deploy before enable fails with the pointer to the fix.
+	blocked := docker.NewApplication(ns, docker.ApplicationSettings{
+		Name:     "whoami",
+		Image:    whoamiImage,
+		Host:     "whoami",
+		Exposure: docker.ExposureTailnet,
 	})
+	require.ErrorIs(t, blocked.Deploy(ctx, nil), docker.ErrTailscaleNotEnabled)
 
 	require.NoError(t, ns.Tailscale().Enable(ctx, controlSeamSettings()))
 
@@ -300,21 +313,37 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, magicDNSBaseDom, persisted.DomainSuffix, "suffix should be persisted on the container label")
 
-	// The retrofit roll injected service labels into the exposed app only.
-	assertAppLabels(t, ctx, cli, ns, "whoami", hasDocktailLabels("whoami", ns.Name()))
+	// `deploy --expose tailnet` works now that Tailscale is up: the app is
+	// advertised as a Service named from the App Name (its Host); the local
+	// app stays off the tailnet.
+	require.NoError(t, runCLI("-n", nsName, "deploy", whoamiImage, "--expose", "tailnet"))
+	require.NoError(t, ns.Refresh(ctx))
+	whoami := ns.ApplicationByHost("whoami")
+	require.NotNil(t, whoami, "expected the tailnet app at the name-derived service name")
+	whoamiName := whoami.Settings.Name
+	assertAppLabels(t, ctx, cli, ns, whoamiName, hasDocktailLabels("whoami", ns.Name()))
 	assertAppLabels(t, ctx, cli, ns, "hidden", noDocktailLabels)
+
+	// Routing exclusivity: the local app routes through the proxy, the
+	// tailnet app registers no proxy route.
+	routes := proxyRoutes()
+	assert.Contains(t, routes, "hidden")
+	assert.NotContains(t, routes, "whoami")
 
 	stateVolume := ns.Name() + "-tailscale-state"
 	_, err = cli.VolumeInspect(ctx, stateVolume)
 	require.NoError(t, err, "sidecar state volume should exist after enable")
 
+	// Funnel is only available to tailnet-exposed apps.
+	require.NoError(t, ns.Refresh(ctx))
+	require.ErrorIs(t, ns.Application("hidden").EnableFunnel(ctx, time.Now().Add(time.Hour)), docker.ErrFunnelRequiresTailnet)
+
 	// Funnel enable rolls the app with docktail.funnel.* labels, writing the
 	// expiry into the once label in the same atomic recreation; disable strips
 	// the funnel labels again while the service labels stay.
-	require.NoError(t, ns.Refresh(ctx))
 	expiresAt := time.Now().Add(time.Hour)
-	require.NoError(t, ns.Application("whoami").EnableFunnel(ctx, expiresAt))
-	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
+	require.NoError(t, ns.Application(whoamiName).EnableFunnel(ctx, expiresAt))
+	assertAppLabels(t, ctx, cli, ns, whoamiName, func(t *testing.T, labels map[string]string) {
 		hasDocktailLabels("whoami", ns.Name())(t, labels)
 		assert.Equal(t, "true", labels["docktail.funnel.enable"])
 		assert.Equal(t, "80", labels["docktail.funnel.port"])
@@ -325,8 +354,8 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	})
 
 	require.NoError(t, ns.Refresh(ctx))
-	require.NoError(t, ns.Application("whoami").DisableFunnel(ctx))
-	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
+	require.NoError(t, ns.Application(whoamiName).DisableFunnel(ctx))
+	assertAppLabels(t, ctx, cli, ns, whoamiName, func(t *testing.T, labels map[string]string) {
 		hasDocktailLabels("whoami", ns.Name())(t, labels)
 		assert.NotContains(t, labels, "docktail.funnel.enable")
 		assert.NotContains(t, labels, "docktail.funnel.port")
@@ -334,6 +363,29 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, appSettings.FunnelExpiresAt)
 	})
+
+	// `update --expose` moves the app cleanly between routing paths: to local
+	// (labels gone, proxy route registered, host re-derived with .localhost)
+	// and back to tailnet (labels back, proxy route torn down). A live Funnel
+	// does not survive leaving the tailnet - the expiry is cleared, so the
+	// return trip cannot silently re-publish the app.
+	require.NoError(t, ns.Refresh(ctx))
+	require.NoError(t, ns.Application(whoamiName).EnableFunnel(ctx, time.Now().Add(time.Hour)))
+	require.NoError(t, runCLI("-n", nsName, "update", "whoami", "--expose", "local"))
+	assertAppLabels(t, ctx, cli, ns, whoamiName, func(t *testing.T, labels map[string]string) {
+		noDocktailLabels(t, labels)
+		appSettings, err := docker.UnmarshalApplicationSettings(labels["once"])
+		require.NoError(t, err)
+		assert.Nil(t, appSettings.FunnelExpiresAt, "leaving the tailnet must revoke the Funnel")
+	})
+	assert.Contains(t, proxyRoutes(), "whoami.localhost")
+
+	require.NoError(t, runCLI("-n", nsName, "update", "whoami.localhost", "--expose", "tailnet"))
+	assertAppLabels(t, ctx, cli, ns, whoamiName, func(t *testing.T, labels map[string]string) {
+		hasDocktailLabels("whoami", ns.Name())(t, labels)
+		assert.NotContains(t, labels, "docktail.funnel.enable")
+	})
+	assert.NotContains(t, proxyRoutes(), "whoami")
 
 	// Disable removes docktail and the sidecar, keeps the state volume, and
 	// rolls the apps to strip the labels.
@@ -348,7 +400,7 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	_, err = cli.VolumeInspect(ctx, ns.Name()+"-tailscale-socket")
 	assert.True(t, errdefs.IsNotFound(err), "socket volume should be removed with the topology")
 
-	assertAppLabels(t, ctx, cli, ns, "whoami", noDocktailLabels)
+	assertAppLabels(t, ctx, cli, ns, whoamiName, noDocktailLabels)
 }
 
 // TestTailscaleEnableUsesHostTailscaled proves host-mode detection: when the

@@ -38,11 +38,17 @@ func (l *listCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.
 			status = "running"
 		}
 
-		host := hostStyle.Hyperlink(app.URL()).Render(app.Settings.Host)
+		// Tailnet apps have no proxy URL; their host links to the service URL.
+		url := app.URL()
+		tailnetURL := tailnet[app.Settings.Name]
+		if url == "" {
+			url = tailnetURL
+		}
+		host := hostStyle.Hyperlink(url).Render(app.Settings.Host)
 
 		line := fmt.Sprintf("%s (%s)", host, status)
-		if url := tailnet[app.Settings.Name]; url != "" {
-			line += " " + hostStyle.Hyperlink(url).Render(url)
+		if tailnetURL != "" {
+			line += " " + hostStyle.Hyperlink(tailnetURL).Render(tailnetURL)
 		}
 		fmt.Println(line)
 	}
@@ -68,10 +74,10 @@ func tailnetURLs(ctx context.Context, ns *docker.Namespace) map[string]string {
 
 	urls := make(map[string]string, len(ns.Applications()))
 	for _, app := range ns.Applications() {
-		if !app.Settings.TailscaleExposed() {
+		if app.Settings.Exposure != docker.ExposureTailnet {
 			continue
 		}
-		urls[app.Settings.Name] = settings.TailnetURL(app.Settings.Name)
+		urls[app.Settings.Name] = settings.TailnetURL(app.Settings.Host)
 	}
 	return urls
 }

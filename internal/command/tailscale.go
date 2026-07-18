@@ -145,13 +145,13 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 	names := []string{"once-admin"}
 	var stopped []string
 	for _, app := range ns.Applications() {
-		if !app.Settings.TailscaleExposed() {
+		if app.Settings.Exposure != docker.ExposureTailnet {
 			continue
 		}
 		if app.Running {
-			names = append(names, app.Settings.Name)
+			names = append(names, app.Settings.Host)
 		} else {
-			stopped = append(stopped, app.Settings.Name)
+			stopped = append(stopped, app.Settings.Host)
 		}
 	}
 
@@ -350,6 +350,15 @@ func provisionPolicy(ctx context.Context, clientID, clientSecret, tag string) {
 		return
 	}
 	fmt.Println("Tailnet policy updated.")
+}
+
+// warnShadowedServiceName surfaces the hostname-shadowing warning for a
+// tailnet-exposed app's service name - the collision guard against existing
+// tailnet machines.
+func warnShadowedServiceName(ctx context.Context, ns *docker.Namespace, settings docker.ApplicationSettings) {
+	if settings.Exposure == docker.ExposureTailnet {
+		printTailscaleWarnings(ns.Tailscale().ShadowWarnings(ctx, []string{settings.Host}))
+	}
 }
 
 func printTailscaleWarnings(warnings []string) {

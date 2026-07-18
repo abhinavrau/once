@@ -7,16 +7,16 @@ import (
 	"slices"
 )
 
-// dnsLabelPattern is an RFC 1123 DNS label: what an app name must be to be
+// dnsLabelPattern is an RFC 1123 DNS label: what a service name must be to be
 // reachable as <name>.<tailnet-suffix> once advertised as a Tailscale Service.
 var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
-// ValidateTailscaleServiceName rejects an app name that cannot be a Magic DNS
+// ValidateTailscaleServiceName rejects a name that cannot be a Magic DNS
 // label, since Docktail would advertise it as <name>.<suffix> and the entry
 // could never resolve.
 func ValidateTailscaleServiceName(name string) error {
 	if len(name) > 63 || !dnsLabelPattern.MatchString(name) {
-		return fmt.Errorf("app name %q is not a valid DNS label, so it cannot be a Tailscale service name: use 1-63 lowercase letters, digits, or hyphens (not at the start or end), or exclude the app from Tailscale", name)
+		return fmt.Errorf("service name %q is not a valid DNS label: use 1-63 lowercase letters, digits, or hyphens (not at the start or end)", name)
 	}
 	return nil
 }

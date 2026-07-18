@@ -70,9 +70,7 @@ func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 
 	app := docker.NewApplication(ns, settings)
 
-	if settings.TailscaleExposed() {
-		printTailscaleWarnings(ns.Tailscale().ShadowWarnings(ctx, []string{name}))
-	}
+	warnShadowedServiceName(ctx, ns, settings)
 
 	return runWithProgress("Deploying "+host, func(progress docker.DeployProgressCallback) error {
 		if err := app.Deploy(ctx, progress); err != nil {

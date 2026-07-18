@@ -134,4 +134,10 @@ func TestURL(t *testing.T) {
 		app := newAppWithProxy("chat.localhost", false, &ProxySettings{HTTPPort: 9090})
 		assert.Equal(t, "http://chat.localhost:9090", app.URL())
 	})
+
+	t.Run("tailnet app has no proxy URL", func(t *testing.T) {
+		app := newAppWithProxy("writebook", false, &ProxySettings{HTTPPort: 8080})
+		app.Settings.Exposure = ExposureTailnet
+		assert.Equal(t, "", app.URL())
+	})
 }

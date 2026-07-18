@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 - Exposure concept with local/public semantics.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `--expose tailnet` advertises a Service named after the App Name and registers no Proxy route
-- [ ] `--host` overrides the service name under tailnet exposure
-- [ ] Local and public apps advertise no Service; no state can hold two exposures
-- [ ] `update --expose` transitions an app between all three exposures, tearing down the old routing path
-- [ ] Tailnet deploy before enable fails with the pointer to `once tailscale enable`
-- [ ] Funnel enable is refused unless the app's exposure is tailnet
-- [ ] Headscale-seam integration tests are rewritten from `--tailscale` to `--expose tailnet` and pass
+- [x] `--expose tailnet` advertises a Service named after the App Name and registers no Proxy route
+- [x] `--host` overrides the service name under tailnet exposure
+- [x] Local and public apps advertise no Service; no state can hold two exposures
+- [x] `update --expose` transitions an app between all three exposures, tearing down the old routing path
+- [x] Tailnet deploy before enable fails with the pointer to `once tailscale enable`
+- [x] Funnel enable is refused unless the app's exposure is tailnet
+- [x] Headscale-seam integration tests are rewritten from `--tailscale` to `--expose tailnet` and pass

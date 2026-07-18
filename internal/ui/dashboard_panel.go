@@ -27,7 +27,7 @@ const (
 	trafficErrorPct   = 5
 )
 
-const tailnetRowCount = 3
+const tailnetRowCount = 2
 
 type DashboardPanel struct {
 	app              docker.Application
@@ -132,9 +132,9 @@ func (p DashboardPanel) Height(showDetails bool) int {
 // Private
 
 // showsTailnet reports whether the app currently has a tailnet presence to
-// surface: Tailscale is enabled globally and the app isn't excluded.
+// surface: Tailscale is enabled globally and the app is tailnet-exposed.
 func (p DashboardPanel) showsTailnet() bool {
-	return p.tailscaleEnabled && p.app.Settings.TailscaleExposed()
+	return p.tailscaleEnabled && p.app.Settings.Exposure == docker.ExposureTailnet
 }
 
 func (p DashboardPanel) renderTailnetRows() string {
@@ -150,7 +150,6 @@ func (p DashboardPanel) renderTailnetRows() string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		row("Public/Local URL", p.app.URL()),
 		row("Tailnet URL", tailnet),
 		row("Funnel Status", funnelStatusText(p.app.Settings.FunnelExpiresAt, time.Now())),
 	)

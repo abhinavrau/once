@@ -64,6 +64,8 @@ func (u *updateCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 		}
 	}
 
+	warnShadowedServiceName(ctx, ns, settings)
+
 	oldSettings := app.Settings
 	app.Settings = settings
 

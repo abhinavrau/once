@@ -30,7 +30,7 @@ type settingsFlags struct {
 
 func (f *settingsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.host, "host", "", "hostname for the application")
-	cmd.Flags().StringVar(&f.expose, "expose", string(docker.ExposureLocal), "where the application is reachable: local or public")
+	cmd.Flags().StringVar(&f.expose, "expose", string(docker.ExposureLocal), "where the application is reachable: local, tailnet, or public")
 	cmd.Flags().BoolVar(&f.disableTLS, "disable-tls", false, "disable TLS for this application")
 	cmd.Flags().StringArrayVar(&f.env, "env", nil, "environment variable in KEY=VALUE format (can be repeated)")
 	cmd.Flags().StringVar(&f.smtpServer, "smtp-server", "", "SMTP server address")
@@ -147,6 +147,11 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 		if err != nil {
 			return s, err
 		}
+		// The old exposure's host shape doesn't carry over (e.g. app.localhost
+		// is no tailnet service name); unless a host was given, re-derive it.
+		if exposure != s.Exposure && !cmd.Flags().Changed("host") {
+			s.Host = ""
+		}
 		s.Exposure = exposure
 	}
 	if cmd.Flags().Changed("backup-path") {
@@ -159,7 +164,7 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 		s.Backup.AutoBackup = f.autoBackup
 	}
 
-	host, err := docker.ResolveHost(s.Exposure, s.Host, s.Name)
+	host, err := docker.ResolveHost(s.Exposure, s.Host, docker.NameFromImageRef(s.Image))
 	if err != nil {
 		return s, err
 	}

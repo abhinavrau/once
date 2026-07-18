@@ -93,8 +93,8 @@ func TestUIInstallAndManageApp(t *testing.T) {
 // TestUITailscaleFormEnablesViaControlSeam drives the dashboard's global
 // Tailscale settings form (the `t` overlay) end to end: open it, fill the
 // credentials, submit, and assert it ran the same enable lifecycle the CLI uses
-// - the once-tailscale sidecar and once-docktail boot, the deployed app
-// retrofits its docktail.service.* labels, and once-admin comes up. It also
+// - the once-tailscale sidecar and once-docktail boot, the deployed local app
+// stays off the tailnet, and once-admin comes up. It also
 // checks esc dismissal and that re-opening the form pre-populates from the
 // stored settings.
 func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
@@ -127,9 +127,10 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
-		Name:  "whoami",
-		Image: whoamiImage,
-		Host:  "whoami.localhost",
+		Name:     "whoami",
+		Image:    whoamiImage,
+		Host:     "whoami.localhost",
+		Exposure: docker.ExposureLocal,
 	})
 
 	app := ui.NewApp(ns, "")
@@ -178,7 +179,9 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 		return err == nil && found && online
 	}, 90*time.Second, 2*time.Second, "sidecar never joined the control plane after enabling via the form")
 
-	assertAppLabels(t, ctx, cli, ns, "whoami", hasDocktailLabels("whoami", ns.Name()))
+	// The local app stays off the tailnet: only tailnet-exposed apps are
+	// advertised, and none exist yet.
+	assertAppLabels(t, ctx, cli, ns, "whoami", noDocktailLabels)
 
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
 	require.NoError(t, err, "once-admin should be running after enabling via the form")

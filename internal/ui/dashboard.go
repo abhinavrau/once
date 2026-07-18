@@ -386,8 +386,8 @@ func (m *Dashboard) rebuildViewportContent() {
 		// Service URLs are deterministic: computed from the stored Magic DNS
 		// suffix, never looked up live.
 		var url string
-		if app.TailscaleExposed() {
-			url = (docker.TailscaleSettings{DomainSuffix: m.tailnetSuffix}).TailnetURL(app.Name)
+		if app.Exposure == docker.ExposureTailnet {
+			url = (docker.TailscaleSettings{DomainSuffix: m.tailnetSuffix}).TailnetURL(app.Host)
 		}
 		m.panels[i].tailnetURL = url
 		toggling := m.toggling && m.togglingApp == m.panels[i].app.Settings.Name

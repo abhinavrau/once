@@ -12,6 +12,10 @@ func TestParseExposure(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ExposureLocal, e)
 
+	e, err = ParseExposure("tailnet")
+	require.NoError(t, err)
+	assert.Equal(t, ExposureTailnet, e)
+
 	e, err = ParseExposure("public")
 	require.NoError(t, err)
 	assert.Equal(t, ExposurePublic, e)
@@ -50,6 +54,25 @@ func TestResolveHostLocal(t *testing.T) {
 	// A real FQDN is refused rather than mangled into fqdn.localhost.
 	_, err = ResolveHost(ExposureLocal, "chat.example.com", "campfire")
 	assert.ErrorIs(t, err, ErrHostNotLocal)
+}
+
+func TestResolveHostTailnet(t *testing.T) {
+	// The host is the Tailscale Service name, derived from the app name when
+	// not given.
+	host, err := ResolveHost(ExposureTailnet, "", "campfire")
+	require.NoError(t, err)
+	assert.Equal(t, "campfire", host)
+
+	host, err = ResolveHost(ExposureTailnet, "writebook", "campfire")
+	require.NoError(t, err)
+	assert.Equal(t, "writebook", host)
+
+	// A service name must be a Magic DNS label; dotted or invalid names are refused.
+	_, err = ResolveHost(ExposureTailnet, "chat.example.com", "campfire")
+	assert.ErrorContains(t, err, "not a valid DNS label")
+
+	_, err = ResolveHost(ExposureTailnet, "My_App", "campfire")
+	assert.ErrorContains(t, err, "not a valid DNS label")
 }
 
 func TestResolveHostPublicRequiresFQDN(t *testing.T) {

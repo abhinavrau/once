@@ -39,22 +39,22 @@ type InstallFormSubmitMsg struct {
 }
 
 type Install struct {
-	namespace        *docker.Namespace
-	width, height    int
-	help             Help
-	state            installState
-	appList          InstallAppList
-	imageForm        InstallImageForm
-	hostnameForm     InstallHostnameForm
-	activity         *InstallActivity
-	popupHelp        *PopupHelp
-	overlay          Component
-	starfield        *Starfield
-	logo             *Logo
-	err         error
-	cliMode     bool
-	customImage bool
-	installFlag string
+	namespace     *docker.Namespace
+	width, height int
+	help          Help
+	state         installState
+	appList       InstallAppList
+	imageForm     InstallImageForm
+	hostnameForm  InstallHostnameForm
+	activity      *InstallActivity
+	popupHelp     *PopupHelp
+	overlay       Component
+	starfield     *Starfield
+	logo          *Logo
+	err           error
+	cliMode       bool
+	customImage   bool
+	installFlag   string
 }
 
 func NewInstall(ns *docker.Namespace, imageRef string) Install {

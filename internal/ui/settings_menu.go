@@ -35,7 +35,6 @@ func NewSettingsMenu(app *docker.Application) SettingsMenu {
 			MenuItem{Label: "Resources", Key: int(SettingsSectionResources), Shortcut: WithHelp(NewKeyBinding("r"), "r", "")},
 			MenuItem{Label: "Updates", Key: int(SettingsSectionUpdates), Shortcut: WithHelp(NewKeyBinding("u"), "u", "")},
 			MenuItem{Label: "Backups", Key: int(SettingsSectionBackups), Shortcut: WithHelp(NewKeyBinding("b"), "b", "")},
-			MenuItem{Label: "Tailscale", Key: int(SettingsSectionTailscale), Shortcut: WithHelp(NewKeyBinding("t"), "t", "")},
 			MenuItem{Label: "Tailscale Funnel", Key: int(SettingsSectionFunnel), Shortcut: WithHelp(NewKeyBinding("f"), "f", "")},
 		),
 		help: h,

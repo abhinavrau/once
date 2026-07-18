@@ -13,8 +13,9 @@ import (
 type Exposure string
 
 const (
-	ExposureLocal  Exposure = "local"
-	ExposurePublic Exposure = "public"
+	ExposureLocal   Exposure = "local"
+	ExposureTailnet Exposure = "tailnet"
+	ExposurePublic  Exposure = "public"
 )
 
 var (
@@ -24,10 +25,10 @@ var (
 
 func ParseExposure(s string) (Exposure, error) {
 	switch Exposure(s) {
-	case ExposureLocal, ExposurePublic:
+	case ExposureLocal, ExposureTailnet, ExposurePublic:
 		return Exposure(s), nil
 	}
-	return "", fmt.Errorf("invalid exposure %q: must be %q or %q", s, ExposureLocal, ExposurePublic)
+	return "", fmt.Errorf("invalid exposure %q: must be %q, %q, or %q", s, ExposureLocal, ExposureTailnet, ExposurePublic)
 }
 
 // ExposureForHost derives an exposure from a hostname's shape, for backfilling
@@ -42,8 +43,10 @@ func ExposureForHost(host string) Exposure {
 
 // ResolveHost applies an exposure's naming semantics to a requested host.
 // Under local, an empty host derives from the app name and a bare name gets
-// .localhost appended, while a real FQDN is refused. Under public, a real
-// FQDN is required and nothing is ever defaulted.
+// .localhost appended, while a real FQDN is refused. Under tailnet, the host
+// is the Tailscale Service name: derived from the app name when empty, and
+// required to be a valid Magic DNS label. Under public, a real FQDN is
+// required and nothing is ever defaulted.
 func ResolveHost(exposure Exposure, host, appName string) (string, error) {
 	switch exposure {
 	case ExposureLocal:
@@ -59,6 +62,14 @@ func ResolveHost(exposure Exposure, host, appName string) (string, error) {
 			return "", ErrHostNotLocal
 		}
 		return host + ".localhost", nil
+	case ExposureTailnet:
+		if host == "" {
+			host = appName
+		}
+		if err := ValidateTailscaleServiceName(host); err != nil {
+			return "", err
+		}
+		return host, nil
 	case ExposurePublic:
 		if !strings.Contains(host, ".") || IsLocalhost(host) {
 			return "", ErrPublicHostRequired

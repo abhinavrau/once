@@ -178,8 +178,15 @@ func (p *Proxy) Exec(ctx context.Context, cmd []string) error {
 	return err
 }
 
+// Remove tears down an app's route, treating an already-absent route as
+// success: tailnet apps register none, and exposure transitions must be able
+// to clear a route without knowing whether one exists.
 func (p *Proxy) Remove(ctx context.Context, appName string) error {
-	return p.Exec(ctx, []string{"kamal-proxy", "remove", appName})
+	err := p.Exec(ctx, []string{"kamal-proxy", "remove", appName})
+	if err != nil && strings.Contains(err.Error(), "service not found") {
+		return nil
+	}
+	return err
 }
 
 func (p *Proxy) Deploy(ctx context.Context, opts DeployOptions) error {

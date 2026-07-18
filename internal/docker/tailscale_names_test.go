@@ -43,14 +43,14 @@ func TestShadowWarningsBestEffort(t *testing.T) {
 
 func TestEnableTailscaleRejectsInvalidServiceNames(t *testing.T) {
 	ns := &Namespace{name: "test"}
-	ns.applications = append(ns.applications, NewApplication(ns, ApplicationSettings{Name: "my_app"}))
+	ns.applications = append(ns.applications, NewApplication(ns, ApplicationSettings{Name: "my-app", Host: "my_app", Exposure: ExposureTailnet}))
 
 	_, err := ns.EnableTailscale(t.Context(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
-	require.ErrorContains(t, err, `app name "my_app" is not a valid DNS label`)
+	require.ErrorContains(t, err, `service name "my_app" is not a valid DNS label`)
 
-	// An excluded app's name is never advertised, so it must not block enable
+	// A local app's host is never advertised, so it must not block enable
 	// on its own. (Enable then proceeds to the daemon precondition.)
-	ns.applications[0].Settings.TailscaleExcluded = true
+	ns.applications[0].Settings.Exposure = ExposureLocal
 	ns.admin = NewAdmin(ns)
 	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
 	_, err = ns.EnableTailscale(t.Context(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})

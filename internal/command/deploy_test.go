@@ -105,6 +105,30 @@ func TestApplyChangesExposure(t *testing.T) {
 	s, err = apply(local, "--host", "writebook")
 	require.NoError(t, err)
 	assert.Equal(t, "writebook.localhost", s.Host)
+
+	// Switching exposure without --host re-derives the host from the app
+	// name: the old exposure's host shape doesn't carry over.
+	s, err = apply(local, "--expose", "tailnet")
+	require.NoError(t, err)
+	assert.Equal(t, docker.ExposureTailnet, s.Exposure)
+	assert.Equal(t, "image", s.Host)
+
+	s, err = apply(local, "--expose", "tailnet", "--host", "books")
+	require.NoError(t, err)
+	assert.Equal(t, "books", s.Host)
+
+	_, err = apply(local, "--expose", "tailnet", "--host", "My_App")
+	assert.ErrorContains(t, err, "not a valid DNS label")
+
+	tailnet := docker.ApplicationSettings{Name: "app", Image: "image:1", Host: "books", Exposure: docker.ExposureTailnet}
+	s, err = apply(tailnet, "--expose", "local")
+	require.NoError(t, err)
+	assert.Equal(t, docker.ExposureLocal, s.Exposure)
+	assert.Equal(t, "image.localhost", s.Host)
+
+	// Promoting a tailnet app to public still demands an explicit FQDN.
+	_, err = apply(tailnet, "--expose", "public")
+	assert.ErrorIs(t, err, docker.ErrPublicHostRequired)
 }
 
 func TestRemovedTailscaleFlagFailsWithReplacement(t *testing.T) {

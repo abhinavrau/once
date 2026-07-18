@@ -55,7 +55,6 @@ const (
 	SettingsSectionResources
 	SettingsSectionUpdates
 	SettingsSectionBackups
-	SettingsSectionTailscale
 	SettingsSectionFunnel
 )
 
