@@ -21,9 +21,27 @@ _Avoid_: short ID; container ID — the suffix is not a truncation of Docker's c
 The single kamal-proxy container (`{namespace}-proxy`) that terminates TLS and routes inbound traffic to app containers by host.
 _Avoid_: load balancer, gateway, router.
 
+**App Name**:
+An Application's base identity, derived from its image reference unless overridden. Addresses under every Exposure derive from it.
+
 **Host**:
-The public DNS hostname for an Application; the proxy routes a request to an app container by matching it.
-_Avoid_: domain, URL.
+The name an Application answers to, interpreted by its Exposure: `{app name}.localhost` under Local, the Tailscale Service name under Tailnet, a real DNS FQDN under Public. Derived from the App Name when not given - except under Public, where it is required.
+_Avoid_: domain, URL, public hostname.
+
+## Exposure
+
+**Exposure**:
+The single, explicitly chosen reachability level of an Application. Exactly one per Application at a time; never derived from other settings.
+_Avoid_: visibility, access mode.
+
+**Local (exposure)**:
+Reachable only from the machine Once runs on.
+
+**Tailnet (exposure)**:
+Reachable only from the tailnet, as a Tailscale Service.
+
+**Public (exposure)**:
+Reachable from the public internet via the Proxy with TLS.
 
 ## State
 
@@ -79,6 +97,15 @@ Tailscale's first-party primitive for exposing a service on the tailnet under a 
 **Docktail**:
 A single utility container (`once-docktail`) that watches Docker labels and advertises labelled containers as Tailscale Services through one real `tailscaled` - either the host's or the unprivileged `once-tailscale` sidecar Once boots when the host runs none.
 _Avoid_: TSDProxy, Tailscale Docker Proxy.
+
+**Bootstrap Credential**:
+The single client-minting OAuth credential a user supplies when enabling Tailscale - the only credential a user ever creates. Used once to mint the Runtime and Policy Credentials, then discarded - never stored.
+
+**Runtime Credential**:
+The narrowly scoped OAuth client Once mints from the Bootstrap Credential, stores, and uses for ongoing Tailscale operations.
+
+**Policy Credential**:
+A one-shot OAuth client minted from the Bootstrap Credential to write the tailnet policy sections Once needs, deleted immediately after. Never minted if the user declines the policy write and applies the printed snippet by hand.
 
 **Tailscale Funnel**:
 A Tailscale feature that routes public internet traffic to a specific port on a tailnet node, enabling temporary public access.

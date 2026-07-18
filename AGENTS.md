@@ -7,7 +7,7 @@
 - Never manually modify CHANGELOG.md files or any files that are marked as auto-generated.
 - When making technical decisions, do not give much weight to development cost. Instead, prefer quality, simplicity, robustness and long term maintainability. This makes sure you find the real problem so your fix will actually solve it.
 - When end-to-end testing a product, be picky about UI you see and be obsessed with pixel perfection.
-- It something clearly looks off, event it it is not directlry related to what you are doing try to get it fixed along the way.
+- If something clearly looks off, even if it is not directly related to what you are doing, try to get it fixed along the way.
 - Apply that same high standard of engineering excellence: lint, test failures, and test flakiness. If you see one, even if it is not caused by what you are working on right now, still get it fixed.
 
 - Use `gh-axi` for GitHub instead of `gh` 
@@ -24,8 +24,6 @@ and upgrades, automatic SSL, and multiple applications running on a single
 server. A single instance of Once may deploy one proxy container, along with
 multiple application containers. Host-based routing is used inside the proxy to
 route traffic to the correct application container.
-
-## Code Architecture
 
 ## Design and Concepts
 
@@ -69,11 +67,6 @@ make integration # Run integration tests (requires Docker)
 make lint        # Run golangci-lint
 ```
 
-Run a single test:
-```bash
-go test -v -run TestName ./internal/...
-```
-
 ## Testing notes
 
 - The integration suite runs under a 10-minute total `go test` timeout. A single
@@ -102,7 +95,6 @@ go test -v -run TestName ./internal/...
 
 ## Coding Style
 
-- Always follow idiomatic Go style
 - Don't use excessive comments. Try to make the code speak for itself; only resort to adding comments where the meaning or intention may otherwise be unclear, or a subtle detail may be missed.
 - Organize imports in sections: stdlib imports, 3rd-party imports, and project imports. Each section should be sorted alphabetically, and the sections should be separated from each other by 1 blank line.
 - Where a struct type has both public and private methods, arrange the public methods first, then add a comment line of `// Private` and put the private methods below that comment. In the public section, put any constructor methods first, followed by simple accessor methods, followed by the rest.
@@ -110,7 +102,6 @@ go test -v -run TestName ./internal/...
 - Prefer modern Go constructs where possible (for example, ranging over numbers is better than a for loop). If the LSP suggests there is an option to modernize something you should generally do so.
 - Write tests to cover changes where possible, but don't go overboard trying to cover every single case. Prefer using helper functions (including functions defined locally inside the test) over table-driven tests, except in cases where the latter would be more readable.
 - When writing tests, use github.com/stretchr/testify's assert and require packages, to make test conditions more readable. Don't add descriptions to the assertions unless they would add meaningful context over what the default failure message would be).
-- Regularly check your work with the linter and LSP to ensure it follows conventions, and run tests as needed to ensure they pass.
 - Consider opportunities to refactor large methods into smaller pieces, and spot opportunities where it's worth extracting functionality into a new type. But do not go overboard with this.
 
 
