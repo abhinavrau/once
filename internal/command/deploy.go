@@ -34,25 +34,34 @@ func newDeployCommand() *deployCommand {
 func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	imageRef := args[0]
 
-	if err := ns.Setup(ctx); err != nil {
-		return fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)
+	if err := d.flags.checkRemoved(cmd); err != nil {
+		return err
 	}
 
-	host := d.flags.host
-	if host == "" {
-		host = docker.NameFromImageRef(imageRef) + ".localhost"
+	exposure, err := docker.ParseExposure(d.flags.expose)
+	if err != nil {
+		return err
+	}
+
+	baseName := docker.NameFromImageRef(imageRef)
+	host, err := docker.ResolveHost(exposure, d.flags.host, baseName)
+	if err != nil {
+		return err
 	}
 
 	if ns.HostInUse(host) {
 		return docker.ErrHostnameInUse
 	}
 
-	settings, err := d.flags.buildSettings(imageRef, host)
+	settings, err := d.flags.buildSettings(imageRef, host, exposure)
 	if err != nil {
 		return err
 	}
 
-	baseName := docker.NameFromImageRef(imageRef)
+	if err := ns.Setup(ctx); err != nil {
+		return fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)
+	}
+
 	name, err := ns.UniqueName(baseName)
 	if err != nil {
 		return fmt.Errorf("generating app name: %w", err)

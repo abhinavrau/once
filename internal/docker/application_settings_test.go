@@ -83,6 +83,7 @@ func TestContainerResourcesMarshalRoundTrip(t *testing.T) {
 	original := ApplicationSettings{
 		Name:      "app",
 		Image:     "img:latest",
+		Exposure:  ExposureLocal,
 		Resources: ContainerResources{CPUs: 2, MemoryMB: 512},
 	}
 	restored, err := UnmarshalApplicationSettings(original.Marshal())
@@ -109,6 +110,42 @@ func TestBackupSettingsEqualDiffers(t *testing.T) {
 
 	noBackup := ApplicationSettings{Name: "app"}
 	assert.False(t, base.Equal(noBackup))
+}
+
+func TestExposureBackfilledFromHostOnUnmarshal(t *testing.T) {
+	local, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.localhost"}`)
+	require.NoError(t, err)
+	assert.Equal(t, ExposureLocal, local.Exposure)
+
+	public, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.example.com"}`)
+	require.NoError(t, err)
+	assert.Equal(t, ExposurePublic, public.Exposure)
+
+	// An explicitly stored exposure wins over the hostname shape.
+	stored, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.example.com","exposure":"local"}`)
+	require.NoError(t, err)
+	assert.Equal(t, ExposureLocal, stored.Exposure)
+}
+
+func TestExposureMarshalRoundTrip(t *testing.T) {
+	original := ApplicationSettings{Name: "app", Image: "img:latest", Host: "app.localhost", Exposure: ExposureLocal}
+	assert.Contains(t, original.Marshal(), `"exposure":"local"`)
+
+	restored, err := UnmarshalApplicationSettings(original.Marshal())
+	require.NoError(t, err)
+	assert.Equal(t, ExposureLocal, restored.Exposure)
+	assert.True(t, original.Equal(restored))
+}
+
+func TestExposureEqualDiffers(t *testing.T) {
+	base := ApplicationSettings{Name: "app", Exposure: ExposureLocal}
+	assert.False(t, base.Equal(ApplicationSettings{Name: "app", Exposure: ExposurePublic}))
+}
+
+func TestTLSEnabledFollowsExposure(t *testing.T) {
+	assert.False(t, ApplicationSettings{Host: "app.example.com", Exposure: ExposureLocal}.TLSEnabled())
+	assert.True(t, ApplicationSettings{Host: "app.example.com", Exposure: ExposurePublic}.TLSEnabled())
+	assert.False(t, ApplicationSettings{Host: "app.example.com", Exposure: ExposurePublic, DisableTLS: true}.TLSEnabled())
 }
 
 func TestTailscaleExposedDefaultsToExposed(t *testing.T) {
@@ -173,8 +210,9 @@ func TestBuildEnvWithEnvVars(t *testing.T) {
 
 func TestEnvVarsMarshalRoundTrip(t *testing.T) {
 	original := ApplicationSettings{
-		Name:  "app",
-		Image: "img:latest",
+		Name:     "app",
+		Image:    "img:latest",
+		Exposure: ExposureLocal,
 		EnvVars: map[string]string{
 			"FOO": "bar",
 			"BAZ": "qux",
@@ -204,6 +242,7 @@ func TestAutoUpdateAndBackupMarshalRoundTrip(t *testing.T) {
 	original := ApplicationSettings{
 		Name:       "app",
 		Image:      "img:latest",
+		Exposure:   ExposureLocal,
 		AutoUpdate: true,
 		Backup:     BackupSettings{Path: "/backups", AutoBackup: true},
 	}

@@ -35,13 +35,13 @@ func newUpdateCommand() *updateCommand {
 func (u *updateCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	currentHost := args[0]
 
+	if err := u.flags.checkRemoved(cmd); err != nil {
+		return err
+	}
+
 	app := ns.ApplicationByHost(currentHost)
 	if app == nil {
 		return fmt.Errorf("no application found at host %q", currentHost)
-	}
-
-	if err := ns.Setup(ctx); err != nil {
-		return fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)
 	}
 
 	image := app.Settings.Image
@@ -52,6 +52,10 @@ func (u *updateCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 	settings, err := u.flags.applyChanges(cmd, app.Settings, image)
 	if err != nil {
 		return err
+	}
+
+	if err := ns.Setup(ctx); err != nil {
+		return fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)
 	}
 
 	if settings.Host != app.Settings.Host {

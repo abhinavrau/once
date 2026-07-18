@@ -58,6 +58,13 @@ func (r *RootCommand) Execute() error {
 	return r.cmd.Execute()
 }
 
+// ExecuteArgs runs the command with explicit arguments instead of os.Args,
+// letting integration tests drive the CLI seam in-process.
+func (r *RootCommand) ExecuteArgs(args ...string) error {
+	r.cmd.SetArgs(args)
+	return r.cmd.Execute()
+}
+
 // Helpers
 
 type NamespaceRunE func(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error

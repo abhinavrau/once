@@ -41,6 +41,7 @@ type ApplicationSettings struct {
 	Name       string             `json:"name"`
 	Image      string             `json:"image"`
 	Host       string             `json:"host"`
+	Exposure   Exposure           `json:"exposure,omitempty"`
 	DisableTLS bool               `json:"disableTLS"`
 	EnvVars    map[string]string  `json:"env"`
 	SMTP       SMTPSettings       `json:"smtp"`
@@ -60,6 +61,11 @@ type ApplicationSettings struct {
 func UnmarshalApplicationSettings(s string) (ApplicationSettings, error) {
 	var settings ApplicationSettings
 	err := json.Unmarshal([]byte(s), &settings)
+	// Backfill apps deployed before the exposure field existed; the derived
+	// value is persisted to the label the next time the container is recreated.
+	if err == nil && settings.Exposure == "" {
+		settings.Exposure = ExposureForHost(settings.Host)
+	}
 	return settings, err
 }
 
@@ -79,7 +85,7 @@ func (s ApplicationSettings) Validate() error {
 }
 
 func (s ApplicationSettings) TLSEnabled() bool {
-	return s.Host != "" && !s.DisableTLS && !IsLocalhost(s.Host)
+	return s.Exposure == ExposurePublic && !s.DisableTLS
 }
 
 func (s ApplicationSettings) FunnelEnabled() bool {
@@ -100,6 +106,9 @@ func (s ApplicationSettings) FunnelExpired(now time.Time) bool {
 
 func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 	if s.Name != other.Name || s.Image != other.Image || s.Host != other.Host || s.DisableTLS != other.DisableTLS {
+		return false
+	}
+	if s.Exposure != other.Exposure {
 		return false
 	}
 	if s.Resources != other.Resources {

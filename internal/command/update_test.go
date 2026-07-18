@@ -15,6 +15,7 @@ func TestApplyChanges(t *testing.T) {
 		Name:       "myapp",
 		Image:      "myimage:latest",
 		Host:       "app.example.com",
+		Exposure:   docker.ExposurePublic,
 		DisableTLS: false,
 		EnvVars:    map[string]string{"KEY": "value"},
 		SMTP: docker.SMTPSettings{

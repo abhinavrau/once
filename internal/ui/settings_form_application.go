@@ -46,6 +46,9 @@ func NewSettingsFormApplication(settings docker.ApplicationSettings) SettingsFor
 		s := settings
 		s.Image = f.TextField(appImageField).Value()
 		s.Host = f.TextField(appHostnameField).Value()
+		// Until the exposure section lands in the TUI, a hostname edit moves
+		// the exposure with it, matching the pre-exposure TLS behavior.
+		s.Exposure = docker.ExposureForHost(s.Host)
 		s.DisableTLS = !f.CheckboxField(appTLSField).Checked()
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})

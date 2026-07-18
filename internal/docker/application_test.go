@@ -86,7 +86,7 @@ func TestURL(t *testing.T) {
 		ns.proxy = &Proxy{Settings: proxySettings}
 		return &Application{
 			namespace: ns,
-			Settings:  ApplicationSettings{Host: host, DisableTLS: disableTLS},
+			Settings:  ApplicationSettings{Host: host, Exposure: ExposureForHost(host), DisableTLS: disableTLS},
 		}
 	}
 
@@ -96,7 +96,7 @@ func TestURL(t *testing.T) {
 	})
 
 	t.Run("nil namespace", func(t *testing.T) {
-		app := &Application{Settings: ApplicationSettings{Host: "app.example.com"}}
+		app := &Application{Settings: ApplicationSettings{Host: "app.example.com", Exposure: ExposurePublic}}
 		assert.Equal(t, "https://app.example.com", app.URL())
 	})
 

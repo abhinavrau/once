@@ -34,9 +34,8 @@ const (
 )
 
 type InstallFormSubmitMsg struct {
-	ImageRef          string
-	Hostname          string
-	TailscaleExcluded bool
+	ImageRef string
+	Hostname string
 }
 
 type Install struct {
@@ -52,25 +51,21 @@ type Install struct {
 	overlay          Component
 	starfield        *Starfield
 	logo             *Logo
-	err              error
-	cliMode          bool
-	customImage      bool
-	installFlag      string
-	tailscaleEnabled bool
+	err         error
+	cliMode     bool
+	customImage bool
+	installFlag string
 }
 
 func NewInstall(ns *docker.Namespace, imageRef string) Install {
 	h := NewHelp()
 	h.SetBindings([]key.Binding{installKeys.Back})
 
-	tailscaleEnabled, _ := ns.Tailscale().Enabled(context.Background())
-
 	m := Install{
-		namespace:        ns,
-		help:             h,
-		cliMode:          imageRef != "",
-		installFlag:      imageRef,
-		tailscaleEnabled: tailscaleEnabled,
+		namespace:   ns,
+		help:        h,
+		cliMode:     imageRef != "",
+		installFlag: imageRef,
 	}
 
 	if imageRef != "" {
@@ -78,7 +73,7 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 			imageRef = expanded
 		}
 		m.state = installStateHostname
-		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag, m.tailscaleEnabled)
+		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag)
 	} else {
 		m.state = installStateAppList
 		m.appList = NewInstallAppList()
@@ -194,7 +189,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case InstallAppSelectedMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled)
+		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "")
 		m.customImage = false
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -205,7 +200,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, m.initScreenWithSize()
 
 	case InstallImageSubmitMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled)
+		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "")
 		m.customImage = true
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -231,7 +226,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, nil
 		}
 		m.state = installStateActivity
-		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, msg.Hostname, msg.TailscaleExcluded)
+		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, msg.Hostname)
 		m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return m, m.activity.Init()
 

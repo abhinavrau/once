@@ -61,54 +61,79 @@ func TestParseEnvVars(t *testing.T) {
 
 func TestBuildSettingsImageRequired(t *testing.T) {
 	f := &settingsFlags{}
-	_, err := f.buildSettings("", "app.example.com")
+	_, err := f.buildSettings("", "app.example.com", docker.ExposurePublic)
 	assert.ErrorIs(t, err, docker.ErrImageRequired)
 }
 
-func TestBuildSettingsTailscaleExposure(t *testing.T) {
-	exposed := &settingsFlags{tailscale: true}
-	s, err := exposed.buildSettings("image:latest", "app.example.com")
+func TestBuildSettingsStoresExposure(t *testing.T) {
+	f := &settingsFlags{}
+	s, err := f.buildSettings("image:latest", "app.localhost", docker.ExposureLocal)
 	require.NoError(t, err)
-	assert.True(t, s.TailscaleExposed())
+	assert.Equal(t, docker.ExposureLocal, s.Exposure)
 
-	hidden := &settingsFlags{tailscale: false}
-	s, err = hidden.buildSettings("image:latest", "app.example.com")
+	s, err = f.buildSettings("image:latest", "app.example.com", docker.ExposurePublic)
 	require.NoError(t, err)
-	assert.False(t, s.TailscaleExposed())
+	assert.Equal(t, docker.ExposurePublic, s.Exposure)
 }
 
-func TestApplyChangesTailscaleOnlyWhenFlagSet(t *testing.T) {
+func TestApplyChangesExposure(t *testing.T) {
+	apply := func(existing docker.ApplicationSettings, args ...string) (docker.ApplicationSettings, error) {
+		cmd := &cobra.Command{}
+		f := &settingsFlags{}
+		f.register(cmd)
+		require.NoError(t, cmd.Flags().Parse(args))
+		return f.applyChanges(cmd, existing, existing.Image)
+	}
+
+	local := docker.ApplicationSettings{Name: "app", Image: "image:1", Host: "app.localhost", Exposure: docker.ExposureLocal}
+
+	// Unset flag leaves the stored exposure untouched.
+	s, err := apply(local)
+	require.NoError(t, err)
+	assert.Equal(t, docker.ExposureLocal, s.Exposure)
+
+	// Promoting to public requires a real FQDN.
+	_, err = apply(local, "--expose", "public")
+	assert.ErrorIs(t, err, docker.ErrPublicHostRequired)
+
+	s, err = apply(local, "--expose", "public", "--host", "app.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, docker.ExposurePublic, s.Exposure)
+	assert.True(t, s.TLSEnabled())
+
+	// A bare host under local exposure gets the .localhost suffix.
+	s, err = apply(local, "--host", "writebook")
+	require.NoError(t, err)
+	assert.Equal(t, "writebook.localhost", s.Host)
+}
+
+func TestRemovedTailscaleFlagFailsWithReplacement(t *testing.T) {
+	for _, arg := range []string{"--tailscale", "--tailscale=false"} {
+		cmd := &cobra.Command{}
+		f := &settingsFlags{}
+		f.register(cmd)
+		require.NoError(t, cmd.Flags().Parse([]string{arg}))
+		err := f.checkRemoved(cmd)
+		assert.ErrorContains(t, err, "--expose tailnet")
+	}
+
 	cmd := &cobra.Command{}
 	f := &settingsFlags{}
 	f.register(cmd)
-	require.NoError(t, cmd.Flags().Parse([]string{"--tailscale=false"}))
-
-	existing := docker.ApplicationSettings{Name: "app", Image: "image:1"}
-	s, err := f.applyChanges(cmd, existing, "image:1")
-	require.NoError(t, err)
-	assert.False(t, s.TailscaleExposed())
-
-	// Unset flag leaves the existing exposure untouched.
-	cmd2 := &cobra.Command{}
-	f2 := &settingsFlags{}
-	f2.register(cmd2)
-	require.NoError(t, cmd2.Flags().Parse(nil))
-	hidden := docker.ApplicationSettings{Name: "app", Image: "image:1", TailscaleExcluded: true}
-	s, err = f2.applyChanges(cmd2, hidden, "image:1")
-	require.NoError(t, err)
-	assert.False(t, s.TailscaleExposed())
+	require.NoError(t, cmd.Flags().Parse(nil))
+	assert.NoError(t, f.checkRemoved(cmd))
 }
 
 func TestBuildSettingsAutoBackupRequiresPath(t *testing.T) {
 	t.Run("auto-backup without path", func(t *testing.T) {
 		f := &settingsFlags{autoBackup: true}
-		_, err := f.buildSettings("image:latest", "app.example.com")
+		_, err := f.buildSettings("image:latest", "app.example.com", docker.ExposurePublic)
 		assert.ErrorIs(t, err, docker.ErrAutoBackupWithoutPath)
 	})
 
 	t.Run("auto-backup with path", func(t *testing.T) {
 		f := &settingsFlags{autoBackup: true, backupPath: "/backups"}
-		_, err := f.buildSettings("image:latest", "app.example.com")
+		_, err := f.buildSettings("image:latest", "app.example.com", docker.ExposurePublic)
 		require.NoError(t, err)
 	})
 }
