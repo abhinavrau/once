@@ -4,12 +4,12 @@
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Enable succeeds with exactly `--client-id` and `--client-secret`; tag defaults to `tag:once`
-- [ ] All direct-mode flags and paths are gone; the Bootstrap Credential is never stored
-- [ ] Policy diff is shown before any write; `--yes` applies, `--no-policy-write` prints the snippet and mints no Policy Credential
-- [ ] Policy Credential is deleted after the write; only the Runtime Credential persists
-- [ ] Non-TTY without a consent flag fails fast with a clear message
-- [ ] Mis-scoped credential probe failures name the missing scope or tag
-- [ ] httptest unit tests cover minting, policy plan/write, and client deletion, byte-compatible with the real API
+- [x] Enable succeeds with exactly `--client-id` and `--client-secret`; tag defaults to `tag:once`
+- [x] All direct-mode flags and paths are gone; the Bootstrap Credential is never stored
+- [x] Policy diff is shown before any write; `--yes` applies, `--no-policy-write` prints the snippet and mints no Policy Credential
+- [x] Policy Credential is deleted after the write; only the Runtime Credential persists
+- [x] Non-TTY without a consent flag fails fast with a clear message
+- [x] Mis-scoped credential probe failures name the missing scope or tag
+- [x] httptest unit tests cover minting, policy plan/write, and client deletion, byte-compatible with the real API
