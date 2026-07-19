@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+
+	"github.com/basecamp/once/internal/logging"
 )
 
 const DefaultNamespace = "once"
@@ -51,7 +54,7 @@ func NewNamespace(name string, opts ...NamespaceOption) (*Namespace, error) {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidNamespace, name)
 	}
 
-	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation(), withLoggingTransport())
 	if err != nil {
 		return nil, err
 	}
@@ -539,3 +542,21 @@ func (n *Namespace) parseBackup(r io.Reader) (ApplicationSettings, ApplicationVo
 // Helpers
 
 var validNamespace = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// withLoggingTransport wraps the client's transport after FromEnv has
+// configured it, so every engine call gets a debug log line. The SDK's scheme
+// detection and hijack dialing type-assert *http.Transport and silently lose
+// TLS when the assertion fails, so a TLS-configured engine host (remote
+// DOCKER_HOST) is left unwrapped rather than broken - verbose logging skips
+// engine calls there.
+func withLoggingTransport() client.Opt {
+	return func(c *client.Client) error {
+		httpClient := c.HTTPClient()
+		transport, ok := httpClient.Transport.(*http.Transport)
+		if !ok || transport.TLSClientConfig != nil {
+			return nil
+		}
+		httpClient.Transport = logging.WrapTransport(transport)
+		return client.WithHTTPClient(httpClient)(c)
+	}
+}

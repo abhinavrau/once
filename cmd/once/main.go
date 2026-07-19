@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"os"
 
 	"github.com/basecamp/once/internal/command"
@@ -9,6 +10,7 @@ import (
 
 func main() {
 	logging.SetupStderr()
+	http.DefaultTransport = logging.WrapTransport(http.DefaultTransport)
 
 	if err := command.NewRootCommand().Execute(); err != nil {
 		os.Exit(1)

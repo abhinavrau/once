@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/logging"
 	"github.com/basecamp/once/internal/metrics"
 	"github.com/basecamp/once/internal/system"
 	"github.com/basecamp/once/internal/userstats"
@@ -270,6 +271,9 @@ func (m Dashboard) View() string {
 	titleLine := Styles.TitleRule(m.width, m.hostname)
 
 	helpView := m.help.View()
+	if hint := verboseLogHint(); hint != "" {
+		helpView += lipgloss.NewStyle().Foreground(Colors.Border).Render(" • " + hint)
+	}
 	helpLine := Styles.CenteredLine(m.width, helpView)
 
 	headerView := m.header.View(m.width)
@@ -454,4 +458,17 @@ func (m *Dashboard) buildPanels() {
 	for i, app := range m.apps {
 		m.panels[i] = NewDashboardPanel(app, m.scraper, m.dockerScraper, m.userStats)
 	}
+}
+
+// Helpers
+
+func verboseLogHint() string {
+	if !logging.Verbose() {
+		return ""
+	}
+	path, err := logging.LogFilePath()
+	if err != nil {
+		return ""
+	}
+	return "verbose log: " + path
 }

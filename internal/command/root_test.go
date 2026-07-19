@@ -7,7 +7,18 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/logging"
 )
+
+func TestVerboseFlagEnablesDebugLogging(t *testing.T) {
+	t.Cleanup(func() { logging.SetVerbose(false) })
+	require.False(t, logging.Verbose())
+
+	err := NewRootCommand().ExecuteArgs("version", "--verbose")
+	require.NoError(t, err)
+
+	assert.True(t, logging.Verbose())
+}
 
 func TestWithApplicationFound(t *testing.T) {
 	ns, err := docker.NewNamespace("test", docker.WithApplications(

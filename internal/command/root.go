@@ -16,6 +16,7 @@ import (
 type RootCommand struct {
 	cmd       *cobra.Command
 	namespace string
+	verbose   bool
 
 	installImageRef string
 }
@@ -29,6 +30,9 @@ func NewRootCommand() *RootCommand {
 		CompletionOptions: cobra.CompletionOptions{
 			HiddenDefaultCmd: true,
 		},
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			logging.SetVerbose(r.verbose)
+		},
 		RunE: WithNamespace(func(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 			return logging.ToLogFile(func() error {
 				return ui.Run(ns, r.installImageRef)
@@ -36,6 +40,7 @@ func NewRootCommand() *RootCommand {
 		}),
 	}
 	r.cmd.PersistentFlags().StringVarP(&r.namespace, "namespace", "n", docker.DefaultNamespace, "namespace for containers")
+	r.cmd.PersistentFlags().BoolVarP(&r.verbose, "verbose", "v", false, "log Docker and HTTP operations")
 
 	r.cmd.Flags().StringVar(&r.installImageRef, "install", "", "Path to Docker image to install")
 
