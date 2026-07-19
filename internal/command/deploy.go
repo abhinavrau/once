@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -18,7 +19,7 @@ type deployCommand struct {
 func newDeployCommand() *deployCommand {
 	d := &deployCommand{}
 	d.cmd = &cobra.Command{
-		Use:   "deploy <image>",
+		Use:   "deploy <app or image>",
 		Short: "Deploy an application",
 		Args:  cobra.ExactArgs(1),
 		RunE:  WithNamespace(d.run),
@@ -32,27 +33,36 @@ func newDeployCommand() *deployCommand {
 // Private
 
 func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	imageRef := args[0]
+	imageRef := catalog.Resolve(args[0])
 
-	if err := ns.Setup(ctx); err != nil {
-		return fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)
+	if err := d.flags.checkRemoved(cmd); err != nil {
+		return err
 	}
 
-	host := d.flags.host
-	if host == "" {
-		host = docker.NameFromImageRef(imageRef) + ".localhost"
+	exposure, err := docker.ParseExposure(d.flags.expose)
+	if err != nil {
+		return err
+	}
+
+	baseName := docker.NameFromImageRef(imageRef)
+	host, err := docker.ResolveHost(exposure, d.flags.host, baseName)
+	if err != nil {
+		return err
 	}
 
 	if ns.HostInUse(host) {
 		return docker.ErrHostnameInUse
 	}
 
-	settings, err := d.flags.buildSettings(imageRef, host)
+	settings, err := d.flags.buildSettings(imageRef, host, exposure)
 	if err != nil {
 		return err
 	}
 
-	baseName := docker.NameFromImageRef(imageRef)
+	if err := ns.Setup(ctx); err != nil {
+		return fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)
+	}
+
 	name, err := ns.UniqueName(baseName)
 	if err != nil {
 		return fmt.Errorf("generating app name: %w", err)
@@ -61,9 +71,8 @@ func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 
 	app := docker.NewApplication(ns, settings)
 
-	if settings.TailscaleExposed() {
-		printTailscaleWarnings(ns.Tailscale().ShadowWarnings(ctx, []string{name}))
-	}
+	warnShadowedServiceName(ctx, ns, settings)
+	warnPublicDNS(ctx, settings)
 
 	return runWithProgress("Deploying "+host, func(progress docker.DeployProgressCallback) error {
 		if err := app.Deploy(ctx, progress); err != nil {

@@ -30,12 +30,12 @@ func NewSettingsMenu(app *docker.Application) SettingsMenu {
 		app: app,
 		menu: NewMenu(
 			MenuItem{Label: "Application", Key: int(SettingsSectionApplication), Shortcut: WithHelp(NewKeyBinding("a"), "a", "")},
+			MenuItem{Label: "Exposure", Key: int(SettingsSectionExposure), Shortcut: WithHelp(NewKeyBinding("x"), "x", "")},
 			MenuItem{Label: "Email", Key: int(SettingsSectionEmail), Shortcut: WithHelp(NewKeyBinding("e"), "e", "")},
 			MenuItem{Label: "Environment", Key: int(SettingsSectionEnvironment), Shortcut: WithHelp(NewKeyBinding("v"), "v", "")},
 			MenuItem{Label: "Resources", Key: int(SettingsSectionResources), Shortcut: WithHelp(NewKeyBinding("r"), "r", "")},
 			MenuItem{Label: "Updates", Key: int(SettingsSectionUpdates), Shortcut: WithHelp(NewKeyBinding("u"), "u", "")},
 			MenuItem{Label: "Backups", Key: int(SettingsSectionBackups), Shortcut: WithHelp(NewKeyBinding("b"), "b", "")},
-			MenuItem{Label: "Tailscale", Key: int(SettingsSectionTailscale), Shortcut: WithHelp(NewKeyBinding("t"), "t", "")},
 			MenuItem{Label: "Tailscale Funnel", Key: int(SettingsSectionFunnel), Shortcut: WithHelp(NewKeyBinding("f"), "f", "")},
 		),
 		help: h,

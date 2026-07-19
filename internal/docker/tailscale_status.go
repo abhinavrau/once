@@ -9,9 +9,9 @@ import (
 // ServiceStatus is one row of `once tailscale status`: a service's tailnet
 // URL and its advertised/approved state rendered for display.
 type ServiceStatus struct {
-	Name  string
-	URL   string
-	State string
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	State string `json:"state"`
 }
 
 // ServiceStatuses reports each named service's current state: advertised

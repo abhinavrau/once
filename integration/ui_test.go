@@ -50,21 +50,43 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.send(keyMsg("tab"))
 	d.send(keyMsg("enter"))
 
-	d.waitForView("Hostname", 5*time.Second)
+	d.waitForView("Exposure", 5*time.Second)
 
-	// -- Screen 3: Hostname form --
-	d.typeText("chat.localhost")
-	d.send(keyMsg("tab"))
+	// -- Screen 3: Exposure form: local preselected (Tailscale is off) with
+	// the name-derived host suggestion prefilled; accept both. --
+	view := d.viewContent()
+	assert.Contains(t, view, "(•) Local", "local should be preselected without Tailscale")
+	assert.Contains(t, view, "once-campfire.localhost", "host should prefill the derived suggestion")
+
+	// -- Selecting tailnet exposure while Tailscale is disabled offers the
+	// enable overlay inline; dismissing it returns to the filled-in form. --
+	d.send(keyMsg("right")) // Local → Tailnet
+	d.send(keyMsg("tab"))   // → Host
+	d.send(keyMsg("tab"))   // → Install
+	d.send(keyMsg("enter"))
+	d.waitForView("Bootstrap Client ID", 5*time.Second)
+	d.send(keyMsg("esc"))
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "Bootstrap Client ID")
+	}, 5*time.Second)
+
+	// Back on the form with focus still on Install: wrap around to the
+	// exposure radio, return to local, and install.
+	d.send(keyMsg("tab"))  // → Cancel
+	d.send(keyMsg("tab"))  // → Exposure
+	d.send(keyMsg("left")) // Tailnet → Local
+	d.send(keyMsg("tab"))  // → Host (keep the suggestion)
+	d.send(keyMsg("tab"))  // → Install
 	d.send(keyMsg("enter"))
 
 	// -- Install activity → dashboard --
 	// Wait for "running" which only appears in the dashboard panel state info,
 	// not in the install form or activity views.
 	d.waitForView("running", 5*time.Minute)
-	assert.Contains(t, d.viewContent(), "chat.localhost")
+	assert.Contains(t, d.viewContent(), "once-campfire.localhost")
 
 	// Verify the app is reachable via HTTP
-	appURL := fmt.Sprintf("http://chat.localhost:%d", proxyPorts.HTTPPort)
+	appURL := fmt.Sprintf("http://once-campfire.localhost:%d", proxyPorts.HTTPPort)
 	resp, err := http.Get(appURL)
 	require.NoError(t, err)
 	resp.Body.Close()
@@ -93,10 +115,10 @@ func TestUIInstallAndManageApp(t *testing.T) {
 // TestUITailscaleFormEnablesViaControlSeam drives the dashboard's global
 // Tailscale settings form (the `t` overlay) end to end: open it, fill the
 // credentials, submit, and assert it ran the same enable lifecycle the CLI uses
-// - the once-tailscale sidecar and once-docktail boot, the deployed app
-// retrofits its docktail.service.* labels, and once-admin comes up. It also
-// checks esc dismissal and that re-opening the form pre-populates from the
-// stored settings.
+// - the once-tailscale sidecar and once-docktail boot, the deployed local app
+// stays off the tailnet, and once-admin comes up. It also
+// checks esc dismissal and that re-opening the form offers disable once
+// Tailscale is enabled.
 func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -127,9 +149,10 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
-		Name:  "whoami",
-		Image: whoamiImage,
-		Host:  "whoami.localhost",
+		Name:     "whoami",
+		Image:    whoamiImage,
+		Host:     "whoami.localhost",
+		Exposure: docker.ExposureLocal,
 	})
 
 	app := ui.NewApp(ns, "")
@@ -139,23 +162,23 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 
 	// -- esc dismisses the overlay --
 	d.send(keyMsg("t"))
-	d.waitForView("OAuth Client ID", 5*time.Second)
+	d.waitForView("Bootstrap Client ID", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "OAuth Client ID")
+		return !strings.Contains(d.viewContent(), "Bootstrap Client ID")
 	}, 5*time.Second)
 
 	// -- open the form and enable Tailscale --
+	// The bootstrap fields are focused in tab order; the tag is prefilled with
+	// tag:once. Under the control seam the credentials are unused: enable skips
+	// SaaS OAuth (and with it the policy consent flow) and boots directly.
 	d.send(keyMsg("t"))
-	d.waitForView("OAuth Client ID", 5*time.Second)
-	d.send(keyMsg("space")) // toggle Enable Tailscale on
-	d.send(keyMsg("tab"))   // → OAuth Client ID
+	d.waitForView("Bootstrap Client ID", 5*time.Second)
 	d.typeText("unused-with-control-seam")
-	d.send(keyMsg("tab")) // → OAuth Client Secret
+	d.send(keyMsg("tab")) // → Bootstrap Client Secret
 	d.typeText("unused-with-control-seam")
-	d.send(keyMsg("tab")) // → Tag (required by the form; unused under the control seam)
-	d.typeText("tag:once")
-	d.send(keyMsg("tab"))   // → Save
+	d.send(keyMsg("tab"))   // → Tag (keep the tag:once prefill)
+	d.send(keyMsg("tab"))   // → Enable
 	d.send(keyMsg("enter")) // submit
 
 	// The form runs the real EnableTailscale and stays open (showing progress,
@@ -178,17 +201,49 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 		return err == nil && found && online
 	}, 90*time.Second, 2*time.Second, "sidecar never joined the control plane after enabling via the form")
 
-	assertAppLabels(t, ctx, cli, ns, "whoami", hasDocktailLabels("whoami", ns.Name()))
+	// The local app stays off the tailnet: only tailnet-exposed apps are
+	// advertised, and none exist yet.
+	assertAppLabels(t, ctx, cli, ns, "whoami", noDocktailLabels)
 
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
 	require.NoError(t, err, "once-admin should be running after enabling via the form")
 
-	// -- re-opening the form pre-populates from the stored settings --
+	// -- re-opening the form offers disable (the bootstrap credential is never
+	// stored, so there is nothing to pre-populate) --
 	d.send(keyMsg("t"))
-	d.waitForView("OAuth Client ID", 5*time.Second)
+	d.waitForView("Tailscale is enabled", 5*time.Second)
+	assert.Contains(t, d.viewContent(), "Disable", "the overlay should offer disable when Tailscale is enabled")
+	d.send(keyMsg("esc"))
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "Tailscale is enabled")
+	}, 5*time.Second)
+
+	// -- with Tailscale enabled, a TUI install preselects tailnet with the
+	// name-derived service name, and installing advertises the app --
+	d.send(keyMsg("n"))
+	d.waitForView("Custom Docker image", 5*time.Second)
+	d.send(keyMsg("up"))
+	d.send(keyMsg("enter"))
+	d.waitForView("Image", 5*time.Second)
+	d.typeText(whoamiImage)
+	d.send(keyMsg("tab"))
+	d.send(keyMsg("enter"))
+
+	d.waitForView("Exposure", 5*time.Second)
 	view := d.viewContent()
-	assert.Contains(t, view, "unused-with-control-seam", "form should pre-populate the stored client ID")
-	assert.Contains(t, view, "[✓]", "Enable checkbox should be checked when Tailscale is already enabled")
+	assert.Contains(t, view, "(•) Tailnet", "tailnet should be preselected when Tailscale is enabled")
+	d.send(keyMsg("tab")) // → Host (keep the "whoami" suggestion)
+	d.send(keyMsg("tab")) // → Install
+	d.send(keyMsg("enter"))
+
+	d.waitUntil(func() bool {
+		_ = ns.Refresh(ctx)
+		return ns.ApplicationByHost("whoami") != nil
+	}, 3*time.Minute)
+
+	tailnetApp := ns.ApplicationByHost("whoami")
+	require.Equal(t, docker.ExposureTailnet, tailnetApp.Settings.Exposure)
+	assertAppLabels(t, ctx, cli, ns, tailnetApp.Settings.Name, hasDocktailLabels("whoami", ns.Name()))
 }
 
 // appDriver drives a ui.App outside of tea.Program by manually executing

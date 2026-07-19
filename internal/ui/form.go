@@ -163,6 +163,75 @@ func (f *CheckboxField) Blur()             {}
 func (f *CheckboxField) SetWidth(int)      {}
 func (f *CheckboxField) IsFocusable() bool { return true }
 
+// RadioField
+
+type RadioField struct {
+	options  []string
+	selected int
+	onChange func(selected int)
+}
+
+func NewRadioField(options ...string) *RadioField {
+	return &RadioField{options: options}
+}
+
+func (f *RadioField) Selected() int {
+	return f.selected
+}
+
+func (f *RadioField) SetSelected(i int) {
+	f.selected = i
+}
+
+func (f *RadioField) OnChange(fn func(selected int)) {
+	f.onChange = fn
+}
+
+func (f *RadioField) Cycle() {
+	f.choose((f.selected + 1) % len(f.options))
+}
+
+func (f *RadioField) Update(msg tea.Msg) tea.Cmd {
+	if msg, ok := msg.(tea.KeyPressMsg); ok {
+		switch msg.String() {
+		case "left":
+			f.choose((f.selected - 1 + len(f.options)) % len(f.options))
+		case "right", "space", " ":
+			f.Cycle()
+		}
+	}
+	return nil
+}
+
+func (f *RadioField) View() string {
+	parts := make([]string, len(f.options))
+	for i, option := range f.options {
+		if i == f.selected {
+			parts[i] = "(•) " + option
+		} else {
+			parts[i] = "( ) " + option
+		}
+	}
+	return strings.Join(parts, "   ")
+}
+
+func (f *RadioField) Focus() tea.Cmd    { return nil }
+func (f *RadioField) Blur()             {}
+func (f *RadioField) SetWidth(int)      {}
+func (f *RadioField) IsFocusable() bool { return true }
+
+// Private
+
+func (f *RadioField) choose(i int) {
+	if i == f.selected {
+		return
+	}
+	f.selected = i
+	if f.onChange != nil {
+		f.onChange(i)
+	}
+}
+
 // StaticField
 
 type StaticField struct {
@@ -375,6 +444,15 @@ func (f Form) CheckboxField(i int) *CheckboxField {
 	return f.items[i].Field.(*CheckboxField)
 }
 
+func (f Form) RadioField(i int) *RadioField {
+	return f.items[i].Field.(*RadioField)
+}
+
+func (f *Form) SetError(field int, message string) {
+	f.errorField = field
+	f.error = message
+}
+
 func (f Form) HasError() bool {
 	return f.error != ""
 }
@@ -452,8 +530,11 @@ func (f Form) handleClick(target string) (Form, tea.Cmd) {
 
 	for i := range f.items {
 		if target == fieldTarget(i) {
-			if cb, ok := f.items[i].Field.(*CheckboxField); ok {
-				cb.Toggle()
+			switch field := f.items[i].Field.(type) {
+			case *CheckboxField:
+				field.Toggle()
+			case *RadioField:
+				field.Cycle()
 			}
 			return f.focusIndex(i)
 		}

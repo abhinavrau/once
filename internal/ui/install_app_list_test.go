@@ -67,21 +67,3 @@ func TestInstallAppList_View(t *testing.T) {
 	assert.Contains(t, view, "Writebook")
 	assert.Contains(t, view, "Custom Docker image")
 }
-
-func TestExpandAlias(t *testing.T) {
-	ref, ok := expandAlias("campfire")
-	assert.True(t, ok)
-	assert.Equal(t, "ghcr.io/basecamp/once-campfire", ref)
-
-	ref, ok = expandAlias("fizzy")
-	assert.True(t, ok)
-	assert.Equal(t, "ghcr.io/basecamp/fizzy", ref)
-
-	ref, ok = expandAlias("writebook")
-	assert.True(t, ok)
-	assert.Equal(t, "ghcr.io/basecamp/writebook", ref)
-
-	ref, ok = expandAlias("ghcr.io/basecamp/once-campfire:latest")
-	assert.False(t, ok)
-	assert.Equal(t, "ghcr.io/basecamp/once-campfire:latest", ref)
-}

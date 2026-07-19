@@ -2,6 +2,8 @@ package ui
 
 import (
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/basecamp/once/internal/catalog"
 )
 
 type InstallImageSubmitMsg struct{ ImageRef string }
@@ -21,10 +23,7 @@ func NewInstallImageForm() InstallImageForm {
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
-		ref := f.TextField(0).Value()
-		if expanded, ok := expandAlias(ref); ok {
-			ref = expanded
-		}
+		ref := catalog.Resolve(f.TextField(0).Value())
 		return func() tea.Msg { return InstallImageSubmitMsg{ImageRef: ref} }
 	})
 	m.form.OnCancel(func(f *Form) tea.Cmd {

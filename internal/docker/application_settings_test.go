@@ -83,6 +83,7 @@ func TestContainerResourcesMarshalRoundTrip(t *testing.T) {
 	original := ApplicationSettings{
 		Name:      "app",
 		Image:     "img:latest",
+		Exposure:  ExposureLocal,
 		Resources: ContainerResources{CPUs: 2, MemoryMB: 512},
 	}
 	restored, err := UnmarshalApplicationSettings(original.Marshal())
@@ -111,25 +112,49 @@ func TestBackupSettingsEqualDiffers(t *testing.T) {
 	assert.False(t, base.Equal(noBackup))
 }
 
-func TestTailscaleExposedDefaultsToExposed(t *testing.T) {
-	// Zero value (and apps deployed before this field existed) stay exposed,
-	// preserving the prior all-or-nothing behavior.
-	assert.True(t, ApplicationSettings{Name: "app"}.TailscaleExposed())
-
-	restored, err := UnmarshalApplicationSettings(`{"name":"app"}`)
+func TestExposureBackfilledFromHostOnUnmarshal(t *testing.T) {
+	local, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.localhost"}`)
 	require.NoError(t, err)
-	assert.True(t, restored.TailscaleExposed())
+	assert.Equal(t, ExposureLocal, local.Exposure)
 
-	excluded := ApplicationSettings{Name: "app", TailscaleExcluded: true}
-	assert.False(t, excluded.TailscaleExposed())
-	roundTripped, err := UnmarshalApplicationSettings(excluded.Marshal())
+	public, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.example.com"}`)
 	require.NoError(t, err)
-	assert.False(t, roundTripped.TailscaleExposed())
+	assert.Equal(t, ExposurePublic, public.Exposure)
+
+	// An explicitly stored exposure wins over the hostname shape.
+	stored, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.example.com","exposure":"local"}`)
+	require.NoError(t, err)
+	assert.Equal(t, ExposureLocal, stored.Exposure)
 }
 
-func TestTailscaleExcludedEqualDiffers(t *testing.T) {
-	base := ApplicationSettings{Name: "app"}
-	assert.False(t, base.Equal(ApplicationSettings{Name: "app", TailscaleExcluded: true}))
+func TestExposureMarshalRoundTrip(t *testing.T) {
+	original := ApplicationSettings{Name: "app", Image: "img:latest", Host: "app.localhost", Exposure: ExposureLocal}
+	assert.Contains(t, original.Marshal(), `"exposure":"local"`)
+
+	restored, err := UnmarshalApplicationSettings(original.Marshal())
+	require.NoError(t, err)
+	assert.Equal(t, ExposureLocal, restored.Exposure)
+	assert.True(t, original.Equal(restored))
+}
+
+func TestExposureEqualDiffers(t *testing.T) {
+	base := ApplicationSettings{Name: "app", Exposure: ExposureLocal}
+	assert.False(t, base.Equal(ApplicationSettings{Name: "app", Exposure: ExposurePublic}))
+}
+
+func TestTLSEnabledFollowsExposure(t *testing.T) {
+	assert.False(t, ApplicationSettings{Host: "app.example.com", Exposure: ExposureLocal}.TLSEnabled())
+	assert.True(t, ApplicationSettings{Host: "app.example.com", Exposure: ExposurePublic}.TLSEnabled())
+	assert.False(t, ApplicationSettings{Host: "app.example.com", Exposure: ExposurePublic, DisableTLS: true}.TLSEnabled())
+}
+
+func TestUnmarshalIgnoresRemovedTailscaleExcluded(t *testing.T) {
+	// Labels written before the exposure rework may still carry the removed
+	// tailscaleExcluded boolean; exposure is the only reachability state now.
+	restored, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.localhost","tailscaleExcluded":true}`)
+	require.NoError(t, err)
+	assert.Equal(t, ExposureLocal, restored.Exposure)
+	assert.NotContains(t, restored.Marshal(), "tailscaleExcluded")
 }
 
 func TestFunnelExpiresAtEqualDiffers(t *testing.T) {
@@ -173,8 +198,9 @@ func TestBuildEnvWithEnvVars(t *testing.T) {
 
 func TestEnvVarsMarshalRoundTrip(t *testing.T) {
 	original := ApplicationSettings{
-		Name:  "app",
-		Image: "img:latest",
+		Name:     "app",
+		Image:    "img:latest",
+		Exposure: ExposureLocal,
 		EnvVars: map[string]string{
 			"FOO": "bar",
 			"BAZ": "qux",
@@ -204,6 +230,7 @@ func TestAutoUpdateAndBackupMarshalRoundTrip(t *testing.T) {
 	original := ApplicationSettings{
 		Name:       "app",
 		Image:      "img:latest",
+		Exposure:   ExposureLocal,
 		AutoUpdate: true,
 		Backup:     BackupSettings{Path: "/backups", AutoBackup: true},
 	}

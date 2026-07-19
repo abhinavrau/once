@@ -7,43 +7,48 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
+const (
+	installExposureField = iota
+	installHostField
+)
+
 type InstallHostnameBackMsg struct{}
 
 type InstallHostnameForm struct {
-	form        Form
-	imageRef    string
-	title       string
-	exposeField int // index of the Tailscale exposure checkbox, -1 when absent
+	form     Form
+	imageRef string
+	title    string
 }
 
 func NewInstallHostnameForm(imageRef, title string, tailscaleEnabled bool) InstallHostnameForm {
-	hostnameField := NewTextField("app.example.com")
 	appName := docker.NameFromImageRef(imageRef)
-	if appName != "" {
-		hostnameField.SetPlaceholder(appName + ".example.com")
+
+	exposureField := NewExposureRadioField()
+	if tailscaleEnabled {
+		exposureField.SetSelected(exposureIndex(docker.ExposureTailnet))
 	}
 
-	items := []FormItem{{Label: "Hostname", Field: hostnameField, Required: true}}
-	exposeField := -1
-	if tailscaleEnabled {
-		exposeField = len(items)
-		items = append(items, FormItem{Label: "Tailscale", Field: NewCheckboxField("Expose on the tailnet", true)})
-	}
+	hostField := NewTextField("app.example.com")
+	hostField.SetValue(exposureHostSuggestion(exposureAt(exposureField.Selected()), appName))
+	exposureField.OnChange(func(selected int) {
+		hostField.SetValue(exposureHostSuggestion(exposureAt(selected), appName))
+	})
 
 	m := InstallHostnameForm{
-		form:        NewForm("Install", items...),
-		imageRef:    imageRef,
-		title:       title,
-		exposeField: exposeField,
+		form: NewForm("Install",
+			FormItem{Label: "Exposure", Field: exposureField},
+			FormItem{Label: "Host", Field: hostField, Required: true},
+		),
+		imageRef: imageRef,
+		title:    title,
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
-		excluded := exposeField >= 0 && !f.CheckboxField(exposeField).Checked()
 		return func() tea.Msg {
 			return InstallFormSubmitMsg{
-				ImageRef:          imageRef,
-				Hostname:          f.TextField(0).Value(),
-				TailscaleExcluded: excluded,
+				ImageRef: imageRef,
+				Hostname: f.TextField(installHostField).Value(),
+				Exposure: exposureAt(f.RadioField(installExposureField).Selected()),
 			}
 		}
 	})
@@ -73,5 +78,9 @@ func (m InstallHostnameForm) View() string {
 }
 
 func (m InstallHostnameForm) Hostname() string {
-	return m.form.TextField(0).Value()
+	return m.form.TextField(installHostField).Value()
+}
+
+func (m InstallHostnameForm) Exposure() docker.Exposure {
+	return exposureAt(m.form.RadioField(installExposureField).Selected())
 }

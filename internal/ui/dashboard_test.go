@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/logging"
 	"github.com/basecamp/once/internal/metrics"
 	"github.com/basecamp/once/internal/system"
 )
@@ -216,6 +217,19 @@ func TestDashboard_EmptyStateShowsMessage(t *testing.T) {
 	view := d.View()
 	assert.Contains(t, view, "There are no applications installed")
 	assert.Contains(t, view, "new app")
+}
+
+func TestDashboard_VerboseHintInFooter(t *testing.T) {
+	d := testDashboard(0)
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 24})
+
+	assert.NotContains(t, d.View(), "verbose log:")
+
+	t.Cleanup(func() { logging.SetVerbose(false) })
+	logging.SetVerbose(true)
+	view := d.View()
+	assert.Contains(t, view, "verbose log:")
+	assert.Contains(t, view, "once.log")
 }
 
 // Helpers

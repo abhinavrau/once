@@ -1,6 +1,7 @@
 package command
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 type settingsFlags struct {
 	host         string
+	expose       string
 	disableTLS   bool
 	env          []string
 	smtpServer   string
@@ -24,11 +26,11 @@ type settingsFlags struct {
 	autoUpdate   bool
 	backupPath   string
 	autoBackup   bool
-	tailscale    bool
 }
 
 func (f *settingsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.host, "host", "", "hostname for the application")
+	cmd.Flags().StringVar(&f.expose, "expose", string(docker.ExposureLocal), "where the application is reachable: local, tailnet, or public")
 	cmd.Flags().BoolVar(&f.disableTLS, "disable-tls", false, "disable TLS for this application")
 	cmd.Flags().StringArrayVar(&f.env, "env", nil, "environment variable in KEY=VALUE format (can be repeated)")
 	cmd.Flags().StringVar(&f.smtpServer, "smtp-server", "", "SMTP server address")
@@ -39,12 +41,25 @@ func (f *settingsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "CPU limit for the container")
 	cmd.Flags().IntVar(&f.memory, "memory", 0, "memory limit in MB for the container")
 	cmd.Flags().BoolVar(&f.autoUpdate, "auto-update", true, "automatically update the application")
-	cmd.Flags().BoolVar(&f.tailscale, "tailscale", true, "expose this application on the tailnet when Tailscale is enabled")
 	cmd.Flags().StringVar(&f.backupPath, "backup-path", "", "path for backups")
 	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", false, "enable automatic backups")
+
+	// Removed flag, kept registered (hidden) so it fails with a clean-break
+	// error naming its replacement instead of cobra's "unknown flag".
+	cmd.Flags().Bool("tailscale", false, "")
+	_ = cmd.Flags().MarkHidden("tailscale")
 }
 
-func (f *settingsFlags) buildSettings(image, host string) (docker.ApplicationSettings, error) {
+// checkRemoved fails a command that was invoked with a removed flag, naming
+// the replacement.
+func (f *settingsFlags) checkRemoved(cmd *cobra.Command) error {
+	if cmd.Flags().Changed("tailscale") {
+		return errors.New("the --tailscale flag has been removed: use --expose tailnet instead")
+	}
+	return nil
+}
+
+func (f *settingsFlags) buildSettings(image, host string, exposure docker.Exposure) (docker.ApplicationSettings, error) {
 	envVars, err := f.parseEnvVars()
 	if err != nil {
 		return docker.ApplicationSettings{}, err
@@ -57,6 +72,7 @@ func (f *settingsFlags) buildSettings(image, host string) (docker.ApplicationSet
 	s := docker.ApplicationSettings{
 		Image:      image,
 		Host:       host,
+		Exposure:   exposure,
 		DisableTLS: f.disableTLS,
 		EnvVars:    envVars,
 		SMTP: docker.SMTPSettings{
@@ -70,8 +86,7 @@ func (f *settingsFlags) buildSettings(image, host string) (docker.ApplicationSet
 			CPUs:     f.cpus,
 			MemoryMB: f.memory,
 		},
-		AutoUpdate:        f.autoUpdate,
-		TailscaleExcluded: !f.tailscale,
+		AutoUpdate: f.autoUpdate,
 		Backup: docker.BackupSettings{
 			Path:       f.backupPath,
 			AutoBackup: f.autoBackup,
@@ -127,8 +142,17 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 	if cmd.Flags().Changed("auto-update") {
 		s.AutoUpdate = f.autoUpdate
 	}
-	if cmd.Flags().Changed("tailscale") {
-		s.TailscaleExcluded = !f.tailscale
+	if cmd.Flags().Changed("expose") {
+		exposure, err := docker.ParseExposure(f.expose)
+		if err != nil {
+			return s, err
+		}
+		// The old exposure's host shape doesn't carry over (e.g. app.localhost
+		// is no tailnet service name); unless a host was given, re-derive it.
+		if exposure != s.Exposure && !cmd.Flags().Changed("host") {
+			s.Host = ""
+		}
+		s.Exposure = exposure
 	}
 	if cmd.Flags().Changed("backup-path") {
 		if f.backupPath != "" && !filepath.IsAbs(f.backupPath) {
@@ -139,6 +163,12 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 	if cmd.Flags().Changed("auto-backup") {
 		s.Backup.AutoBackup = f.autoBackup
 	}
+
+	host, err := docker.ResolveHost(s.Exposure, s.Host, docker.NameFromImageRef(s.Image))
+	if err != nil {
+		return s, err
+	}
+	s.Host = host
 
 	if err := s.Validate(); err != nil {
 		return s, err

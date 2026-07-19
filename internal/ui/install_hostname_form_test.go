@@ -6,11 +6,48 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/basecamp/once/internal/docker"
 )
+
+func TestInstallHostnameForm_DefaultsToLocalWithSuggestion(t *testing.T) {
+	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
+
+	assert.Equal(t, docker.ExposureLocal, form.Exposure())
+	assert.Equal(t, "once-campfire.localhost", form.Hostname())
+}
+
+func TestInstallHostnameForm_PreselectsTailnetWhenTailscaleEnabled(t *testing.T) {
+	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", true)
+
+	assert.Equal(t, docker.ExposureTailnet, form.Exposure())
+	assert.Equal(t, "once-campfire", form.Hostname())
+}
+
+func TestInstallHostnameForm_RadioChangeUpdatesSuggestion(t *testing.T) {
+	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
+
+	// The radio has initial focus; right cycles local → tailnet → public → local.
+	form, _ = form.Update(keyPressMsg("right"))
+	assert.Equal(t, docker.ExposureTailnet, form.Exposure())
+	assert.Equal(t, "once-campfire", form.Hostname())
+
+	form, _ = form.Update(keyPressMsg("right"))
+	assert.Equal(t, docker.ExposurePublic, form.Exposure())
+	assert.Equal(t, "", form.Hostname(), "public has no derived default")
+
+	form, _ = form.Update(keyPressMsg("right"))
+	assert.Equal(t, docker.ExposureLocal, form.Exposure())
+	assert.Equal(t, "once-campfire.localhost", form.Hostname())
+}
 
 func TestInstallHostnameForm_Submit(t *testing.T) {
 	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
 
+	// Public empties the host; type an explicit FQDN and submit.
+	form, _ = form.Update(keyPressMsg("right"))
+	form, _ = form.Update(keyPressMsg("right"))
+	hostnameFormPressTab(&form)
 	hostnameFormTypeText(&form, "chat.example.com")
 	hostnameFormPressTab(&form)
 	form, cmd := form.Update(keyPressMsg("enter"))
@@ -21,42 +58,28 @@ func TestInstallHostnameForm_Submit(t *testing.T) {
 	require.True(t, ok, "expected InstallFormSubmitMsg, got %T", msg)
 	assert.Equal(t, "ghcr.io/basecamp/once-campfire", submit.ImageRef)
 	assert.Equal(t, "chat.example.com", submit.Hostname)
-	assert.False(t, submit.TailscaleExcluded)
+	assert.Equal(t, docker.ExposurePublic, submit.Exposure)
 }
 
-func TestInstallHostnameForm_TailscaleExposureToggle(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", true)
-	hostnameFormTypeText(&form, "chat.example.com")
+func TestInstallHostnameForm_SubmitAcceptsSuggestion(t *testing.T) {
+	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
 
-	// Tab from hostname to the exposure checkbox, uncheck it.
 	hostnameFormPressTab(&form)
-	form, _ = form.Update(keyPressMsg(" "))
-
-	// Tab to the submit button and submit.
 	hostnameFormPressTab(&form)
 	form, cmd := form.Update(keyPressMsg("enter"))
 	require.NotNil(t, cmd)
 
-	submit := cmd().(InstallFormSubmitMsg)
-	assert.True(t, submit.TailscaleExcluded)
-}
-
-func TestInstallHostnameForm_TailscaleExposedByDefault(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", true)
-	hostnameFormTypeText(&form, "chat.example.com")
-	hostnameFormPressTab(&form) // hostname -> checkbox
-	hostnameFormPressTab(&form) // checkbox -> submit
-	_, cmd := form.Update(keyPressMsg("enter"))
-	require.NotNil(t, cmd)
-
-	submit := cmd().(InstallFormSubmitMsg)
-	assert.False(t, submit.TailscaleExcluded)
+	submit, ok := cmd().(InstallFormSubmitMsg)
+	require.True(t, ok)
+	assert.Equal(t, "once-campfire.localhost", submit.Hostname)
+	assert.Equal(t, docker.ExposureLocal, submit.Exposure)
 }
 
 func TestInstallHostnameForm_Cancel(t *testing.T) {
 	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire:latest", "", false)
 
-	// Tab to submit, tab to cancel
+	// Tab past the host field and submit button to cancel
+	hostnameFormPressTab(&form)
 	hostnameFormPressTab(&form)
 	hostnameFormPressTab(&form)
 	form, cmd := form.Update(keyPressMsg("enter"))
@@ -67,19 +90,18 @@ func TestInstallHostnameForm_Cancel(t *testing.T) {
 	assert.True(t, ok, "expected InstallHostnameBackMsg, got %T", msg)
 }
 
-func TestInstallHostnameForm_RequiresHostname(t *testing.T) {
+func TestInstallHostnameForm_PublicRequiresHostname(t *testing.T) {
 	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire:latest", "", false)
 
-	// Tab to submit button, then press enter with empty hostname
+	form, _ = form.Update(keyPressMsg("right"))
+	form, _ = form.Update(keyPressMsg("right"))
+	require.Equal(t, docker.ExposurePublic, form.Exposure())
+
+	// Tab to submit button, then press enter with the empty host
+	hostnameFormPressTab(&form)
 	hostnameFormPressTab(&form)
 	form, _ = form.Update(keyPressMsg("enter"))
 	assert.True(t, form.form.HasError())
-}
-
-func TestInstallHostnameForm_Hostname(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire:latest", "", false)
-	hostnameFormTypeText(&form, "app.example.com")
-	assert.Equal(t, "app.example.com", form.Hostname())
 }
 
 func TestInstallHostnameForm_ShowsTitleWhenSet(t *testing.T) {

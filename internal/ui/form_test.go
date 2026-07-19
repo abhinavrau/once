@@ -156,6 +156,52 @@ func TestCheckboxField_DisabledWhen(t *testing.T) {
 	assert.Equal(t, "[✓] TLS", field.View())
 }
 
+func TestRadioField_CycleAndArrows(t *testing.T) {
+	field := NewRadioField("Local", "Tailnet", "Public")
+	assert.Equal(t, 0, field.Selected())
+
+	field.Update(keyPressMsg("right"))
+	assert.Equal(t, 1, field.Selected())
+
+	field.Update(keyPressMsg("space"))
+	assert.Equal(t, 2, field.Selected())
+
+	field.Update(keyPressMsg("right"))
+	assert.Equal(t, 0, field.Selected(), "wraps forward")
+
+	field.Update(keyPressMsg("left"))
+	assert.Equal(t, 2, field.Selected(), "wraps backward")
+}
+
+func TestRadioField_Render(t *testing.T) {
+	field := NewRadioField("Local", "Public")
+	assert.Equal(t, "(•) Local   ( ) Public", field.View())
+
+	field.Update(keyPressMsg("right"))
+	assert.Equal(t, "( ) Local   (•) Public", field.View())
+}
+
+func TestRadioField_OnChange(t *testing.T) {
+	field := NewRadioField("Local", "Tailnet")
+	var got []int
+	field.OnChange(func(selected int) { got = append(got, selected) })
+
+	field.Update(keyPressMsg("right"))
+	field.Update(keyPressMsg("right"))
+	field.SetSelected(1)
+	assert.Equal(t, 1, field.Selected())
+	assert.Equal(t, []int{1, 0}, got, "SetSelected does not fire onChange")
+}
+
+func TestForm_ClickCyclesRadio(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Label: "Exposure", Field: NewRadioField("Local", "Public")},
+	)
+
+	form = updateForm(form, MouseEvent{IsClick: true, Target: fieldTarget(0)})
+	assert.Equal(t, 1, form.RadioField(0).Selected())
+}
+
 func TestForm_FieldValuesAccessible(t *testing.T) {
 	form := NewForm("Submit",
 		FormItem{Label: "Name", Field: NewTextField("name")},

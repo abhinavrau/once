@@ -41,6 +41,7 @@ type ApplicationSettings struct {
 	Name       string             `json:"name"`
 	Image      string             `json:"image"`
 	Host       string             `json:"host"`
+	Exposure   Exposure           `json:"exposure,omitempty"`
 	DisableTLS bool               `json:"disableTLS"`
 	EnvVars    map[string]string  `json:"env"`
 	SMTP       SMTPSettings       `json:"smtp"`
@@ -51,15 +52,16 @@ type ApplicationSettings struct {
 	// Funnel until this time. Written atomically with the tailscale_funnel label
 	// option in the same container recreation, so the two never drift apart.
 	FunnelExpiresAt *time.Time `json:"funnelExpiresAt,omitempty"`
-	// TailscaleExcluded opts an app out of tailnet exposure while Tailscale is
-	// globally enabled. Stored inverted so the zero value (and apps deployed
-	// before this field existed) default to exposed, preserving prior behavior.
-	TailscaleExcluded bool `json:"tailscaleExcluded,omitempty"`
 }
 
 func UnmarshalApplicationSettings(s string) (ApplicationSettings, error) {
 	var settings ApplicationSettings
 	err := json.Unmarshal([]byte(s), &settings)
+	// Backfill apps deployed before the exposure field existed; the derived
+	// value is persisted to the label the next time the container is recreated.
+	if err == nil && settings.Exposure == "" {
+		settings.Exposure = ExposureForHost(settings.Host)
+	}
 	return settings, err
 }
 
@@ -79,17 +81,11 @@ func (s ApplicationSettings) Validate() error {
 }
 
 func (s ApplicationSettings) TLSEnabled() bool {
-	return s.Host != "" && !s.DisableTLS && !IsLocalhost(s.Host)
+	return s.Exposure == ExposurePublic && !s.DisableTLS
 }
 
 func (s ApplicationSettings) FunnelEnabled() bool {
 	return s.FunnelExpiresAt != nil
-}
-
-// TailscaleExposed reports whether this app should appear on the tailnet when
-// Tailscale is globally enabled. Default is exposed; opting out sets the flag.
-func (s ApplicationSettings) TailscaleExposed() bool {
-	return !s.TailscaleExcluded
 }
 
 // FunnelExpired reports whether a set Funnel expiry has passed, so the daemon
@@ -100,6 +96,9 @@ func (s ApplicationSettings) FunnelExpired(now time.Time) bool {
 
 func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 	if s.Name != other.Name || s.Image != other.Image || s.Host != other.Host || s.DisableTLS != other.DisableTLS {
+		return false
+	}
+	if s.Exposure != other.Exposure {
 		return false
 	}
 	if s.Resources != other.Resources {
@@ -115,9 +114,6 @@ func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 		return false
 	}
 	if !funnelExpiryEqual(s.FunnelExpiresAt, other.FunnelExpiresAt) {
-		return false
-	}
-	if s.TailscaleExcluded != other.TailscaleExcluded {
 		return false
 	}
 	if len(s.EnvVars) != len(other.EnvVars) {

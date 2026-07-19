@@ -8,7 +8,6 @@ import (
 
 const (
 	appImageField = iota
-	appHostnameField
 	appTLSField
 )
 
@@ -20,13 +19,10 @@ func NewSettingsFormApplication(settings docker.ApplicationSettings) SettingsFor
 	imageField := NewTextField("user/repo:tag")
 	imageField.SetValue(settings.Image)
 
-	hostnameField := NewTextField("app.example.com")
-	hostnameField.SetValue(settings.Host)
-
 	tlsField := NewCheckboxField("Enabled", !settings.DisableTLS)
 	tlsField.SetDisabledWhen(func() (bool, string) {
-		if docker.IsLocalhost(hostnameField.Value()) {
-			return true, "Not available for localhost"
+		if settings.Exposure != docker.ExposurePublic {
+			return true, "Only available for public exposure"
 		}
 		return false, ""
 	})
@@ -36,7 +32,6 @@ func NewSettingsFormApplication(settings docker.ApplicationSettings) SettingsFor
 			title: "Application",
 			form: NewForm("Done",
 				FormItem{Label: "Image", Field: imageField, Required: true},
-				FormItem{Label: "Hostname", Field: hostnameField, Required: true},
 				FormItem{Label: "TLS", Field: tlsField},
 			),
 		},
@@ -45,7 +40,6 @@ func NewSettingsFormApplication(settings docker.ApplicationSettings) SettingsFor
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		s := settings
 		s.Image = f.TextField(appImageField).Value()
-		s.Host = f.TextField(appHostnameField).Value()
 		s.DisableTLS = !f.CheckboxField(appTLSField).Checked()
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})
