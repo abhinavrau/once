@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -18,7 +19,7 @@ type deployCommand struct {
 func newDeployCommand() *deployCommand {
 	d := &deployCommand{}
 	d.cmd = &cobra.Command{
-		Use:   "deploy <image>",
+		Use:   "deploy <app or image>",
 		Short: "Deploy an application",
 		Args:  cobra.ExactArgs(1),
 		RunE:  WithNamespace(d.run),
@@ -32,7 +33,7 @@ func newDeployCommand() *deployCommand {
 // Private
 
 func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	imageRef := args[0]
+	imageRef := catalog.Resolve(args[0])
 
 	if err := d.flags.checkRemoved(cmd); err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -70,9 +71,7 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 	}
 
 	if imageRef != "" {
-		if expanded, ok := expandAlias(imageRef); ok {
-			imageRef = expanded
-		}
+		imageRef = catalog.Resolve(imageRef)
 		m.state = installStateHostname
 		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag, m.tailscaleEnabled())
 	} else {

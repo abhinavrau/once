@@ -4,9 +4,9 @@
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `once deploy <catalog name>` deploys the catalog app's image
-- [ ] Non-catalog arguments behave exactly as before
-- [ ] Catalog resolution works with `--expose` and the other deploy flags
-- [ ] CLI integration test covers a catalog deploy
+- [x] `once deploy <catalog name>` deploys the catalog app's image
+- [x] Non-catalog arguments behave exactly as before
+- [x] Catalog resolution works with `--expose` and the other deploy flags
+- [x] CLI integration test covers a catalog deploy

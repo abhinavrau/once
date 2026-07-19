@@ -40,14 +40,16 @@ func TestCLIDeployExposureLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { cli.Close() })
 
-	// A deploy with no flags is local: host derived from the app name with
-	// the .localhost suffix, TLS off, and the exposure stored in the label.
-	require.NoError(t, runCLI("-n", nsName, "deploy", "ghcr.io/basecamp/once-campfire:main"))
+	// Deploying by catalog name resolves to the app's image ref, and a deploy
+	// with no flags is local: host derived from the app name with the
+	// .localhost suffix, TLS off, and the exposure stored in the label.
+	require.NoError(t, runCLI("-n", nsName, "deploy", "campfire"))
 
 	restored, err := docker.RestoreNamespace(ctx, nsName)
 	require.NoError(t, err)
 	app := restored.ApplicationByHost("once-campfire.localhost")
-	require.NotNil(t, app, "expected the app at the name-derived .localhost host")
+	require.NotNil(t, app, "expected the host derived from the resolved catalog image, not the catalog name")
+	assert.Equal(t, "ghcr.io/basecamp/once-campfire", app.Settings.Image)
 	assert.Equal(t, docker.ExposureLocal, app.Settings.Exposure)
 	assert.False(t, app.Settings.TLSEnabled())
 	appName := app.Settings.Name
@@ -95,7 +97,8 @@ func TestCLIDeployExposureLifecycle(t *testing.T) {
 func TestCLIDeployPublicRequiresFQDN(t *testing.T) {
 	nsName := "once-cli-public-test"
 
-	err := runCLI("-n", nsName, "deploy", "ghcr.io/basecamp/once-campfire:main", "--expose", "public")
+	// Catalog names compose with deploy flags like --expose.
+	err := runCLI("-n", nsName, "deploy", "campfire", "--expose", "public")
 	assert.ErrorIs(t, err, docker.ErrPublicHostRequired)
 
 	err = runCLI("-n", nsName, "deploy", "ghcr.io/basecamp/once-campfire:main", "--expose", "public", "--host", "writebook")
