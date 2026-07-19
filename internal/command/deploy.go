@@ -71,6 +71,7 @@ func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 	app := docker.NewApplication(ns, settings)
 
 	warnShadowedServiceName(ctx, ns, settings)
+	warnPublicDNS(ctx, settings)
 
 	return runWithProgress("Deploying "+host, func(progress docker.DeployProgressCallback) error {
 		if err := app.Deploy(ctx, progress); err != nil {

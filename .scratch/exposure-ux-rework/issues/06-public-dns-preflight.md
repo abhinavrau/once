@@ -4,9 +4,9 @@
 
 **Blocked by:** 01 - Exposure concept with local/public semantics.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Public deploy with an unresolvable host succeeds and prints the TLS-will-fail warning
-- [ ] Public deploy with a resolvable host prints the resolved address
-- [ ] Local and tailnet deploys run no preflight
-- [ ] Tests force both outcomes through the injected resolver, no real DNS
+- [x] Public deploy with an unresolvable host succeeds and prints the TLS-will-fail warning
+- [x] Public deploy with a resolvable host prints the resolved address
+- [x] Local and tailnet deploys run no preflight
+- [x] Tests force both outcomes through the injected resolver, no real DNS
