@@ -57,8 +57,26 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	view := d.viewContent()
 	assert.Contains(t, view, "(•) Local", "local should be preselected without Tailscale")
 	assert.Contains(t, view, "once-campfire.localhost", "host should prefill the derived suggestion")
-	d.send(keyMsg("tab")) // → Host (keep the suggestion)
-	d.send(keyMsg("tab")) // → Install
+
+	// -- Selecting tailnet exposure while Tailscale is disabled offers the
+	// enable overlay inline; dismissing it returns to the filled-in form. --
+	d.send(keyMsg("right")) // Local → Tailnet
+	d.send(keyMsg("tab"))   // → Host
+	d.send(keyMsg("tab"))   // → Install
+	d.send(keyMsg("enter"))
+	d.waitForView("Bootstrap Client ID", 5*time.Second)
+	d.send(keyMsg("esc"))
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "Bootstrap Client ID")
+	}, 5*time.Second)
+
+	// Back on the form with focus still on Install: wrap around to the
+	// exposure radio, return to local, and install.
+	d.send(keyMsg("tab"))  // → Cancel
+	d.send(keyMsg("tab"))  // → Exposure
+	d.send(keyMsg("left")) // Tailnet → Local
+	d.send(keyMsg("tab"))  // → Host (keep the suggestion)
+	d.send(keyMsg("tab"))  // → Install
 	d.send(keyMsg("enter"))
 
 	// -- Install activity → dashboard --
@@ -99,8 +117,8 @@ func TestUIInstallAndManageApp(t *testing.T) {
 // credentials, submit, and assert it ran the same enable lifecycle the CLI uses
 // - the once-tailscale sidecar and once-docktail boot, the deployed local app
 // stays off the tailnet, and once-admin comes up. It also
-// checks esc dismissal and that re-opening the form pre-populates from the
-// stored settings.
+// checks esc dismissal and that re-opening the form offers disable once
+// Tailscale is enabled.
 func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -144,23 +162,23 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 
 	// -- esc dismisses the overlay --
 	d.send(keyMsg("t"))
-	d.waitForView("OAuth Client ID", 5*time.Second)
+	d.waitForView("Bootstrap Client ID", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "OAuth Client ID")
+		return !strings.Contains(d.viewContent(), "Bootstrap Client ID")
 	}, 5*time.Second)
 
 	// -- open the form and enable Tailscale --
+	// The bootstrap fields are focused in tab order; the tag is prefilled with
+	// tag:once. Under the control seam the credentials are unused: enable skips
+	// SaaS OAuth (and with it the policy consent flow) and boots directly.
 	d.send(keyMsg("t"))
-	d.waitForView("OAuth Client ID", 5*time.Second)
-	d.send(keyMsg("space")) // toggle Enable Tailscale on
-	d.send(keyMsg("tab"))   // → OAuth Client ID
+	d.waitForView("Bootstrap Client ID", 5*time.Second)
 	d.typeText("unused-with-control-seam")
-	d.send(keyMsg("tab")) // → OAuth Client Secret
+	d.send(keyMsg("tab")) // → Bootstrap Client Secret
 	d.typeText("unused-with-control-seam")
-	d.send(keyMsg("tab")) // → Tag (required by the form; unused under the control seam)
-	d.typeText("tag:once")
-	d.send(keyMsg("tab"))   // → Save
+	d.send(keyMsg("tab"))   // → Tag (keep the tag:once prefill)
+	d.send(keyMsg("tab"))   // → Enable
 	d.send(keyMsg("enter")) // submit
 
 	// The form runs the real EnableTailscale and stays open (showing progress,
@@ -190,15 +208,14 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
 	require.NoError(t, err, "once-admin should be running after enabling via the form")
 
-	// -- re-opening the form pre-populates from the stored settings --
+	// -- re-opening the form offers disable (the bootstrap credential is never
+	// stored, so there is nothing to pre-populate) --
 	d.send(keyMsg("t"))
-	d.waitForView("OAuth Client ID", 5*time.Second)
-	view := d.viewContent()
-	assert.Contains(t, view, "unused-with-control-seam", "form should pre-populate the stored client ID")
-	assert.Contains(t, view, "[✓]", "Enable checkbox should be checked when Tailscale is already enabled")
+	d.waitForView("Tailscale is enabled", 5*time.Second)
+	assert.Contains(t, d.viewContent(), "Disable", "the overlay should offer disable when Tailscale is enabled")
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "OAuth Client ID")
+		return !strings.Contains(d.viewContent(), "Tailscale is enabled")
 	}, 5*time.Second)
 
 	// -- with Tailscale enabled, a TUI install preselects tailnet with the
@@ -213,7 +230,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	d.send(keyMsg("enter"))
 
 	d.waitForView("Exposure", 5*time.Second)
-	view = d.viewContent()
+	view := d.viewContent()
 	assert.Contains(t, view, "(•) Tailnet", "tailnet should be preselected when Tailscale is enabled")
 	d.send(keyMsg("tab")) // → Host (keep the "whoami" suggestion)
 	d.send(keyMsg("tab")) // → Install

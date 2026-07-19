@@ -222,9 +222,14 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, nil
 
 	case InstallFormSubmitMsg:
+		// Tailnet exposure before Tailscale is enabled: offer the enable
+		// overlay inline instead of bouncing the user to the CLI. Closing it
+		// returns to the filled-in form.
 		if msg.Exposure == docker.ExposureTailnet && !m.tailscaleEnabled() {
-			m.err = docker.ErrTailscaleNotEnabled
-			return m, nil
+			m.overlay = NewTailscaleForm(m.namespace)
+			var cmd tea.Cmd
+			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			return m, tea.Batch(m.overlay.Init(), cmd)
 		}
 		host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), docker.NameFromImageRef(msg.ImageRef))
 		if err != nil {

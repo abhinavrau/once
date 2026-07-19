@@ -4,10 +4,10 @@
 
 **Blocked by:** 03 - TUI exposure radio; 04 - Bootstrap-only `tailscale enable`.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Overlay shows only bootstrap ID/secret and a prefilled tag field
-- [ ] Policy diff renders in the overlay with Apply and Decline
-- [ ] Decline shows the copyable snippet; nothing is written and no Policy Credential is minted
-- [ ] Selecting tailnet exposure with Tailscale disabled offers the enable overlay inline
-- [ ] TUI integration drivers updated in the same change and passing
+- [x] Overlay shows only bootstrap ID/secret and a prefilled tag field
+- [x] Policy diff renders in the overlay with Apply and Decline
+- [x] Decline shows the copyable snippet; nothing is written and no Policy Credential is minted (note: planning the diff requires a one-shot Policy Credential, as in the CLI's interactive prompt path; Decline revokes it immediately, and it never outlives the decision)
+- [x] Selecting tailnet exposure with Tailscale disabled offers the enable overlay inline
+- [x] TUI integration drivers updated in the same change and passing

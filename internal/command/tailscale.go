@@ -271,7 +271,7 @@ func (t *tailscaleCommand) offerPolicyWrite(ctx context.Context, bootstrap *dock
 	}
 	defer func() {
 		if err := bootstrap.DeleteClient(ctx, clientID); err != nil {
-			fmt.Println("Could not delete the one-shot policy OAuth client; revoke it in the admin console (Trust credentials):", err)
+			fmt.Println(docker.PolicyRevokeFailureNotice+":", err)
 		}
 	}()
 
@@ -293,11 +293,11 @@ func (t *tailscaleCommand) provisionPolicy(ctx context.Context, clientID, client
 		return
 	}
 
-	fmt.Println("Once needs four sections in your tailnet policy file: tagOwners, autoApprovers.services, a grant for the tagged Services, and the funnel nodeAttr.")
+	fmt.Println(docker.PolicyConsentIntro)
 	fmt.Println()
 	fmt.Print(update.Diff())
 	fmt.Println()
-	fmt.Println("Warning: if this tailnet's policy is managed via GitOps, the next pipeline sync will silently revert this write - decline and commit the snippet to your policy repo instead.")
+	fmt.Println(docker.PolicyGitOpsWarning)
 	if !t.yes && !promptYesNo("Write this policy change?") {
 		printPolicySnippet(t.tag)
 		return

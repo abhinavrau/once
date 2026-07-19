@@ -106,6 +106,14 @@ func (u *PolicyUpdate) Apply(ctx context.Context) error {
 	return fmt.Errorf("giving up after %d concurrent edits to the tailnet policy; re-run enable, or apply the snippet manually", policyWriteAttempts)
 }
 
+// Consent is one seam with two renderings (the CLI prompt and the TUI
+// overlay), so the copy they share lives here with the policy logic.
+const (
+	PolicyConsentIntro        = "Once needs four sections in your tailnet policy file: tagOwners, autoApprovers.services, a grant for the tagged Services, and the funnel nodeAttr."
+	PolicyGitOpsWarning       = "Warning: if this tailnet's policy is managed via GitOps, the next pipeline sync will silently revert this write - decline and commit the snippet to your policy repo instead."
+	PolicyRevokeFailureNotice = "Could not delete the one-shot policy OAuth client; revoke it in the admin console (Trust credentials)"
+)
+
 // PolicySnippet returns the HuJSON snippet of the four sections Once needs,
 // for manual application when the API write is declined or fails. Its entries
 // are built from the same values as the API patch, so a pasted snippet makes a

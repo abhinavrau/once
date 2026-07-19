@@ -295,14 +295,20 @@ func TestInstall_UnresolvableHostBlocksInstall(t *testing.T) {
 	assert.ErrorIs(t, m.err, docker.ErrPublicHostRequired)
 }
 
-func TestInstall_TailnetBlockedWithoutTailscale(t *testing.T) {
+func TestInstall_TailnetWithoutTailscaleOffersEnableOverlay(t *testing.T) {
 	m := newTestInstall()
 	m, _ = updateInstall(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m, _ = updateInstall(m, InstallAppSelectedMsg{ImageRef: "ghcr.io/basecamp/once-campfire"})
 
 	m, _ = updateInstall(m, InstallFormSubmitMsg{ImageRef: "ghcr.io/basecamp/once-campfire", Hostname: "chat", Exposure: docker.ExposureTailnet})
 	assert.Equal(t, installStateHostname, m.state)
-	assert.ErrorIs(t, m.err, docker.ErrTailscaleNotEnabled)
+	require.NotNil(t, m.overlay)
+	assert.Contains(t, m.overlay.View(), "Bootstrap Client ID")
+
+	// Closing the overlay returns to the filled-in hostname form.
+	m, _ = updateInstall(m, TailscaleFormCloseMsg{})
+	assert.Nil(t, m.overlay)
+	assert.Equal(t, installStateHostname, m.state)
 }
 
 func TestInstall_LocalBareHostGainsSuffix(t *testing.T) {
