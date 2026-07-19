@@ -64,10 +64,10 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.send(keyMsg("tab"))   // → Host
 	d.send(keyMsg("tab"))   // → Install
 	d.send(keyMsg("enter"))
-	d.waitForView("Bootstrap Client ID", 5*time.Second)
+	d.waitForView("Client ID", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "Bootstrap Client ID")
+		return !strings.Contains(d.viewContent(), "Client ID")
 	}, 5*time.Second)
 
 	// Back on the form with focus still on Install: wrap around to the
@@ -162,20 +162,20 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 
 	// -- esc dismisses the overlay --
 	d.send(keyMsg("t"))
-	d.waitForView("Bootstrap Client ID", 5*time.Second)
+	d.waitForView("Client ID", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "Bootstrap Client ID")
+		return !strings.Contains(d.viewContent(), "Client ID")
 	}, 5*time.Second)
 
 	// -- open the form and enable Tailscale --
-	// The bootstrap fields are focused in tab order; the tag is prefilled with
+	// The credential fields are focused in tab order; the tag is prefilled with
 	// tag:once. Under the control seam the credentials are unused: enable skips
-	// SaaS OAuth (and with it the policy consent flow) and boots directly.
+	// SaaS OAuth (and with it the credential probe) and boots directly.
 	d.send(keyMsg("t"))
-	d.waitForView("Bootstrap Client ID", 5*time.Second)
+	d.waitForView("Client ID", 5*time.Second)
 	d.typeText("unused-with-control-seam")
-	d.send(keyMsg("tab")) // → Bootstrap Client Secret
+	d.send(keyMsg("tab")) // → Client Secret
 	d.typeText("unused-with-control-seam")
 	d.send(keyMsg("tab"))   // → Tag (keep the tag:once prefill)
 	d.send(keyMsg("tab"))   // → Enable
@@ -208,8 +208,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
 	require.NoError(t, err, "once-admin should be running after enabling via the form")
 
-	// -- re-opening the form offers disable (the bootstrap credential is never
-	// stored, so there is nothing to pre-populate) --
+	// -- re-opening the form offers disable --
 	d.send(keyMsg("t"))
 	d.waitForView("Tailscale is enabled", 5*time.Second)
 	assert.Contains(t, d.viewContent(), "Disable", "the overlay should offer disable when Tailscale is enabled")

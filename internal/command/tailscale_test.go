@@ -8,36 +8,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestEnableTakesOnlyBootstrapCredentialFlags(t *testing.T) {
-	var enable *cobra.Command
-	for _, sub := range newTailscaleCommand().cmd.Commands() {
-		if sub.Name() == "enable" {
-			enable = sub
-		}
-	}
-	require.NotNil(t, enable)
+func TestEnableTakesDirectCredentialFlags(t *testing.T) {
+	enable := tailscaleSubcommand(t, "enable")
 
 	assert.NotNil(t, enable.Flags().Lookup("client-id"))
 	assert.NotNil(t, enable.Flags().Lookup("client-secret"))
-	assert.Nil(t, enable.Flags().Lookup("bootstrap-client-id"))
-	assert.Nil(t, enable.Flags().Lookup("bootstrap-client-secret"))
 
 	tag := enable.Flags().Lookup("tag")
 	require.NotNil(t, tag)
 	assert.Equal(t, "tag:once", tag.DefValue)
 
-	assert.NotNil(t, enable.Flags().Lookup("yes"))
-	assert.NotNil(t, enable.Flags().Lookup("no-policy-write"))
+	// The policy write flow is gone with the bootstrap credential.
+	assert.Nil(t, enable.Flags().Lookup("yes"))
+	assert.Nil(t, enable.Flags().Lookup("no-policy-write"))
 }
 
-// go test runs without a TTY on stdin, so an undecided run must fail fast
-// with the flag equivalents rather than reach a prompt.
-func TestRequirePolicyDecisionFailsFastWithoutTerminal(t *testing.T) {
-	err := (&tailscaleCommand{}).requirePolicyDecision()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--yes")
-	assert.Contains(t, err.Error(), "--no-policy-write")
+func TestPolicyCommandNeedsNoDockerNamespace(t *testing.T) {
+	policy := tailscaleSubcommand(t, "policy")
+	require.NotNil(t, policy.Flags().Lookup("tag"))
+	assert.NotNil(t, policy.Run, "policy must not need a Docker namespace")
+}
 
-	assert.NoError(t, (&tailscaleCommand{yes: true}).requirePolicyDecision())
-	assert.NoError(t, (&tailscaleCommand{noPolicyWrite: true}).requirePolicyDecision())
+// Helpers
+
+func tailscaleSubcommand(t *testing.T, name string) *cobra.Command {
+	t.Helper()
+	for _, sub := range newTailscaleCommand().cmd.Commands() {
+		if sub.Name() == name {
+			return sub
+		}
+	}
+	t.Fatalf("no %q subcommand", name)
+	return nil
 }

@@ -2,12 +2,10 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
-	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/basecamp/once/internal/docker"
@@ -15,14 +13,12 @@ import (
 )
 
 type tailscaleCommand struct {
-	cmd           *cobra.Command
-	clientID      string
-	clientSecret  string
-	tag           string
-	yes           bool
-	noPolicyWrite bool
-	json          bool
-	duration      time.Duration
+	cmd          *cobra.Command
+	clientID     string
+	clientSecret string
+	tag          string
+	json         bool
+	duration     time.Duration
 }
 
 func newTailscaleCommand() *tailscaleCommand {
@@ -35,16 +31,30 @@ func newTailscaleCommand() *tailscaleCommand {
 	enable := &cobra.Command{
 		Use:   "enable",
 		Short: "Enable Tailscale and boot the Docktail containers",
-		RunE:  withLegacyTSDProxyWarning(t.enable),
+		Long: `Enable Tailscale and boot the Docktail containers.
+
+Setup, once per tailnet:
+ 1. Run ` + "`once tailscale policy`" + ` and merge the printed snippet into your
+    tailnet policy file (https://login.tailscale.com/admin/acls).
+ 2. In the admin console (Settings -> Trust credentials), create an OAuth
+    client with write access to Auth Keys, Devices Core, and Services,
+    tagged with your tag (default tag:once).
+ 3. Run this command with the client's ID and secret. The credential is
+    probed before anything boots, then stored for Docktail and the sidecar.`,
+		RunE: withLegacyTSDProxyWarning(t.enable),
 	}
-	enable.Flags().StringVar(&t.clientID, "client-id", "", "oauth_keys-scoped bootstrap OAuth client ID; Once mints the runtime and policy clients from it")
-	enable.Flags().StringVar(&t.clientSecret, "client-secret", "", "bootstrap OAuth client secret")
-	enable.Flags().StringVar(&t.tag, "tag", "tag:once", "Tailscale tag the minted OAuth clients own")
-	enable.Flags().BoolVar(&t.yes, "yes", false, "apply the tailnet policy changes without prompting")
-	enable.Flags().BoolVar(&t.noPolicyWrite, "no-policy-write", false, "decline the tailnet policy write and print the snippet to apply manually")
+	enable.Flags().StringVar(&t.clientID, "client-id", "", "OAuth client ID (scopes auth_keys, devices:core, services; tagged)")
+	enable.Flags().StringVar(&t.clientSecret, "client-secret", "", "OAuth client secret")
+	enable.Flags().StringVar(&t.tag, "tag", "tag:once", "Tailscale tag the OAuth client is tagged with")
 	_ = enable.MarkFlagRequired("client-id")
 	_ = enable.MarkFlagRequired("client-secret")
-	enable.MarkFlagsMutuallyExclusive("yes", "no-policy-write")
+
+	policy := &cobra.Command{
+		Use:   "policy",
+		Short: "Print the tailnet policy snippet Once needs",
+		Run:   func(cmd *cobra.Command, args []string) { printPolicySnippet(t.tag) },
+	}
+	policy.Flags().StringVar(&t.tag, "tag", "tag:once", "Tailscale tag the policy sections are built for")
 
 	disable := &cobra.Command{
 		Use:   "disable",
@@ -59,7 +69,7 @@ func newTailscaleCommand() *tailscaleCommand {
 	}
 	status.Flags().BoolVar(&t.json, "json", false, "emit structured JSON instead of prose")
 
-	t.cmd.AddCommand(enable, disable, status, t.newFunnelCommand())
+	t.cmd.AddCommand(enable, disable, status, policy, t.newFunnelCommand())
 	return t
 }
 
@@ -93,14 +103,13 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	settings := docker.TailscaleSettings{Tag: t.tag}
 	if !docker.TailscaleControlSeamActive() {
-		var err error
-		settings.ClientID, settings.ClientSecret, err = t.mintFromBootstrap(ctx)
-		if err != nil {
-			return err
-		}
+		settings.ClientID, settings.ClientSecret = t.clientID, t.clientSecret
 	}
 	warnings, err := ns.EnableTailscale(ctx, settings)
 	printTailscaleWarnings(warnings)
+	if errors.Is(err, docker.ErrTagNotInPolicy) {
+		printPolicySnippet(t.tag)
+	}
 	if err != nil {
 		return err
 	}
@@ -257,93 +266,6 @@ func (t *tailscaleCommand) funnelDisable(ctx context.Context, ns *docker.Namespa
 	return nil
 }
 
-// mintFromBootstrap turns the one Bootstrap Credential into the clients enable
-// needs: the policy offer runs first with a one-shot minted policy_file client
-// (a fresh tailnet must define the tag before a tagged client can be minted),
-// then the minimal-scope runtime client is minted and returned. The bootstrap
-// and policy credentials live only in memory; only the runtime credential is
-// persisted (by enable, in the once label).
-func (t *tailscaleCommand) mintFromBootstrap(ctx context.Context) (string, string, error) {
-	if err := t.requirePolicyDecision(); err != nil {
-		return "", "", err
-	}
-	bootstrap, err := docker.NewTailscaleBootstrap(ctx, t.clientID, t.clientSecret)
-	if err != nil {
-		return "", "", err
-	}
-	t.offerPolicyWrite(ctx, bootstrap)
-	return bootstrap.MintRuntimeClient(ctx, t.tag)
-}
-
-// requirePolicyDecision fails fast when a run could reach the policy consent
-// prompt without a terminal to show it on: a non-TTY run must decide up front
-// via --yes or --no-policy-write instead of hanging.
-func (t *tailscaleCommand) requirePolicyDecision() error {
-	if t.yes || t.noPolicyWrite || term.IsTerminal(os.Stdin.Fd()) {
-		return nil
-	}
-	return fmt.Errorf("stdin is not a terminal, so the tailnet policy consent prompt cannot be shown; pass --yes to apply the policy changes or --no-policy-write to print the snippet for manual application instead")
-}
-
-// offerPolicyWrite offers to write the four tailnet policy sections Once needs
-// via the Tailscale API, so the user never hand-edits HuJSON. Best effort by
-// design: any decline or failure prints the copy-paste snippet and enable
-// proceeds, with the credential probe as the enforcement. --no-policy-write
-// declines before any policy client is minted; otherwise the one-shot policy
-// client is deleted again as soon as the offer resolves.
-func (t *tailscaleCommand) offerPolicyWrite(ctx context.Context, bootstrap *docker.TailscaleBootstrap) {
-	if t.noPolicyWrite {
-		printPolicySnippet(t.tag)
-		return
-	}
-
-	clientID, clientSecret, err := bootstrap.MintPolicyClient(ctx)
-	if err != nil {
-		fmt.Println("Could not mint the policy OAuth client:", err)
-		printPolicySnippet(t.tag)
-		return
-	}
-	defer func() {
-		if err := bootstrap.DeleteClient(ctx, clientID); err != nil {
-			fmt.Println(docker.PolicyRevokeFailureNotice+":", err)
-		}
-	}()
-
-	t.provisionPolicy(ctx, clientID, clientSecret)
-}
-
-// provisionPolicy plans the policy patch with the one-shot policy credential,
-// shows the diff and GitOps warning, and applies on consent: --yes up front,
-// or the prompt. Any decline or failure prints the snippet and enable proceeds.
-func (t *tailscaleCommand) provisionPolicy(ctx context.Context, clientID, clientSecret string) {
-	update, err := docker.PlanPolicyUpdate(ctx, clientID, clientSecret, t.tag)
-	if err != nil {
-		fmt.Println("Could not plan the policy update:", err)
-		printPolicySnippet(t.tag)
-		return
-	}
-	if !update.Changed() {
-		fmt.Println("The tailnet policy already contains everything Once needs; nothing to change.")
-		return
-	}
-
-	fmt.Println(docker.PolicyConsentIntro)
-	fmt.Println()
-	fmt.Print(update.Diff())
-	fmt.Println()
-	fmt.Println(docker.PolicyGitOpsWarning)
-	if !t.yes && !promptYesNo("Write this policy change?") {
-		printPolicySnippet(t.tag)
-		return
-	}
-	if err := update.Apply(ctx); err != nil {
-		fmt.Println("The policy write failed:", err)
-		printPolicySnippet(t.tag)
-		return
-	}
-	fmt.Println("Tailnet policy updated.")
-}
-
 // Helpers
 
 // withLegacyTSDProxyWarning runs a tailscale subcommand after surfacing the
@@ -375,18 +297,10 @@ func printTailscaleWarnings(warnings []string) {
 
 func printPolicySnippet(tag string) {
 	fmt.Println()
-	fmt.Println("Merge this snippet into your tailnet policy file (https://login.tailscale.com/admin/acls), then re-run `once tailscale enable`:")
+	fmt.Println("Merge this snippet into your tailnet policy file (https://login.tailscale.com/admin/acls), then run `once tailscale enable`:")
 	fmt.Println()
 	fmt.Println(docker.PolicySnippet(tag))
 	fmt.Println()
-}
-
-func promptYesNo(question string) bool {
-	fmt.Print(question + " [y/N] ")
-	var answer string
-	_, _ = fmt.Scanln(&answer)
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	return answer == "y" || answer == "yes"
 }
 
 func requireBackgroundDaemon(namespace string) error {

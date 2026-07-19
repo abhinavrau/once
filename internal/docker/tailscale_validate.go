@@ -4,12 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+// ErrTagNotInPolicy marks enable failures that are fixed by merging Once's
+// snippet into the tailnet policy, so callers can print it alongside the
+// error. Only 400 responses carry it: that is how the API rejects an
+// undefined or unpermitted tag, while 429s and 5xxs mean something else.
+var ErrTagNotInPolicy = errors.New("define the tag in your tailnet policy (Access Controls -> tagOwners) first")
 
 const (
 	tailscaleAPIBaseURL = "https://api.tailscale.com/api/v2"
@@ -153,8 +160,10 @@ func createTailscaleAuthKey(ctx context.Context, baseURL, token, tag string) (id
 	switch {
 	case status == http.StatusForbidden:
 		return "", "", fmt.Errorf("the OAuth client is missing the auth_keys scope (Keys -> Auth Keys: Write), needed to mint the Tailscale sidecar's auth key (HTTP %d): %s", status, errorMessage(body))
+	case status == http.StatusBadRequest:
+		return "", "", fmt.Errorf("Tailscale refused to mint an auth key for tag %q (HTTP %d): %s; ensure the OAuth client is tagged with this tag, and %w", tag, status, errorMessage(body), ErrTagNotInPolicy)
 	case status != http.StatusOK:
-		return "", "", fmt.Errorf("Tailscale refused to mint an auth key for tag %q (HTTP %d): %s; ensure the OAuth client is tagged with this tag or owns it via tagOwners (Access Controls -> Tags)", tag, status, errorMessage(body))
+		return "", "", fmt.Errorf("Tailscale refused to mint an auth key for tag %q (HTTP %d): %s", tag, status, errorMessage(body))
 	}
 
 	var respBody struct {
@@ -226,8 +235,10 @@ func probeServiceDefinition(ctx context.Context, baseURL, token, tag string) err
 	switch {
 	case status == http.StatusForbidden:
 		return servicesScopeError(status, body)
+	case status == http.StatusBadRequest:
+		return fmt.Errorf("Tailscale rejected the probe Service definition for tag %q (HTTP %d): %s; %w", tag, status, errorMessage(body), ErrTagNotInPolicy)
 	case status != http.StatusOK:
-		return fmt.Errorf("Tailscale rejected the probe Service definition for tag %q (HTTP %d): %s; ensure the tag is defined in your tailnet policy (Access Controls -> tagOwners)", tag, status, errorMessage(body))
+		return fmt.Errorf("Tailscale rejected the probe Service definition for tag %q (HTTP %d): %s", tag, status, errorMessage(body))
 	}
 
 	// The Service now exists; clean it up whether or not the devices check passes.
