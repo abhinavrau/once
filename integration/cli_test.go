@@ -2,6 +2,9 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -51,6 +54,25 @@ func TestCLIDeployExposureLifecycle(t *testing.T) {
 	assertAppLabels(t, ctx, cli, restored, appName, func(t *testing.T, labels map[string]string) {
 		assert.Contains(t, labels["once"], `"exposure":"local"`)
 	})
+
+	// The read commands emit parseable JSON under --json: list an array of
+	// apps, per-app status one object, tailscale status the enablement state.
+	var listed []map[string]any
+	unmarshalCLI(t, &listed, "-n", nsName, "list", "--json")
+	require.Len(t, listed, 1)
+	assert.Equal(t, appName, listed[0]["name"])
+	assert.Equal(t, "once-campfire.localhost", listed[0]["host"])
+	assert.Equal(t, "local", listed[0]["exposure"])
+	assert.Equal(t, true, listed[0]["running"])
+
+	var status map[string]any
+	unmarshalCLI(t, &status, "-n", nsName, "status", "once-campfire.localhost", "--json")
+	assert.Equal(t, appName, status["name"])
+	assert.Equal(t, "local", status["exposure"])
+
+	var ts map[string]any
+	unmarshalCLI(t, &ts, "-n", nsName, "tailscale", "status", "--json")
+	assert.Equal(t, false, ts["enabled"])
 
 	// A bare --host under local exposure gets the suffix appended, and the
 	// stored exposure survives the update's container recreation.
@@ -160,4 +182,30 @@ func TestCLIBackfillsExposureForLegacyApps(t *testing.T) {
 
 func runCLI(args ...string) error {
 	return command.NewRootCommand().ExecuteArgs(args...)
+}
+
+// unmarshalCLI runs a CLI command capturing os.Stdout and unmarshals the
+// output, proving it is valid JSON as any consumer like jq would see it.
+func unmarshalCLI(t *testing.T, v any, args ...string) {
+	t.Helper()
+
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	// Drain concurrently so output larger than the pipe buffer can't deadlock.
+	outCh := make(chan []byte, 1)
+	go func() {
+		out, _ := io.ReadAll(r)
+		outCh <- out
+	}()
+
+	runErr := runCLI(args...)
+	w.Close()
+	out := <-outCh
+
+	require.NoError(t, runErr)
+	require.NoError(t, json.Unmarshal(out, v), "output was: %s", out)
 }

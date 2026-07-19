@@ -21,6 +21,7 @@ type tailscaleCommand struct {
 	tag           string
 	yes           bool
 	noPolicyWrite bool
+	json          bool
 	duration      time.Duration
 }
 
@@ -56,6 +57,7 @@ func newTailscaleCommand() *tailscaleCommand {
 		Short: "Show each exposed app's tailnet URL and advertised/approved state",
 		RunE:  withLegacyTSDProxyWarning(t.status),
 	}
+	status.Flags().BoolVar(&t.json, "json", false, "emit structured JSON instead of prose")
 
 	t.cmd.AddCommand(enable, disable, status, t.newFunnelCommand())
 	return t
@@ -116,26 +118,60 @@ func (t *tailscaleCommand) disable(ctx context.Context, ns *docker.Namespace, cm
 	return nil
 }
 
+// tailscaleStatusReport is the stable JSON shape of `tailscale status --json`.
+// An empty DomainSuffix on an enabled tailnet means Magic DNS is not known yet
+// and no service states could be read.
+type tailscaleStatusReport struct {
+	Enabled      bool                   `json:"enabled"`
+	DomainSuffix string                 `json:"domainSuffix,omitempty"`
+	Services     []docker.ServiceStatus `json:"services,omitempty"`
+}
+
 // status lists once-admin and each exposed app with its service URL (from the
 // Magic DNS suffix stored at enable time) and its advertised/approved state,
 // read live from the local daemon and the Tailscale cloud API.
 func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	enabled, err := ns.Tailscale().Enabled(ctx)
+	report, err := t.statusReport(ctx, ns)
 	if err != nil {
-		return fmt.Errorf("checking Tailscale: %w", err)
+		return err
 	}
-	if !enabled {
+	if t.json {
+		return printJSON(report)
+	}
+
+	if !report.Enabled {
 		fmt.Println("Tailscale is not enabled")
 		return nil
+	}
+	if report.DomainSuffix == "" {
+		fmt.Println("The tailnet's Magic DNS suffix is not known yet (the tailnet may still be spinning up); re-run in a moment")
+		return nil
+	}
+	for _, s := range report.Services {
+		fmt.Printf("%s\t%s\t%s\n", s.Name, s.URL, s.State)
+	}
+	return nil
+}
+
+func (t *tailscaleCommand) statusReport(ctx context.Context, ns *docker.Namespace) (tailscaleStatusReport, error) {
+	var report tailscaleStatusReport
+
+	enabled, err := ns.Tailscale().Enabled(ctx)
+	if err != nil {
+		return report, fmt.Errorf("checking Tailscale: %w", err)
+	}
+	report.Enabled = enabled
+	if !enabled {
+		return report, nil
 	}
 
 	settings, err := ns.Tailscale().LoadSettings(ctx)
 	if err != nil {
-		return fmt.Errorf("reading Tailscale settings: %w", err)
+		return report, fmt.Errorf("reading Tailscale settings: %w", err)
 	}
+	report.DomainSuffix = settings.DomainSuffix
 	if settings.DomainSuffix == "" {
-		fmt.Println("The tailnet's Magic DNS suffix is not known yet (the tailnet may still be spinning up); re-run in a moment")
-		return nil
+		return report, nil
 	}
 
 	names := []string{"once-admin"}
@@ -153,15 +189,13 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 
 	statuses, err := ns.Tailscale().ServiceStatuses(ctx, names)
 	if err != nil {
-		return err
-	}
-	for _, s := range statuses {
-		fmt.Printf("%s\t%s\t%s\n", s.Name, s.URL, s.State)
+		return report, err
 	}
 	for _, name := range stopped {
-		fmt.Printf("%s\t%s\t%s\n", name, settings.TailnetURL(name), "not running")
+		statuses = append(statuses, docker.ServiceStatus{Name: name, URL: settings.TailnetURL(name), State: "not running"})
 	}
-	return nil
+	report.Services = statuses
+	return report, nil
 }
 
 func (t *tailscaleCommand) funnelEnable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {

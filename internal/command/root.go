@@ -2,7 +2,9 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -44,6 +46,7 @@ func NewRootCommand() *RootCommand {
 	r.cmd.AddCommand(newRemoveCommand().cmd)
 	r.cmd.AddCommand(newRestoreCommand().cmd)
 	r.cmd.AddCommand(newStartCommand().cmd)
+	r.cmd.AddCommand(newStatusCommand().cmd)
 	r.cmd.AddCommand(newStopCommand().cmd)
 	r.cmd.AddCommand(newTailscaleCommand().cmd)
 	r.cmd.AddCommand(newTeardownCommand().cmd)
@@ -98,4 +101,10 @@ func WithNamespace(fn NamespaceRunE) func(*cobra.Command, []string) error {
 func namespaceFlag(cmd *cobra.Command) string {
 	namespace, _ := cmd.Root().PersistentFlags().GetString("namespace")
 	return namespace
+}
+
+func printJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
