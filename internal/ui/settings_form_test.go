@@ -10,69 +10,53 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-func TestSettingsFormApplication_InitialState_NonLocalhost(t *testing.T) {
+func TestSettingsFormApplication_InitialState(t *testing.T) {
 	settings := docker.ApplicationSettings{
 		Image:      "ghcr.io/basecamp/once-campfire:latest",
 		Host:       "app.example.com",
+		Exposure:   docker.ExposurePublic,
 		DisableTLS: false,
 	}
 	form := NewSettingsFormApplication(settings)
 
 	assert.Equal(t, 0, form.form.Focused())
 	assert.Equal(t, "ghcr.io/basecamp/once-campfire:latest", form.form.TextField(appImageField).Value())
-	assert.Equal(t, "app.example.com", form.form.TextField(appHostnameField).Value())
 	assert.True(t, form.form.CheckboxField(appTLSField).Checked())
 }
 
-func TestSettingsFormApplication_InitialState_Localhost(t *testing.T) {
-	settings := docker.ApplicationSettings{
-		Image:      "ghcr.io/basecamp/once-campfire:latest",
-		Host:       "chat.localhost",
-		DisableTLS: false,
-	}
-	form := NewSettingsFormApplication(settings)
-
-	assert.Equal(t, "chat.localhost", form.form.TextField(appHostnameField).Value())
-	assert.True(t, form.form.CheckboxField(appTLSField).Checked(), "checkbox is checked (DisableTLS=false)")
-}
-
 func TestSettingsFormApplication_TabNavigation(t *testing.T) {
-	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com"})
+	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com", Exposure: docker.ExposurePublic})
 	assert.Equal(t, 0, form.form.Focused())
 
 	applicationPressTab(&form)
-	assert.Equal(t, 1, form.form.Focused(), "hostname")
+	assert.Equal(t, 1, form.form.Focused(), "tls")
 
 	applicationPressTab(&form)
-	assert.Equal(t, 2, form.form.Focused(), "tls")
+	assert.Equal(t, 2, form.form.Focused(), "done button")
 
 	applicationPressTab(&form)
-	assert.Equal(t, 3, form.form.Focused(), "done button")
-
-	applicationPressTab(&form)
-	assert.Equal(t, 4, form.form.Focused(), "cancel button")
+	assert.Equal(t, 3, form.form.Focused(), "cancel button")
 
 	applicationPressTab(&form)
 	assert.Equal(t, 0, form.form.Focused(), "wraps to image")
 }
 
 func TestSettingsFormApplication_ShiftTabNavigation(t *testing.T) {
-	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com"})
+	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com", Exposure: docker.ExposurePublic})
 
 	applicationPressShiftTab(&form)
-	assert.Equal(t, 4, form.form.Focused(), "cancel button")
+	assert.Equal(t, 3, form.form.Focused(), "cancel button")
 
 	applicationPressShiftTab(&form)
-	assert.Equal(t, 3, form.form.Focused(), "done button")
+	assert.Equal(t, 2, form.form.Focused(), "done button")
 }
 
 func TestSettingsFormApplication_SpaceTogglesTLS(t *testing.T) {
-	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com"})
+	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com", Exposure: docker.ExposurePublic})
 	assert.True(t, form.form.CheckboxField(appTLSField).Checked())
 
 	applicationPressTab(&form)
-	applicationPressTab(&form)
-	assert.Equal(t, 2, form.form.Focused())
+	assert.Equal(t, 1, form.form.Focused())
 
 	applicationPressSpace(&form)
 	assert.False(t, form.form.CheckboxField(appTLSField).Checked())
@@ -81,37 +65,36 @@ func TestSettingsFormApplication_SpaceTogglesTLS(t *testing.T) {
 	assert.True(t, form.form.CheckboxField(appTLSField).Checked())
 }
 
-func TestSettingsFormApplication_SpaceDoesNotToggleTLSForLocalhost(t *testing.T) {
-	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "chat.localhost"})
+func TestSettingsFormApplication_SpaceDoesNotToggleTLSForNonPublic(t *testing.T) {
+	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "chat.localhost", Exposure: docker.ExposureLocal})
 
 	applicationPressTab(&form)
-	applicationPressTab(&form)
-	assert.Equal(t, 2, form.form.Focused())
+	assert.Equal(t, 1, form.form.Focused())
 
 	applicationPressSpace(&form)
-	assert.True(t, form.form.CheckboxField(appTLSField).Checked(), "toggle ignored for localhost")
+	assert.True(t, form.form.CheckboxField(appTLSField).Checked(), "toggle ignored outside public exposure")
 }
 
-func TestSettingsFormApplication_TLSShowsDisabledForLocalhost(t *testing.T) {
-	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com"})
-	assert.Equal(t, "[✓] Enabled", form.form.CheckboxField(appTLSField).View())
+func TestSettingsFormApplication_TLSShowsDisabledForNonPublic(t *testing.T) {
+	public := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com", Exposure: docker.ExposurePublic})
+	assert.Equal(t, "[✓] Enabled", public.form.CheckboxField(appTLSField).View())
 
-	applicationPressTab(&form)
-	applicationTypeText(&form, ".localhost")
-	assert.Equal(t, "Not available for localhost", form.form.CheckboxField(appTLSField).View())
+	local := NewSettingsFormApplication(docker.ApplicationSettings{Host: "chat.localhost", Exposure: docker.ExposureLocal})
+	assert.Equal(t, "Only available for public exposure", local.form.CheckboxField(appTLSField).View())
 
-	applicationClearAndType(&form, "app.example.com")
-	assert.Equal(t, "[✓] Enabled", form.form.CheckboxField(appTLSField).View())
+	tailnet := NewSettingsFormApplication(docker.ApplicationSettings{Host: "chat", Exposure: docker.ExposureTailnet})
+	assert.Equal(t, "Only available for public exposure", tailnet.form.CheckboxField(appTLSField).View())
 }
 
 func TestSettingsFormApplication_Submit(t *testing.T) {
 	form := NewSettingsFormApplication(docker.ApplicationSettings{
-		Name:  "myapp",
-		Image: "ghcr.io/basecamp/once-campfire:latest",
-		Host:  "app.example.com",
+		Name:     "myapp",
+		Image:    "ghcr.io/basecamp/once-campfire:latest",
+		Host:     "app.example.com",
+		Exposure: docker.ExposurePublic,
 	})
 
-	for range 3 {
+	for range 2 {
 		applicationPressTab(&form)
 	}
 
@@ -125,13 +108,14 @@ func TestSettingsFormApplication_Submit(t *testing.T) {
 	assert.Equal(t, "myapp", submitMsg.Settings.Name)
 	assert.Equal(t, "ghcr.io/basecamp/once-campfire:latest", submitMsg.Settings.Image)
 	assert.Equal(t, "app.example.com", submitMsg.Settings.Host)
+	assert.Equal(t, docker.ExposurePublic, submitMsg.Settings.Exposure)
 	assert.False(t, submitMsg.Settings.DisableTLS)
 }
 
 func TestSettingsFormApplication_Cancel(t *testing.T) {
 	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com"})
 
-	for range 4 {
+	for range 3 {
 		applicationPressTab(&form)
 	}
 
@@ -387,17 +371,6 @@ func updateSettingsForm[T any](form *T, msg tea.Msg) {
 	}
 	result, _ := section.Update(msg)
 	*form = result.(T)
-}
-
-func applicationTypeText(form *SettingsFormApplication, text string) {
-	for _, r := range text {
-		updateSettingsForm(form, keyPressMsg(string(r)))
-	}
-}
-
-func applicationClearAndType(form *SettingsFormApplication, text string) {
-	form.form.TextField(appHostnameField).SetValue("")
-	applicationTypeText(form, text)
 }
 
 func applicationPressTab(form *SettingsFormApplication) {

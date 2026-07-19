@@ -42,6 +42,7 @@ type InstallActivity struct {
 	namespace     *docker.Namespace
 	imageRef      string
 	hostname      string
+	exposure      docker.Exposure
 	width, height int
 	stage         installStage
 	percentage    int
@@ -52,12 +53,13 @@ type InstallActivity struct {
 	cancel        context.CancelFunc
 }
 
-func NewInstallActivity(ns *docker.Namespace, imageRef, hostname string) *InstallActivity {
+func NewInstallActivity(ns *docker.Namespace, imageRef, hostname string, exposure docker.Exposure) *InstallActivity {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &InstallActivity{
 		namespace:    ns,
 		imageRef:     imageRef,
 		hostname:     hostname,
+		exposure:     exposure,
 		stage:        stagePreparing,
 		progress:     NewProgress(0, Colors.Primary),
 		progressChan: make(chan installProgressMsg, 10),
@@ -173,15 +175,11 @@ func (m *InstallActivity) runInstall(ctx context.Context) {
 		m.doneChan <- installDoneMsg{err: fmt.Errorf("generating app name: %w", err)}
 		return
 	}
-	hostname := m.hostname
-
-	// The exposure radio arrives with the TUI rework; until then the typed
-	// hostname's shape decides between local and public, as before.
 	app := docker.NewApplication(m.namespace, docker.ApplicationSettings{
 		Name:       appName,
 		Image:      m.imageRef,
-		Host:       hostname,
-		Exposure:   docker.ExposureForHost(hostname),
+		Host:       m.hostname,
+		Exposure:   m.exposure,
 		AutoUpdate: true,
 	})
 

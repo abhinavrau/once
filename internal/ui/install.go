@@ -36,6 +36,7 @@ const (
 type InstallFormSubmitMsg struct {
 	ImageRef string
 	Hostname string
+	Exposure docker.Exposure
 }
 
 type Install struct {
@@ -73,7 +74,7 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 			imageRef = expanded
 		}
 		m.state = installStateHostname
-		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag)
+		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag, m.tailscaleEnabled())
 	} else {
 		m.state = installStateAppList
 		m.appList = NewInstallAppList()
@@ -189,7 +190,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case InstallAppSelectedMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "")
+		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled())
 		m.customImage = false
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -200,7 +201,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, m.initScreenWithSize()
 
 	case InstallImageSubmitMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "")
+		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled())
 		m.customImage = true
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -221,12 +222,21 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, nil
 
 	case InstallFormSubmitMsg:
-		if m.namespace.HostInUse(msg.Hostname) {
+		if msg.Exposure == docker.ExposureTailnet && !m.tailscaleEnabled() {
+			m.err = docker.ErrTailscaleNotEnabled
+			return m, nil
+		}
+		host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), docker.NameFromImageRef(msg.ImageRef))
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		if m.namespace.HostInUse(host) {
 			m.err = docker.ErrHostnameInUse
 			return m, nil
 		}
 		m.state = installStateActivity
-		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, msg.Hostname)
+		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, host, msg.Exposure)
 		m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return m, m.activity.Init()
 
@@ -375,6 +385,11 @@ func (m Install) imageErrorState() installState {
 	return installStateAppList
 }
 
+func (m Install) tailscaleEnabled() bool {
+	enabled, _ := m.namespace.Tailscale().Enabled(context.Background())
+	return enabled
+}
+
 func (m Install) showLogo() bool {
 	return len(m.namespace.Applications()) == 0 && os.Getenv("ONCE_REDUCED_MOTION") != "true"
 }
@@ -505,23 +520,21 @@ func (m *Install) updateHelpBindings() {
 func (m Install) helpForState() (string, string) {
 	switch m.state {
 	case installStateHostname:
-		return "Setting the hostname", installHostnameHelpText
+		return "Choosing exposure and host", installHostnameHelpText
 	}
 	return "", ""
 }
 
 const (
-	installHostnameHelpText = `On this screen should enter the hostname where you'll be running this application.
+	installHostnameHelpText = `On this screen you choose where this application will be reachable, and the host it will answer at.
 
-If you're installing an application on the Internet, this should use a domain name that you own. You can use a subdomain so that one domain can support multiple applications.
+Local means the application is only reachable from this machine, at a .localhost address. The host defaults to the application's name (like campfire.localhost).
 
-For example, if you own example.com and are installing Campfire, you might choose chat.example.com as your hostname.
+Tailnet means the application is shared with your Tailscale network as a Tailscale Service. The host is the service name, and defaults to the application's name. Tailscale must be enabled first (press t on the dashboard).
 
-When you use your own domain on a publicly-reachable server, ONCE will set up SSL automatically to secure your application.
+Public means the application is reachable from the Internet. Enter a hostname under a domain that you own; you can use a subdomain so that one domain can support multiple applications (like chat.example.com). When your server is publicly reachable, ONCE will set up SSL automatically.
 
-If you're installing only on your local machine, you can use a localhost domain instead. You can still use a subdomain to support multiple applications (like chat.localhost). When you install an application in this way, it won't get the automatic SSL.
-
-You can always change these settings later, too: look for them under Settings -> Application.
+You can always change these settings later, too: look for them under Settings -> Exposure.
 `
 )
 

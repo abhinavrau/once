@@ -32,7 +32,9 @@ func TestSettingsMenu_TitleCentered(t *testing.T) {
 	assert.Greater(t, titleOffset, menuOffset)
 }
 
-func TestSettingsMenu_HasTailscaleFunnel(t *testing.T) {
+func TestSettingsMenu_HasExposureAndFunnel(t *testing.T) {
 	m := NewSettingsMenu(&docker.Application{})
-	assert.Contains(t, ansi.Strip(m.View()), "Tailscale Funnel")
+	view := ansi.Strip(m.View())
+	assert.Contains(t, view, "Exposure")
+	assert.Contains(t, view, "Tailscale Funnel")
 }

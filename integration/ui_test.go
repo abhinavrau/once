@@ -50,21 +50,25 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.send(keyMsg("tab"))
 	d.send(keyMsg("enter"))
 
-	d.waitForView("Hostname", 5*time.Second)
+	d.waitForView("Exposure", 5*time.Second)
 
-	// -- Screen 3: Hostname form --
-	d.typeText("chat.localhost")
-	d.send(keyMsg("tab"))
+	// -- Screen 3: Exposure form: local preselected (Tailscale is off) with
+	// the name-derived host suggestion prefilled; accept both. --
+	view := d.viewContent()
+	assert.Contains(t, view, "(•) Local", "local should be preselected without Tailscale")
+	assert.Contains(t, view, "once-campfire.localhost", "host should prefill the derived suggestion")
+	d.send(keyMsg("tab")) // → Host (keep the suggestion)
+	d.send(keyMsg("tab")) // → Install
 	d.send(keyMsg("enter"))
 
 	// -- Install activity → dashboard --
 	// Wait for "running" which only appears in the dashboard panel state info,
 	// not in the install form or activity views.
 	d.waitForView("running", 5*time.Minute)
-	assert.Contains(t, d.viewContent(), "chat.localhost")
+	assert.Contains(t, d.viewContent(), "once-campfire.localhost")
 
 	// Verify the app is reachable via HTTP
-	appURL := fmt.Sprintf("http://chat.localhost:%d", proxyPorts.HTTPPort)
+	appURL := fmt.Sprintf("http://once-campfire.localhost:%d", proxyPorts.HTTPPort)
 	resp, err := http.Get(appURL)
 	require.NoError(t, err)
 	resp.Body.Close()
@@ -192,6 +196,37 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	view := d.viewContent()
 	assert.Contains(t, view, "unused-with-control-seam", "form should pre-populate the stored client ID")
 	assert.Contains(t, view, "[✓]", "Enable checkbox should be checked when Tailscale is already enabled")
+	d.send(keyMsg("esc"))
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "OAuth Client ID")
+	}, 5*time.Second)
+
+	// -- with Tailscale enabled, a TUI install preselects tailnet with the
+	// name-derived service name, and installing advertises the app --
+	d.send(keyMsg("n"))
+	d.waitForView("Custom Docker image", 5*time.Second)
+	d.send(keyMsg("up"))
+	d.send(keyMsg("enter"))
+	d.waitForView("Image", 5*time.Second)
+	d.typeText(whoamiImage)
+	d.send(keyMsg("tab"))
+	d.send(keyMsg("enter"))
+
+	d.waitForView("Exposure", 5*time.Second)
+	view = d.viewContent()
+	assert.Contains(t, view, "(•) Tailnet", "tailnet should be preselected when Tailscale is enabled")
+	d.send(keyMsg("tab")) // → Host (keep the "whoami" suggestion)
+	d.send(keyMsg("tab")) // → Install
+	d.send(keyMsg("enter"))
+
+	d.waitUntil(func() bool {
+		_ = ns.Refresh(ctx)
+		return ns.ApplicationByHost("whoami") != nil
+	}, 3*time.Minute)
+
+	tailnetApp := ns.ApplicationByHost("whoami")
+	require.Equal(t, docker.ExposureTailnet, tailnetApp.Settings.Exposure)
+	assertAppLabels(t, ctx, cli, ns, tailnetApp.Settings.Name, hasDocktailLabels("whoami", ns.Name()))
 }
 
 // appDriver drives a ui.App outside of tea.Program by manually executing

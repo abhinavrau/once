@@ -4,11 +4,11 @@
 
 **Blocked by:** 02 - Tailnet exposure and routing exclusivity.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Install form shows the exposure radio with context-sensitive preselection
-- [ ] Host field prefills the derived suggestion per selected exposure; public requires explicit input
-- [ ] A full TUI install succeeds for each of the three exposures
-- [ ] Settings menu offers an Exposure section that switches exposure on an installed app
-- [ ] The old Tailscale toggle section is gone; the Funnel section remains
-- [ ] TUI integration drivers updated in the same change and passing
+- [x] Install form shows the exposure radio with context-sensitive preselection
+- [x] Host field prefills the derived suggestion per selected exposure; public requires explicit input
+- [x] A full TUI install succeeds for each of the three exposures (local and tailnet end to end in the integration suite; public up to the deploy seam in unit tests, since a real public install needs live DNS and ACME)
+- [x] Settings menu offers an Exposure section that switches exposure on an installed app
+- [x] The old Tailscale toggle section is gone; the Funnel section remains
+- [x] TUI integration drivers updated in the same change and passing
