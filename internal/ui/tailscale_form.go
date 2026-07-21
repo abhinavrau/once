@@ -43,6 +43,8 @@ type tailscaleFormFinishedMsg struct {
 	warnings []string
 }
 
+type tailscaleStatusMsg string
+
 // TailscaleForm is the dashboard-global overlay for enabling/disabling
 // Tailscale. Enabling runs the same flow as the CLI: probe the pasted OAuth
 // credential and boot the Docktail topology. The credential's tag must be
@@ -55,6 +57,8 @@ type TailscaleForm struct {
 	width, height int
 	running       bool
 	progress      Progress
+	status        string
+	statusChan    chan string
 	err           error
 	warnings      []string
 }
@@ -144,15 +148,25 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case tailscaleEnableSubmitMsg:
-		return m.startRunning(m.runEnable(msg))
+		m.statusChan = make(chan string, 4)
+		c, cmd := m.startRunning(m.runEnable(msg))
+		return c, tea.Batch(cmd, listenTailscaleStatus(m.statusChan))
 
 	case tailscaleDisableSubmitMsg:
 		return m.startRunning(func() tea.Msg {
 			return tailscaleFormFinishedMsg{err: m.namespace.DisableTailscale(context.Background())}
 		})
 
+	case tailscaleStatusMsg:
+		if !m.running || m.statusChan == nil {
+			return m, nil
+		}
+		m.status = string(msg)
+		return m, listenTailscaleStatus(m.statusChan)
+
 	case tailscaleFormFinishedMsg:
 		m.running = false
+		m.statusChan = nil
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
@@ -189,6 +203,10 @@ func (m TailscaleForm) View() string {
 	body := m.setupView()
 	if m.running {
 		body = m.progress.View()
+		if m.status != "" {
+			status := lipgloss.NewStyle().Foreground(Colors.Muted).Width(tailscaleFormTextWidth).Render(m.status)
+			body = lipgloss.JoinVertical(lipgloss.Center, status, "", body)
+		}
 	}
 
 	helpLine := lipgloss.NewStyle().MarginTop(1).Align(lipgloss.Center).Render(m.help.View())
@@ -203,6 +221,7 @@ func (m TailscaleForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
 	m.running = true
 	m.err = nil
 	m.warnings = nil
+	m.status = ""
 	m.progress = NewProgress(m.width, Colors.Border)
 	return m, tea.Batch(m.progress.Init(), cmd)
 }
@@ -211,13 +230,19 @@ func (m TailscaleForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
 // enforces the scopes and the tailnet policy before anything boots. Under the
 // headscale control seam there is no SaaS OAuth, so the credentials are unused.
 func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
-	ns := m.namespace
+	ns, statuses := m.namespace, m.statusChan
 	return func() tea.Msg {
 		settings := docker.TailscaleSettings{Tag: msg.tag, Mode: msg.mode}
 		if !docker.TailscaleControlSeamActive() {
 			settings.ClientID, settings.ClientSecret = msg.id, msg.secret
 		}
-		warnings, err := ns.EnableTailscale(context.Background(), settings, nil)
+		progress := func(p docker.DeployProgress) {
+			if p.Stage == docker.DeployStageWaiting {
+				statuses <- p.Status
+			}
+		}
+		warnings, err := ns.EnableTailscale(context.Background(), settings, progress)
+		close(statuses)
 		return tailscaleFormFinishedMsg{err: err, warnings: warnings}
 	}
 }
@@ -247,4 +272,16 @@ func (m TailscaleForm) setupView() string {
 
 func requestTailscaleFormClose(f *Form) tea.Cmd {
 	return func() tea.Msg { return TailscaleFormCloseMsg{} }
+}
+
+// listenTailscaleStatus relays one waiting status from the enable task; the
+// channel closing (task finished) ends the relay without a message.
+func listenTailscaleStatus(ch chan string) tea.Cmd {
+	return func() tea.Msg {
+		status, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return tailscaleStatusMsg(status)
+	}
 }

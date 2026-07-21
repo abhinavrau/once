@@ -58,6 +58,26 @@ func TestTailscaleForm_EnableSubmitRunsInBackground(t *testing.T) {
 	assert.NotNil(t, cmd)
 }
 
+func TestTailscaleForm_StatusShowsWhileRunningAndKeepsListening(t *testing.T) {
+	m := NewTailscaleForm(newTestNamespace())
+	m.running = true
+	m.statusChan = make(chan string, 1)
+
+	c, cmd := m.Update(tailscaleStatusMsg("waiting up to 1m30s for the tailnet to approve: whoami"))
+
+	got := c.(TailscaleForm)
+	assert.Contains(t, got.View(), "waiting up to 1m30s")
+	require.NotNil(t, cmd, "the form must keep listening for the next status")
+
+	got.statusChan <- "next status"
+	assert.Equal(t, tailscaleStatusMsg("next status"), cmd())
+
+	// The channel closing (task finished) ends the relay without a message.
+	close(got.statusChan)
+	_, cmd = got.Update(tailscaleStatusMsg("late status"))
+	assert.Nil(t, cmd())
+}
+
 func TestTailscaleForm_CopyKeyCopiesSnippetForEnteredTag(t *testing.T) {
 	m := NewTailscaleForm(newTestNamespace())
 
