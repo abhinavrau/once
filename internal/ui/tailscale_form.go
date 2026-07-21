@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -65,55 +66,11 @@ type TailscaleForm struct {
 
 func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 	enabled, _ := ns.Tailscale().Enabled(context.Background())
-
-	h := NewHelp()
-
-	m := TailscaleForm{
-		namespace: ns,
-		enabled:   enabled,
-		help:      h,
-		progress:  NewProgress(0, Colors.Border),
-	}
-
+	var settings docker.TailscaleSettings
 	if enabled {
-		m.help.SetBindings([]key.Binding{tailscaleFormCloseKey})
-		m.form = NewForm("Disable")
-		m.form.OnSubmit(func(f *Form) tea.Cmd {
-			return func() tea.Msg { return tailscaleDisableSubmitMsg{} }
-		})
-	} else {
-		m.help.SetBindings([]key.Binding{tailscaleCopyKey, tailscaleFormCloseKey})
-
-		clientIDField := NewTextField("K123456CNTRL")
-
-		clientSecretField := NewTextField("tskey-client-...")
-		clientSecretField.SetEchoPassword()
-
-		tagField := NewTextField("tag:once")
-		tagField.SetValue("tag:once")
-
-		modeField := NewRadioField("Sidecar", "Host")
-
-		m.form = NewForm("Enable",
-			FormItem{Label: "Client ID", Field: clientIDField, Required: true},
-			FormItem{Label: "Client Secret", Field: clientSecretField, Required: true},
-			FormItem{Label: "Tag", Field: tagField, Required: true},
-			FormItem{Label: "Mode", Field: modeField},
-		)
-		m.form.OnSubmit(func(f *Form) tea.Cmd {
-			return func() tea.Msg {
-				return tailscaleEnableSubmitMsg{
-					id:     f.TextField(tailscaleClientIDField).Value(),
-					secret: f.TextField(tailscaleClientSecretField).Value(),
-					tag:    f.TextField(tailscaleTagField).Value(),
-					mode:   tailscaleModeChoices[f.RadioField(tailscaleModeField).Selected()],
-				}
-			}
-		})
+		settings, _ = ns.Tailscale().LoadSettings(context.Background())
 	}
-	m.form.OnCancel(requestTailscaleFormClose)
-
-	return m
+	return newTailscaleForm(ns, enabled, settings)
 }
 
 func (m TailscaleForm) Init() tea.Cmd {
@@ -269,6 +226,74 @@ func (m TailscaleForm) setupView() string {
 }
 
 // Helpers
+
+// newTailscaleForm builds the overlay for a known enabled state. On an enabled
+// install the fields show the stored settings and are informational: Disable is
+// the submit, and none of the fields are required because the headscale control
+// seam stores no credentials or tag.
+func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.TailscaleSettings) TailscaleForm {
+	m := TailscaleForm{
+		namespace: ns,
+		enabled:   enabled,
+		help:      NewHelp(),
+		progress:  NewProgress(0, Colors.Border),
+	}
+
+	if enabled {
+		m.help.SetBindings([]key.Binding{tailscaleFormCloseKey})
+	} else {
+		m.help.SetBindings([]key.Binding{tailscaleCopyKey, tailscaleFormCloseKey})
+	}
+
+	clientIDField := NewTextField("K123456CNTRL")
+	clientIDField.SetValue(settings.ClientID)
+
+	clientSecretField := NewTextField("tskey-client-...")
+	clientSecretField.SetEchoPassword()
+	clientSecretField.SetValue(settings.ClientSecret)
+
+	tagField := NewTextField("tag:once")
+	if enabled {
+		tagField.SetValue(settings.Tag)
+	} else {
+		tagField.SetValue("tag:once")
+	}
+
+	modeField := NewRadioField("Sidecar", "Host")
+	if i := slices.Index(tailscaleModeChoices, settings.Mode); i >= 0 {
+		modeField.SetSelected(i)
+	}
+
+	submitLabel := "Enable"
+	if enabled {
+		submitLabel = "Disable"
+	}
+	m.form = NewForm(submitLabel,
+		FormItem{Label: "Client ID", Field: clientIDField, Required: !enabled},
+		FormItem{Label: "Client Secret", Field: clientSecretField, Required: !enabled},
+		FormItem{Label: "Tag", Field: tagField, Required: !enabled},
+		FormItem{Label: "Mode", Field: modeField},
+	)
+	if enabled {
+		m.form.OnSubmit(func(f *Form) tea.Cmd {
+			return func() tea.Msg { return tailscaleDisableSubmitMsg{} }
+		})
+	} else {
+		m.form.OnSubmit(func(f *Form) tea.Cmd {
+			return func() tea.Msg {
+				return tailscaleEnableSubmitMsg{
+					id:     f.TextField(tailscaleClientIDField).Value(),
+					secret: f.TextField(tailscaleClientSecretField).Value(),
+					tag:    f.TextField(tailscaleTagField).Value(),
+					mode:   tailscaleModeChoices[f.RadioField(tailscaleModeField).Selected()],
+				}
+			}
+		})
+	}
+	m.form.OnCancel(requestTailscaleFormClose)
+
+	return m
+}
 
 func requestTailscaleFormClose(f *Form) tea.Cmd {
 	return func() tea.Msg { return TailscaleFormCloseMsg{} }

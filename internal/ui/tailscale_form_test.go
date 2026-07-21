@@ -26,6 +26,40 @@ func TestTailscaleForm_EnableFormShowsCredentialFieldsWithPrefilledTag(t *testin
 	assert.Contains(t, view, "copy policy snippet")
 }
 
+func TestTailscaleForm_EnabledFormShowsStoredSettingsWithDisableSubmit(t *testing.T) {
+	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{
+		ClientID:     "K123456CNTRL",
+		ClientSecret: "tskey-client-secret",
+		Tag:          "tag:custom",
+		Mode:         docker.TailscaleModeHost,
+	})
+
+	assert.Equal(t, "K123456CNTRL", m.form.TextField(tailscaleClientIDField).Value())
+	assert.Equal(t, "tskey-client-secret", m.form.TextField(tailscaleClientSecretField).Value())
+	assert.Equal(t, "tag:custom", m.form.TextField(tailscaleTagField).Value())
+	assert.Equal(t, 1, m.form.RadioField(tailscaleModeField).Selected(), "stored host mode should preselect Host")
+
+	view := m.View()
+	assert.Contains(t, view, "Tailscale is enabled")
+	assert.Contains(t, view, "(•) Host")
+	assert.Contains(t, view, "Disable")
+	assert.NotContains(t, view, "tskey-client-secret", "the stored secret must stay masked")
+}
+
+func TestTailscaleForm_EnabledFormDisableSubmitsWithEmptySeamSettings(t *testing.T) {
+	// Under the headscale control seam no credentials or tag are stored; the
+	// informational fields must not be required, or Disable could never submit.
+	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{Mode: docker.TailscaleModeSidecar})
+
+	f := m.form
+	for range f.ItemCount() {
+		f, _ = f.Update(keyPressMsg("tab"))
+	}
+	_, cmd := f.Update(keyPressMsg("enter"))
+	require.NotNil(t, cmd)
+	assert.IsType(t, tailscaleDisableSubmitMsg{}, cmd())
+}
+
 func TestTailscaleForm_SubmitCarriesSelectedMode(t *testing.T) {
 	submitMode := func(selected int) string {
 		m := NewTailscaleForm(newTestNamespace())

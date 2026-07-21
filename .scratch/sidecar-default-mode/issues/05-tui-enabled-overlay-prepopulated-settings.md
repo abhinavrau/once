@@ -19,9 +19,9 @@ updated in the same change.
 
 **Blocked by:** 03 - TUI enable form mode selector.
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Opening the overlay on an enabled install shows client ID, secret (masked), and tag pre-populated from the stored settings
-- [ ] The mode selector pre-populates with the stored mode (the criterion carried over from ticket 03)
-- [ ] Disable remains the enabled overlay's submit and still works
-- [ ] The form's integration driver and the enabled-overlay assertions are updated in the same change; the UI integration test passes without hanging
+- [x] Opening the overlay on an enabled install shows client ID, secret (masked), and tag pre-populated from the stored settings
+- [x] The mode selector pre-populates with the stored mode (the criterion carried over from ticket 03)
+- [x] Disable remains the enabled overlay's submit and still works
+- [x] The form's integration driver and the enabled-overlay assertions are updated in the same change; the UI integration test passes without hanging

@@ -117,8 +117,8 @@ func TestUIInstallAndManageApp(t *testing.T) {
 // credentials, submit, and assert it ran the same enable lifecycle the CLI uses
 // - the once-tailscale sidecar and once-docktail boot, the deployed local app
 // stays off the tailnet, and once-admin comes up. It also
-// checks esc dismissal and that re-opening the form offers disable once
-// Tailscale is enabled.
+// checks esc dismissal and that re-opening the form shows the stored settings
+// and offers disable once Tailscale is enabled.
 func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -209,10 +209,13 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
 	require.NoError(t, err, "once-admin should be running after enabling via the form")
 
-	// -- re-opening the form offers disable --
+	// -- re-opening the form shows the stored settings and offers disable --
 	d.send(keyMsg("t"))
 	d.waitForView("Tailscale is enabled", 5*time.Second)
-	assert.Contains(t, d.viewContent(), "Disable", "the overlay should offer disable when Tailscale is enabled")
+	overlay := d.viewContent()
+	assert.Contains(t, overlay, "Disable", "the overlay should offer disable when Tailscale is enabled")
+	assert.Contains(t, overlay, "Client ID", "the enabled overlay should show the settings fields")
+	assert.Contains(t, overlay, "(•) Sidecar", "the stored mode should pre-populate the mode selector")
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
 		return !strings.Contains(d.viewContent(), "Tailscale is enabled")
