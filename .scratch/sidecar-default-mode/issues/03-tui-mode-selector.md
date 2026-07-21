@@ -16,7 +16,7 @@ driver must be updated in the same change.
 **Status:** in-review
 
 - [x] Enable form shows a mode selector with sidecar preselected on a fresh enable
-- [ ] On an already-enabled install the selector pre-populates with the stored mode
+- ~~On an already-enabled install the selector pre-populates with the stored mode~~ - moved to ticket 05 (structurally unsatisfiable here; needs the enabled-overlay restructure)
 - [x] Submitting with host selected enables in host mode; sidecar likewise
 - [x] The form's integration driver is updated in the same change and the UI integration test passes without hanging
 
@@ -29,17 +29,17 @@ into `TailscaleSettings.Mode`; the host-mode pre-flight runs via
 (Tag -> Mode -> Enable); `TestUITailscaleFormEnablesViaControlSeam` passes in
 ~10s.
 
-Criterion 2 (pre-populate stored mode) is structurally unsatisfiable in the
-current TUI: the enable form only builds when `Enabled()` is false, and the
+Criterion 2 (pre-populate stored mode) was structurally unsatisfiable in this
+ticket's scope: the enable form only builds when `Enabled()` is false, and the
 stored settings live on the once-docktail container whose existence IS
-`Enabled()` - so wherever the selector exists, no stored mode exists (and
-`Disable` removes the label, so nothing survives to a re-enable either). An
-already-enabled install shows the Disable form instead. Satisfying it would
-mean restructuring the overlay to show enable fields on an enabled install -
-out of this ticket's scope; left unchecked for a human decision.
+`Enabled()` - so wherever the selector exists, no stored mode exists. It has
+been split out: ticket 05 restructures the enabled overlay to show the stored
+settings (including the mode selector on the stored mode), and ticket 06 makes
+them editable via re-enable. With that carve-out, this ticket's remaining
+scope is complete.
 
 Related parity note: the TUI always submits an explicit mode (the radio has no
 "unset"), so the docker layer's empty-mode paths - sticky re-enable and the
 host-tailscaled-present notice - never trigger from the TUI. Defensible: the
 notice exists because the CLI default is invisible, while the radio makes the
-choice visible; and sticky is moot per the paragraph above.
+choice visible; sticky re-enable becomes reachable from the TUI via ticket 06.

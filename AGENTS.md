@@ -2,6 +2,7 @@
 
 ## Global agent instructions
 
+- When reporting information to me, be extremely concise and sacrifice grammar for the sake of concision.
 - Never use the em dash "—". Use plain "-" instead
 - When writing commit messages, NEVER auto-add your agent name as co-author
 - Never manually modify CHANGELOG.md files or any files that are marked as auto-generated.
@@ -15,15 +16,9 @@
 
 ## Project Overview
 
-Once is a CLI/TUI tool for installing and managing web applications from Docker
-images. It's designed to make self-hosting as easy as possible.
+Once is a CLI/TUI tool for installing and managing web applications from Docker images. It's designed to make self-hosting as easy as possible.
 
-Once uses a proxy server (github.com/basecamp/kamal-proxy) to route traffic to
-the application containers, which allows it to provide zero-downtime restarts
-and upgrades, automatic SSL, and multiple applications running on a single
-server. A single instance of Once may deploy one proxy container, along with
-multiple application containers. Host-based routing is used inside the proxy to
-route traffic to the correct application container.
+Once uses a proxy server (github.com/basecamp/kamal-proxy) to route traffic to the application containers, which allows it to provide zero-downtime restarts and upgrades, automatic SSL, and multiple applications running on a single server. A single instance of Once may deploy one proxy container, along with multiple application containers. Host-based routing is used inside the proxy to route traffic to the correct application container.
 
 ## Design and Concepts
 
