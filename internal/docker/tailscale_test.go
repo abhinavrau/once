@@ -59,6 +59,15 @@ func TestTailnetURL(t *testing.T) {
 	assert.Empty(t, TailscaleSettings{}.TailnetURL("books"))
 }
 
+func TestSettingsFunnelURL(t *testing.T) {
+	s := TailscaleSettings{NodeHost: "once-tailscale-1.tailnet-name.ts.net"}
+	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net", s.FunnelURL(443))
+	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net:8443", s.FunnelURL(8443))
+	// No node host, or no active port -> no URL.
+	assert.Empty(t, TailscaleSettings{}.FunnelURL(443))
+	assert.Empty(t, s.FunnelURL(0))
+}
+
 func TestDocktailLabelsWhenEnabled(t *testing.T) {
 	labels := docktailLabels("writebook", "once", true, 0)
 

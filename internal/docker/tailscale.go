@@ -135,6 +135,11 @@ type TailscaleSettings struct {
 	// read from the local tailscaled at enable time. With it stored, app tailnet
 	// URLs are computed without any live lookup.
 	DomainSuffix string `json:"domainSuffix,omitempty"`
+	// NodeHost is the sidecar node's own tailnet hostname (e.g.
+	// once-tailscale-1.tailnet-name.ts.net), learned the first time a Funnel
+	// activates. Funnel is per-node, so every app's Funnel URL is this host
+	// with the app's public port - stored so those URLs need no live lookup.
+	NodeHost string `json:"nodeHost,omitempty"`
 	// Mode records whether Docktail drives a tailscaled already on the host
 	// (TailscaleModeHost) or the Once-managed once-tailscale sidecar
 	// (TailscaleModeSidecar).
@@ -148,6 +153,16 @@ func (s TailscaleSettings) TailnetURL(appName string) string {
 		return ""
 	}
 	return "https://" + appName + "." + s.DomainSuffix
+}
+
+// FunnelURL builds the public URL a Funnel on the given public port serves,
+// from the stored node hostname, or "" when the node host isn't known yet.
+// Funnel is per-node: all apps share this host and differ only by port.
+func (s TailscaleSettings) FunnelURL(port int) string {
+	if s.NodeHost == "" || port == 0 {
+		return ""
+	}
+	return funnelURL(s.NodeHost + ":" + strconv.Itoa(port))
 }
 
 func UnmarshalTailscaleSettings(s string) (TailscaleSettings, error) {
@@ -363,6 +378,12 @@ func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (
 	hostPort, err := waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
 	if err != nil {
 		return "", err
+	}
+	// Persist the node's hostname (write-through, like DomainSuffix) so status
+	// and the TUI can render every Funnel URL without a live serve read.
+	if host, _, ok := strings.Cut(hostPort, ":"); ok && host != settings.NodeHost {
+		settings.NodeHost = host
+		_ = t.persistSettings(ctx, settings)
 	}
 	return funnelURL(hostPort), nil
 }

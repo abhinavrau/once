@@ -7,11 +7,13 @@ import (
 )
 
 // ServiceStatus is one row of `once tailscale status`: a service's tailnet
-// URL and its advertised/approved state rendered for display.
+// URL and its advertised/approved state rendered for display. FunnelURL is set
+// only while the service has an active Funnel, giving its public address.
 type ServiceStatus struct {
-	Name  string `json:"name"`
-	URL   string `json:"url"`
-	State string `json:"state"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	State     string `json:"state"`
+	FunnelURL string `json:"funnelURL,omitempty"`
 }
 
 // ServiceStatuses reports each named service's current state: advertised

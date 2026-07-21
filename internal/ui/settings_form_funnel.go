@@ -48,8 +48,13 @@ func NewSettingsFormFunnel(app *docker.Application, ts *docker.Tailscale, namesp
 		}
 	case app.Settings.FunnelEnabled():
 		expiresAt := app.Settings.FunnelExpiresAt
+		funnelURL := funnelURLForApp(ts, app)
 		m.statusLine = func() string {
-			return funnelStatusText(expiresAt, time.Now())
+			status := funnelStatusText(expiresAt, time.Now())
+			if funnelURL != "" {
+				status += " - " + funnelURL
+			}
+			return status
 		}
 	}
 
@@ -116,6 +121,16 @@ func applyFunnel(app *docker.Application, ts *docker.Tailscale, namespace string
 		return "", err
 	}
 	return "Funnel enabled at " + url, nil
+}
+
+// funnelURLForApp returns the app's public Funnel URL from stored settings, or
+// "" if the node hostname isn't known yet (no Funnel has activated).
+func funnelURLForApp(ts *docker.Tailscale, app *docker.Application) string {
+	settings, err := ts.LoadSettings(context.Background())
+	if err != nil {
+		return ""
+	}
+	return settings.FunnelURL(app.Settings.ActiveFunnelPort())
 }
 
 func requireBackgroundDaemon(namespace string) error {

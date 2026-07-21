@@ -63,13 +63,15 @@ type Dashboard struct {
 
 	tailscaleEnabled bool
 	tailnetSuffix    string // tailnet MagicDNS suffix, for computing app service URLs
+	tailnetNodeHost  string // sidecar node hostname, for computing Funnel URLs
 }
 
 type dashboardTickMsg struct{}
 
 type tailscaleInfoMsg struct {
-	enabled bool
-	suffix  string
+	enabled  bool
+	suffix   string
+	nodeHost string
 }
 
 type tailscaleRefreshMsg struct{}
@@ -234,6 +236,7 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case tailscaleInfoMsg:
 		m.tailscaleEnabled = msg.enabled
 		m.tailnetSuffix = msg.suffix
+		m.tailnetNodeHost = msg.nodeHost
 		m.rebuildViewportContent()
 
 	case tailscaleRefreshMsg:
@@ -355,7 +358,8 @@ func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
 			return tailscaleInfoMsg{enabled: false}
 		}
 		suffix, _ := ns.Tailscale().DomainSuffix(ctx)
-		return tailscaleInfoMsg{enabled: true, suffix: suffix}
+		settings, _ := ns.Tailscale().LoadSettings(ctx)
+		return tailscaleInfoMsg{enabled: true, suffix: suffix, nodeHost: settings.NodeHost}
 	}
 }
 
@@ -389,11 +393,13 @@ func (m *Dashboard) rebuildViewportContent() {
 		app := m.panels[i].app.Settings
 		// Service URLs are deterministic: computed from the stored Magic DNS
 		// suffix, never looked up live.
-		var url string
+		var url, funnelURL string
 		if app.Exposure == docker.ExposureTailnet {
 			url = (docker.TailscaleSettings{DomainSuffix: m.tailnetSuffix}).TailnetURL(app.Host)
+			funnelURL = (docker.TailscaleSettings{NodeHost: m.tailnetNodeHost}).FunnelURL(app.ActiveFunnelPort())
 		}
 		m.panels[i].tailnetURL = url
+		m.panels[i].funnelURL = funnelURL
 		toggling := m.toggling && m.togglingApp == m.panels[i].app.Settings.Name
 		views = append(views, m.panels[i].View(i == m.selectedIndex, toggling, dashboardShowDetails, m.width, scales))
 	}

@@ -165,6 +165,9 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 	}
 	for _, s := range report.Services {
 		fmt.Printf("%s\t%s\t%s\n", s.Name, s.URL, s.State)
+		if s.FunnelURL != "" {
+			fmt.Printf("\tFunnel: %s\n", s.FunnelURL)
+		}
 	}
 	return nil
 }
@@ -210,6 +213,17 @@ func (t *tailscaleCommand) statusReport(ctx context.Context, ns *docker.Namespac
 	for _, name := range stopped {
 		statuses = append(statuses, docker.ServiceStatus{Name: name, URL: settings.TailnetURL(name), State: "not running"})
 	}
+
+	funnelURLs := map[string]string{}
+	for _, app := range ns.Applications() {
+		if url := settings.FunnelURL(app.Settings.ActiveFunnelPort()); url != "" {
+			funnelURLs[app.Settings.Host] = url
+		}
+	}
+	for i, s := range statuses {
+		statuses[i].FunnelURL = funnelURLs[s.Name]
+	}
+
 	report.Services = statuses
 	return report, nil
 }
