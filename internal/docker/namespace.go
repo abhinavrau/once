@@ -155,6 +155,31 @@ func (n *Namespace) HostInUseByAnother(host string, excludeApp string) bool {
 	return false
 }
 
+// allocateFunnelPort picks the public port for self's Funnel: the port it
+// already holds while active (a re-enable must not move a live URL), else the
+// first free one. Funnel serves one endpoint per public port per node, so a
+// port may back only one app at a time.
+func (n *Namespace) allocateFunnelPort(self *Application) (int, error) {
+	used := map[int]bool{}
+	for _, app := range n.applications {
+		if app == self {
+			continue
+		}
+		if p := app.Settings.ActiveFunnelPort(); p != 0 {
+			used[p] = true
+		}
+	}
+	if p := self.Settings.ActiveFunnelPort(); p != 0 && !used[p] {
+		return p, nil
+	}
+	for _, p := range funnelPublicPorts {
+		if !used[p] {
+			return p, nil
+		}
+	}
+	return 0, ErrFunnelPortsExhausted
+}
+
 func (n *Namespace) UniqueName(base string) (string, error) {
 	for {
 		id, err := randomID(6)

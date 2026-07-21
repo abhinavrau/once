@@ -53,8 +53,8 @@ type TailscaleServeStatus struct {
 	// AllowFunnel maps "host:port" to whether funnel is enabled there.
 	AllowFunnel map[string]bool
 	// FunnelBackends maps each proxy destination (e.g. http://172.18.0.5:80)
-	// served through a funnel-enabled endpoint to that endpoint's hostname
-	// (e.g. once-tailscale-1.tail1234.ts.net). This is what attributes a
+	// served through a funnel-enabled endpoint to that endpoint's "host:port"
+	// (e.g. once-tailscale-1.tail1234.ts.net:443). This is what attributes a
 	// funnel to a specific app and names its public URL: funnel is per-node,
 	// so AllowFunnel alone can't say whose backend went public.
 	FunnelBackends map[string]string
@@ -323,10 +323,9 @@ func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
 		if !enabled {
 			continue
 		}
-		host, _, _ := strings.Cut(hostPort, ":")
 		for _, handler := range config.Web[hostPort].Handlers {
 			if handler.Proxy != "" {
-				backends[handler.Proxy] = host
+				backends[handler.Proxy] = hostPort
 			}
 		}
 	}

@@ -60,7 +60,7 @@ func TestTailnetURL(t *testing.T) {
 }
 
 func TestDocktailLabelsWhenEnabled(t *testing.T) {
-	labels := docktailLabels("writebook", "once", true, false)
+	labels := docktailLabels("writebook", "once", true, 0)
 
 	assert.Equal(t, map[string]string{
 		"docktail.service.enable":           "true",
@@ -72,17 +72,20 @@ func TestDocktailLabelsWhenEnabled(t *testing.T) {
 }
 
 func TestDocktailLabelsWithFunnel(t *testing.T) {
-	labels := docktailLabels("writebook", "once", true, true)
+	labels := docktailLabels("writebook", "once", true, 443)
 
 	assert.Equal(t, "true", labels["docktail.service.enable"])
 	assert.Equal(t, "true", labels["docktail.funnel.enable"])
 	assert.Equal(t, "80", labels["docktail.funnel.port"])
+	assert.Equal(t, "443", labels["docktail.funnel.funnel-port"])
+
+	assert.Equal(t, "8443", docktailLabels("writebook", "once", true, 8443)["docktail.funnel.funnel-port"])
 }
 
 func TestDocktailLabelsWhenDisabled(t *testing.T) {
-	assert.Nil(t, docktailLabels("writebook", "once", false, false))
+	assert.Nil(t, docktailLabels("writebook", "once", false, 0))
 	// Funnel only matters when Tailscale is enabled.
-	assert.Nil(t, docktailLabels("writebook", "once", false, true))
+	assert.Nil(t, docktailLabels("writebook", "once", false, 443))
 }
 
 func TestWaitForFunnelBackend(t *testing.T) {
@@ -94,9 +97,9 @@ func TestWaitForFunnelBackend(t *testing.T) {
 	}
 
 	daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON("http://10.0.0.5:80")}
-	host, err := waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", time.Second, time.Millisecond)
+	hostPort, err := waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", time.Second, time.Millisecond)
 	require.NoError(t, err)
-	assert.Equal(t, "once.tail1234.ts.net", host)
+	assert.Equal(t, "once.tail1234.ts.net:443", hostPort)
 
 	// Another app's active Funnel must not count as this app's activation.
 	_, err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.6:80", 50*time.Millisecond, 10*time.Millisecond)
@@ -182,6 +185,11 @@ func TestContainerConfigFunnelLabelTracksSettings(t *testing.T) {
 	app.Settings.FunnelExpiresAt = nil
 	withoutFunnel := app.containerConfig(nil, true)
 	assert.NotContains(t, withoutFunnel.Labels, "docktail.funnel.enable")
+}
+
+func TestFunnelURL(t *testing.T) {
+	assert.Equal(t, "https://n.ts.net", funnelURL("n.ts.net:443"))
+	assert.Equal(t, "https://n.ts.net:8443", funnelURL("n.ts.net:8443"))
 }
 
 func TestEnableFunnelRequiresTailnetExposure(t *testing.T) {

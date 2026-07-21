@@ -199,6 +199,7 @@ func (a *Application) Deploy(ctx context.Context, progress DeployProgressCallbac
 	// silently re-publish the app if it returned within the window.
 	if a.Settings.Exposure != ExposureTailnet {
 		a.Settings.FunnelExpiresAt = nil
+		a.Settings.FunnelPort = 0
 	}
 
 	if _, err := a.pullImage(ctx, progress); err != nil {
@@ -233,7 +234,12 @@ func (a *Application) EnableFunnel(ctx context.Context, expiresAt time.Time) err
 	if a.Settings.Exposure != ExposureTailnet {
 		return ErrFunnelRequiresTailnet
 	}
+	port, err := a.namespace.allocateFunnelPort(a)
+	if err != nil {
+		return err
+	}
 	a.Settings.FunnelExpiresAt = &expiresAt
+	a.Settings.FunnelPort = port
 	return a.Roll(ctx, nil)
 }
 
@@ -241,6 +247,7 @@ func (a *Application) EnableFunnel(ctx context.Context, expiresAt time.Time) err
 // and recreating the container without the funnel labels.
 func (a *Application) DisableFunnel(ctx context.Context) error {
 	a.Settings.FunnelExpiresAt = nil
+	a.Settings.FunnelPort = 0
 	return a.Roll(ctx, nil)
 }
 
@@ -543,7 +550,7 @@ func (a *Application) containerConfig(env []string, tailscaleEnabled bool) *cont
 	// Only tailnet-exposed apps carry docktail labels, advertised under the
 	// Host (the service name). Off the tailnet there is no Funnel either.
 	exposed := tailscaleEnabled && a.Settings.Exposure == ExposureTailnet
-	maps.Copy(labels, docktailLabels(a.Settings.Host, a.namespace.name, exposed, a.Settings.FunnelEnabled()))
+	maps.Copy(labels, docktailLabels(a.Settings.Host, a.namespace.name, exposed, a.Settings.ActiveFunnelPort()))
 	return &container.Config{
 		Image:  a.Settings.Image,
 		Labels: labels,

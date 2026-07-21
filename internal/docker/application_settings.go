@@ -59,6 +59,11 @@ type ApplicationSettings struct {
 	// Funnel until this time. Written atomically with the tailscale_funnel label
 	// option in the same container recreation, so the two never drift apart.
 	FunnelExpiresAt *time.Time `json:"funnelExpiresAt,omitempty"`
+	// FunnelPort is the public port the Funnel serves on (443, 8443, or 10000).
+	// Funnel is per-node with one endpoint per public port, so distinct ports
+	// are what let multiple apps' Funnels coexist. Zero means 443 (labels
+	// written before ports were allocated).
+	FunnelPort int `json:"funnelPort,omitempty"`
 
 	// extra preserves label fields written by a newer version of Once, so a
 	// binary that predates a field doesn't destroy it when it rewrites the
@@ -120,6 +125,18 @@ func (s ApplicationSettings) FunnelEnabled() bool {
 	return s.FunnelExpiresAt != nil
 }
 
+// ActiveFunnelPort returns the public port an active Funnel serves on, or 0
+// when no Funnel is active.
+func (s ApplicationSettings) ActiveFunnelPort() int {
+	if s.FunnelExpiresAt == nil {
+		return 0
+	}
+	if s.FunnelPort == 0 {
+		return 443
+	}
+	return s.FunnelPort
+}
+
 // FunnelExpired reports whether a set Funnel expiry has passed, so the daemon
 // can tear it down. False when no Funnel is active.
 func (s ApplicationSettings) FunnelExpired(now time.Time) bool {
@@ -146,6 +163,9 @@ func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 		return false
 	}
 	if !funnelExpiryEqual(s.FunnelExpiresAt, other.FunnelExpiresAt) {
+		return false
+	}
+	if s.FunnelPort != other.FunnelPort {
 		return false
 	}
 	if len(s.EnvVars) != len(other.EnvVars) {

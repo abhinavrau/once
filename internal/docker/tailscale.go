@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,7 +94,11 @@ const (
 var (
 	ErrFunnelDurationInvalid = errors.New("funnel duration must be positive")
 	ErrFunnelDurationTooLong = fmt.Errorf("funnel duration must not exceed %s", MaxFunnelDuration)
+	ErrFunnelPortsExhausted  = errors.New("all Funnel public ports (443, 8443, 10000) are in use; disable another app's Funnel first")
 )
+
+// funnelPublicPorts are the public ports Tailscale Funnel can serve HTTPS on.
+var funnelPublicPorts = []int{443, 8443, 10000}
 
 // ValidateFunnelDuration enforces the positive/≤24h bounds on a requested
 // Funnel duration.
@@ -355,11 +360,11 @@ func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (
 	if err != nil {
 		return "", err
 	}
-	host, err := waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
+	hostPort, err := waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
 	if err != nil {
 		return "", err
 	}
-	return "https://" + host, nil
+	return funnelURL(hostPort), nil
 }
 
 // LegacyTSDProxyWarning returns a message telling the user how to move off a
@@ -700,9 +705,10 @@ func (t *Tailscale) removeVolume(ctx context.Context, name string) error {
 // serve on 443, matching the https:// URLs Once displays; network pins direct
 // container-IP proxying to the namespace network the app is attached to.
 //
-// When funnel is set, the same backend is also exposed to the public internet
-// via docktail.funnel.* (public side 443/https).
-func docktailLabels(appName, network string, enabled, funnel bool) map[string]string {
+// When funnelPort is set, the same backend is also exposed to the public
+// internet via docktail.funnel.* (https on that public port). Each app gets
+// its own public port because Funnel serves one endpoint per port per node.
+func docktailLabels(appName, network string, enabled bool, funnelPort int) map[string]string {
 	if !enabled {
 		return nil
 	}
@@ -713,9 +719,10 @@ func docktailLabels(appName, network string, enabled, funnel bool) map[string]st
 		"docktail.service.service-protocol": "https",
 		"docktail.service.network":          network,
 	}
-	if funnel {
+	if funnelPort != 0 {
 		labels["docktail.funnel.enable"] = "true"
 		labels["docktail.funnel.port"] = "80"
+		labels["docktail.funnel.funnel-port"] = strconv.Itoa(funnelPort)
 	}
 	return labels
 }
@@ -745,16 +752,16 @@ func hostTailscaledPresent() bool {
 }
 
 // waitForFunnelBackend polls the local daemon until a funnel-enabled endpoint
-// proxies to backend, and returns that endpoint's hostname - the public name
-// the funnel serves on. Timeout and poll are parameters so tests can run the
-// timeout path fast.
+// proxies to backend, and returns that endpoint's "host:port" - the public
+// address the funnel serves on. Timeout and poll are parameters so tests can
+// run the timeout path fast.
 func waitForFunnelBackend(ctx context.Context, daemon TailscaleDaemon, backend string, timeout, poll time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		status, err := daemon.ServeStatus(ctx)
 		if err == nil {
-			if host, ok := status.FunnelBackends[backend]; ok {
-				return host, nil
+			if hostPort, ok := status.FunnelBackends[backend]; ok {
+				return hostPort, nil
 			}
 		}
 		if time.Now().After(deadline) {
@@ -766,6 +773,15 @@ func waitForFunnelBackend(ctx context.Context, daemon TailscaleDaemon, backend s
 		case <-time.After(poll):
 		}
 	}
+}
+
+// funnelURL renders a funnel endpoint's "host:port" as the URL users open,
+// with the default HTTPS port elided.
+func funnelURL(hostPort string) string {
+	if host, ok := strings.CutSuffix(hostPort, ":443"); ok {
+		return "https://" + host
+	}
+	return "https://" + hostPort
 }
 
 // sidecarWedged reports whether a sidecar container state means it cannot

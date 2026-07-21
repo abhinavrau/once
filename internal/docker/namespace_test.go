@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,6 +116,51 @@ func TestApplicationByNameOrHost(t *testing.T) {
 	assert.Equal(t, "once-campfire-73baaa", app.Settings.Name)
 
 	assert.Nil(t, ns.ApplicationByNameOrHost("missing"))
+}
+
+func TestAllocateFunnelPort(t *testing.T) {
+	ns := &Namespace{name: "once"}
+	newApp := func(name string) *Application {
+		app := NewApplication(ns, ApplicationSettings{Name: name, Host: name, Exposure: ExposureTailnet})
+		ns.applications = append(ns.applications, app)
+		return app
+	}
+	activate := func(app *Application) int {
+		t.Helper()
+		port, err := ns.allocateFunnelPort(app)
+		require.NoError(t, err)
+		expires := time.Now().Add(time.Hour)
+		app.Settings.FunnelExpiresAt = &expires
+		app.Settings.FunnelPort = port
+		return port
+	}
+
+	campfire, fizzy, writebook := newApp("campfire"), newApp("fizzy"), newApp("writebook")
+
+	// Concurrent funnels each get their own public port instead of colliding
+	// on the node's single 443 endpoint.
+	assert.Equal(t, 443, activate(campfire))
+	assert.Equal(t, 8443, activate(fizzy))
+	assert.Equal(t, 10000, activate(writebook))
+
+	// A re-enable keeps the app's live port; a fourth concurrent funnel is
+	// rejected rather than colliding.
+	port, err := ns.allocateFunnelPort(fizzy)
+	require.NoError(t, err)
+	assert.Equal(t, 8443, port)
+	_, err = ns.allocateFunnelPort(newApp("fourth"))
+	assert.ErrorIs(t, err, ErrFunnelPortsExhausted)
+
+	// A pre-allocation label (funnel active, no port recorded) holds 443.
+	ns2 := &Namespace{name: "once"}
+	legacy := NewApplication(ns2, ApplicationSettings{Name: "legacy", Host: "legacy", Exposure: ExposureTailnet})
+	expires := time.Now().Add(time.Hour)
+	legacy.Settings.FunnelExpiresAt = &expires
+	next := NewApplication(ns2, ApplicationSettings{Name: "next", Host: "next", Exposure: ExposureTailnet})
+	ns2.applications = append(ns2.applications, legacy, next)
+	port, err = ns2.allocateFunnelPort(next)
+	require.NoError(t, err)
+	assert.Equal(t, 8443, port)
 }
 
 func TestHostInUse(t *testing.T) {
