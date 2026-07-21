@@ -84,9 +84,12 @@ make lint        # Run golangci-lint
   within minutes) and re-run, or force dockerd to IPv4 if it keeps recurring.
   Don't burn time bisecting the tests for this failure signature.
 - Tailscale SaaS paths (the OAuth probe against `api.tailscale.com`) can't run in
-  CI — the integration harness only exercises the headscale control seam, which
+  CI - the integration harness only exercises the headscale control seam, which
   skips OAuth. Cover SaaS-only logic with httptest unit tests, and keep any request
   that must match docktail's real API call byte-compatible with it.
+  docktail reference docs: https://docktail.org/llms.txt (index,
+  https://docktail.org/llms-full.txt for full text) - consult these before
+  making claims about docktail env vars or behavior.
 
 ## Coding Style
 
