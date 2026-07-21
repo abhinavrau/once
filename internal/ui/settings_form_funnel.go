@@ -111,10 +111,11 @@ func applyFunnel(app *docker.Application, ts *docker.Tailscale, namespace string
 	}
 	// Surface activation failures (e.g. a tailnet ACL missing the funnel
 	// attribute) rather than reporting the Funnel active when it isn't.
-	if err := ts.WaitForFunnelActive(ctx, app); err != nil {
+	url, err := ts.WaitForFunnelActive(ctx, app)
+	if err != nil {
 		return "", err
 	}
-	return "Funnel enabled", nil
+	return "Funnel enabled at " + url, nil
 }
 
 func requireBackgroundDaemon(namespace string) error {

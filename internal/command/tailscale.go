@@ -233,7 +233,7 @@ func (t *tailscaleCommand) funnelEnable(ctx context.Context, ns *docker.Namespac
 		return err
 	}
 
-	app := ns.Application(args[0])
+	app := ns.ApplicationByNameOrHost(args[0])
 	if app == nil {
 		return fmt.Errorf("no application named %q", args[0])
 	}
@@ -246,16 +246,18 @@ func (t *tailscaleCommand) funnelEnable(ctx context.Context, ns *docker.Namespac
 	// Surface activation failures: Funnel needs the tailnet ACL's funnel node
 	// attribute, which Once can't manage. Only report it active once the local
 	// tailscaled confirms a Funnel proxying to this app's container.
-	if err := ns.Tailscale().WaitForFunnelActive(ctx, app); err != nil {
+	url, err := ns.Tailscale().WaitForFunnelActive(ctx, app)
+	if err != nil {
 		return err
 	}
 
 	fmt.Printf("Funnel enabled for %s until %s\n", app.Settings.Name, expiresAt.Format(time.RFC3339))
+	fmt.Printf("Public URL: %s (Funnel serves on the node's hostname, not the app's tailnet URL)\n", url)
 	return nil
 }
 
 func (t *tailscaleCommand) funnelDisable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	app := ns.Application(args[0])
+	app := ns.ApplicationByNameOrHost(args[0])
 	if app == nil {
 		return fmt.Errorf("no application named %q", args[0])
 	}

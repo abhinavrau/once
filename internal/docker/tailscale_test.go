@@ -94,20 +94,21 @@ func TestWaitForFunnelBackend(t *testing.T) {
 	}
 
 	daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON("http://10.0.0.5:80")}
-	err := waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", time.Second, time.Millisecond)
+	host, err := waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", time.Second, time.Millisecond)
 	require.NoError(t, err)
+	assert.Equal(t, "once.tail1234.ts.net", host)
 
 	// Another app's active Funnel must not count as this app's activation.
-	err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.6:80", 50*time.Millisecond, 10*time.Millisecond)
+	_, err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.6:80", 50*time.Millisecond, 10*time.Millisecond)
 	require.ErrorContains(t, err, "funnel did not activate")
 
 	// No funnel at all, or a daemon that keeps erroring, times out the same way.
 	daemon = &FakeTailscaleDaemon{ServeJSON: `{}`}
-	err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
+	_, err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
 	require.ErrorContains(t, err, "funnel did not activate")
 
 	daemon = &FakeTailscaleDaemon{ServeErr: assert.AnError}
-	err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
+	_, err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
 	require.ErrorContains(t, err, "funnel did not activate")
 }
 

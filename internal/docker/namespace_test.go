@@ -93,6 +93,30 @@ func TestApplicationByHost(t *testing.T) {
 	assert.Nil(t, ns.ApplicationByHost("missing.localhost"))
 }
 
+func TestApplicationByNameOrHost(t *testing.T) {
+	ns := &Namespace{name: "once"}
+	ns.applications = append(ns.applications,
+		NewApplication(ns, ApplicationSettings{Name: "once-campfire-73baaa", Host: "once-campfire", Exposure: ExposureTailnet}),
+		NewApplication(ns, ApplicationSettings{Name: "once-campfire", Host: "other.localhost"}),
+	)
+
+	app := ns.ApplicationByNameOrHost("once-campfire-73baaa")
+	require.NotNil(t, app)
+	assert.Equal(t, "once-campfire-73baaa", app.Settings.Name)
+
+	// name match wins over another app's host
+	app = ns.ApplicationByNameOrHost("once-campfire")
+	require.NotNil(t, app)
+	assert.Equal(t, "once-campfire", app.Settings.Name)
+
+	ns.applications = ns.applications[:1]
+	app = ns.ApplicationByNameOrHost("once-campfire")
+	require.NotNil(t, app)
+	assert.Equal(t, "once-campfire-73baaa", app.Settings.Name)
+
+	assert.Nil(t, ns.ApplicationByNameOrHost("missing"))
+}
+
 func TestHostInUse(t *testing.T) {
 	ns := &Namespace{name: "test"}
 	ns.applications = append(ns.applications,

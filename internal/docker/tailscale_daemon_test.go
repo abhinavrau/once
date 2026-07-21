@@ -106,11 +106,11 @@ func TestFakeTailscaleDaemonServeStatus(t *testing.T) {
 	assert.Equal(t, []string{"campfire", "writebook"}, status.Services)
 	assert.True(t, status.AllowFunnel["once.tail1234.ts.net:443"])
 	assert.False(t, status.AllowFunnel["other.tail1234.ts.net:443"])
-	assert.Equal(t, []string{"http://10.0.0.7:80"}, status.FunnelBackends)
+	assert.Equal(t, map[string]string{"http://10.0.0.7:80": "once.tail1234.ts.net"}, status.FunnelBackends)
 }
 
 func TestFakeTailscaleDaemonServeStatusFunnelBackends(t *testing.T) {
-	backends := func(serveJSON string) []string {
+	backends := func(serveJSON string) map[string]string {
 		t.Helper()
 		daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON}
 		status, err := daemon.ServeStatus(t.Context())
@@ -131,8 +131,12 @@ func TestFakeTailscaleDaemonServeStatusFunnelBackends(t *testing.T) {
 	// contributes no backend either.
 	assert.Empty(t, backends(`{"AllowFunnel": {"once.tail1234.ts.net:443": true}}`))
 
-	// Multiple funnel-enabled endpoints report all their backends, sorted.
-	assert.Equal(t, []string{"http://10.0.0.5:80", "http://10.0.0.6:80"}, backends(`{
+	// Multiple funnel-enabled endpoints report all their backends with the
+	// hostname each serves on.
+	assert.Equal(t, map[string]string{
+		"http://10.0.0.6:80": "once.tail1234.ts.net",
+		"http://10.0.0.5:80": "once.tail1234.ts.net",
+	}, backends(`{
 		"Web": {
 			"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.6:80"}}},
 			"once.tail1234.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}

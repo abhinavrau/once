@@ -132,6 +132,16 @@ func (n *Namespace) ApplicationByHost(host string) *Application {
 	return nil
 }
 
+// ApplicationByNameOrHost resolves a user-supplied identifier: the app's
+// unique name first, falling back to its host (the name `tailscale status`
+// and the proxy route show).
+func (n *Namespace) ApplicationByNameOrHost(nameOrHost string) *Application {
+	if app := n.Application(nameOrHost); app != nil {
+		return app
+	}
+	return n.ApplicationByHost(nameOrHost)
+}
+
 func (n *Namespace) HostInUse(host string) bool {
 	return n.ApplicationByHost(host) != nil
 }

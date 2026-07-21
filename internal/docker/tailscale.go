@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -340,21 +339,27 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 }
 
 // WaitForFunnelActive polls the local tailscaled until it reports a Funnel
-// proxying to the app's container, or returns an error on timeout. Funnel is
-// per-node, so matching the app's backend is what proves *this* app went
-// public - another app's active Funnel must not count. Funnel also needs the
-// tailnet ACL's funnel node attribute, which Once can't manage - surfacing
-// activation failure prevents reporting a Funnel active when it isn't.
-func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) error {
+// proxying to the app's container, then returns the funnel's public URL - the
+// node's own hostname, not the app's tailnet service name, because Funnel is
+// per-node. That per-node scoping is also why matching the app's backend is
+// what proves *this* app went public - another app's active Funnel must not
+// count. Funnel also needs the tailnet ACL's funnel node attribute, which
+// Once can't manage - surfacing activation failure prevents reporting a
+// Funnel active when it isn't.
+func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (string, error) {
 	settings, err := t.LoadSettings(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	backend, err := app.funnelBackend(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
+	host, err := waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
+	if err != nil {
+		return "", err
+	}
+	return "https://" + host, nil
 }
 
 // LegacyTSDProxyWarning returns a message telling the user how to move off a
@@ -740,21 +745,24 @@ func hostTailscaledPresent() bool {
 }
 
 // waitForFunnelBackend polls the local daemon until a funnel-enabled endpoint
-// proxies to backend. Timeout and poll are parameters so tests can run the
+// proxies to backend, and returns that endpoint's hostname - the public name
+// the funnel serves on. Timeout and poll are parameters so tests can run the
 // timeout path fast.
-func waitForFunnelBackend(ctx context.Context, daemon TailscaleDaemon, backend string, timeout, poll time.Duration) error {
+func waitForFunnelBackend(ctx context.Context, daemon TailscaleDaemon, backend string, timeout, poll time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		status, err := daemon.ServeStatus(ctx)
-		if err == nil && slices.Contains(status.FunnelBackends, backend) {
-			return nil
+		if err == nil {
+			if host, ok := status.FunnelBackends[backend]; ok {
+				return host, nil
+			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("funnel did not activate; check that the once-docktail container is running and your tailnet ACL grants the funnel node attribute")
+			return "", fmt.Errorf("funnel did not activate; check that the once-docktail container is running and your tailnet ACL grants the funnel node attribute")
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		case <-time.After(poll):
 		}
 	}
