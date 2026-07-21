@@ -135,7 +135,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 
 	cp := newControlPlane(t, ctx, ns)
 	useControlSeam(t, ctx, cp)
-	forceSidecarMode(t)
+	hideHostTailscaled(t)
 
 	// Enable boots once-admin, which bind-mounts the daemon's Unix socket; run the
 	// admin server in-process and wait for the socket so Boot doesn't fail.

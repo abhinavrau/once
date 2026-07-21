@@ -17,6 +17,7 @@ type tailscaleCommand struct {
 	clientID     string
 	clientSecret string
 	tag          string
+	mode         string
 	json         bool
 	duration     time.Duration
 }
@@ -46,6 +47,7 @@ Setup, once per tailnet:
 	enable.Flags().StringVar(&t.clientID, "client-id", "", "OAuth client ID (scopes auth_keys, devices:core, services; tagged)")
 	enable.Flags().StringVar(&t.clientSecret, "client-secret", "", "OAuth client secret")
 	enable.Flags().StringVar(&t.tag, "tag", "tag:once", "Tailscale tag the OAuth client is tagged with")
+	enable.Flags().StringVar(&t.mode, "mode", "", "tailscaled to drive: sidecar (Once-managed, the default) or host (an existing host daemon); unset keeps an enabled install's current mode")
 	_ = enable.MarkFlagRequired("client-id")
 	_ = enable.MarkFlagRequired("client-secret")
 
@@ -101,7 +103,7 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 // Private
 
 func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	settings := docker.TailscaleSettings{Tag: t.tag}
+	settings := docker.TailscaleSettings{Tag: t.tag, Mode: t.mode}
 	if !docker.TailscaleControlSeamActive() {
 		settings.ClientID, settings.ClientSecret = t.clientID, t.clientSecret
 	}

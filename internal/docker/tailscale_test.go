@@ -44,6 +44,13 @@ func TestNormalizeTag(t *testing.T) {
 	assert.Empty(t, normalize("  "))
 }
 
+func TestValidateTailscaleMode(t *testing.T) {
+	assert.NoError(t, ValidateTailscaleMode(""))
+	assert.NoError(t, ValidateTailscaleMode(TailscaleModeHost))
+	assert.NoError(t, ValidateTailscaleMode(TailscaleModeSidecar))
+	assert.ErrorContains(t, ValidateTailscaleMode("both"), `invalid Tailscale mode "both"`)
+}
+
 func TestTailnetURL(t *testing.T) {
 	assert.Equal(t, "https://books.tailnet-name.ts.net",
 		TailscaleSettings{DomainSuffix: "tailnet-name.ts.net"}.TailnetURL("books"))

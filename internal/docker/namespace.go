@@ -189,8 +189,13 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 // boot the Docktail topology with the given credentials, boot once-admin so
 // it is exposed as a Service too, then verify every expected service is
 // advertised and approved before reporting success. The returned warnings
-// name any tailnet machines whose Magic DNS entries shadow a service.
+// name any tailnet machines whose Magic DNS entries shadow a service, and
+// lead with the --mode host notice when a fresh enable defaulted to the
+// sidecar alongside a host tailscaled.
 func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) ([]string, error) {
+	if err := ValidateTailscaleMode(settings.Mode); err != nil {
+		return nil, err
+	}
 	exposed := n.exposedTailscaleServices()
 	for _, name := range exposed {
 		if err := ValidateTailscaleServiceName(name); err != nil {
@@ -207,13 +212,18 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	if err := n.EnsureNetwork(ctx); err != nil {
 		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
-	if err := n.tailscale.Enable(ctx, settings); err != nil {
+	notice, err := n.tailscale.Enable(ctx, settings)
+	if err != nil {
 		return nil, fmt.Errorf("enabling Tailscale: %w", err)
 	}
 	if err := n.admin.Boot(ctx); err != nil {
 		return nil, fmt.Errorf("booting once-admin: %w", err)
 	}
-	warnings := n.tailscale.ShadowWarnings(ctx, exposed)
+	var warnings []string
+	if notice != "" {
+		warnings = append(warnings, notice)
+	}
+	warnings = append(warnings, n.tailscale.ShadowWarnings(ctx, exposed)...)
 	return warnings, n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices())
 }
 
