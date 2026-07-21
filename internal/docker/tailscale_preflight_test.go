@@ -81,7 +81,7 @@ func TestHostPreflightRequiresHostSocket(t *testing.T) {
 func TestHostPreflightRequiresNodeTag(t *testing.T) {
 	plantHostSocket(t)
 
-	err := preflightAgainst("http://unused.invalid", fakeHostDaemon("1.88.4-t1234abcd"))
+	err := preflightAgainst("http://unused.invalid", fakeHostDaemon("1.98.9-t1234abcd"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sudo tailscale up --advertise-tags=tag:once")
 }
@@ -92,14 +92,14 @@ func TestHostPreflightRequiresServicesCapableVersion(t *testing.T) {
 	err := preflightAgainst("http://unused.invalid", fakeHostDaemon("1.84.2-t1234abcd", "tag:once"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "1.84.2")
-	assert.Contains(t, err.Error(), "v1.86 or newer")
+	assert.Contains(t, err.Error(), "v1.92 or newer")
 }
 
 func TestHostPreflightRejectsNodeOutsideTailnet(t *testing.T) {
 	plantHostSocket(t)
 	srv := newDevicesServer(t, "nodekey:someone-else")
 
-	err := preflightAgainst(srv.srv.URL, fakeHostDaemon("1.88.4-t1234abcd", "tag:once"))
+	err := preflightAgainst(srv.srv.URL, fakeHostDaemon("1.98.9-t1234abcd", "tag:once"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "different tailnet")
 	assert.Contains(t, err.Error(), "sudo tailscale login")
@@ -112,7 +112,7 @@ func TestHostPreflightPasses(t *testing.T) {
 	plantHostSocket(t)
 	srv := newDevicesServer(t, "nodekey:someone-else", "nodekey:host")
 
-	require.NoError(t, preflightAgainst(srv.srv.URL, fakeHostDaemon("1.88.4-t1234abcd", "tag:once")))
+	require.NoError(t, preflightAgainst(srv.srv.URL, fakeHostDaemon("1.98.9-t1234abcd", "tag:once")))
 }
 
 func TestHostPreflightControlSeamSkipsTailnetCheck(t *testing.T) {
@@ -122,18 +122,21 @@ func TestHostPreflightControlSeamSkipsTailnetCheck(t *testing.T) {
 
 	// The cloud check must not run on the seam (the base URL is unreachable,
 	// so any attempt would fail)...
-	require.NoError(t, preflightAgainst("http://unreachable.invalid", fakeHostDaemon("1.88.4-t1234abcd", "tag:once")))
+	require.NoError(t, preflightAgainst("http://unreachable.invalid", fakeHostDaemon("1.98.9-t1234abcd", "tag:once")))
 
 	// ...but the local checks still apply there.
 	err := preflightAgainst("http://unreachable.invalid", fakeHostDaemon("1.84.0-t1234abcd", "tag:once"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "v1.86 or newer")
+	assert.Contains(t, err.Error(), "v1.92 or newer")
 }
 
 func TestHostDaemonSupportsServices(t *testing.T) {
-	assert.True(t, hostDaemonSupportsServices("1.86.0-t1234abcd"))
-	assert.True(t, hostDaemonSupportsServices("1.88.4"))
+	assert.True(t, hostDaemonSupportsServices("1.92.1-t1234abcd"))
+	assert.True(t, hostDaemonSupportsServices("1.98.9"))
 	assert.True(t, hostDaemonSupportsServices("2.0.1"))
+	// Services exist from 1.86, but docktail proxies to container IPs, which
+	// serve only allows from 1.92.1 (remote service targets).
+	assert.False(t, hostDaemonSupportsServices("1.88.4-t1234abcd"))
 	assert.False(t, hostDaemonSupportsServices("1.84.2-t1234abcd"))
 	assert.False(t, hostDaemonSupportsServices(""))
 	assert.False(t, hostDaemonSupportsServices("unknown"))

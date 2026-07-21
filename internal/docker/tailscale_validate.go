@@ -90,10 +90,12 @@ func validateOAuthCredentials(ctx context.Context, baseURL string, settings Tail
 }
 
 // minHostDaemonMajor/Minor is the oldest host tailscaled that supports
-// Tailscale Services.
+// Tailscale Services with the remote (container IP) serve targets docktail
+// uses; older daemons reject them with "only localhost or 127.0.0.1 proxies
+// are currently supported".
 const (
 	minHostDaemonMajor = 1
-	minHostDaemonMinor = 86
+	minHostDaemonMinor = 92
 )
 
 // validateHostModePreflight is the host-mode counterpart of the credential

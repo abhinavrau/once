@@ -21,10 +21,13 @@ import (
 
 // Images are pinned to exact versions, the same doctrine as proxyImage.
 // Bumped via Once releases through the self-update mechanism. The tailscale
-// image must be v1.86.0+ for Tailscale Services.
+// image must be v1.92.1+: Services exist from v1.86, but docktail proxies
+// service traffic straight to container IPs, and serve only accepts
+// non-localhost targets from v1.92.1 (older daemons reject them with "only
+// localhost or 127.0.0.1 proxies are currently supported").
 const (
 	docktailImage         = "ghcr.io/marvinvr/docktail:1.5.0"
-	tailscaleSidecarImage = "tailscale/tailscale:v1.88.4"
+	tailscaleSidecarImage = "tailscale/tailscale:v1.98.9"
 )
 
 // Paths shared between tailscaled and docktail. The socket directory is
