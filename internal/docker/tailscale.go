@@ -407,6 +407,31 @@ func (t *Tailscale) legacyTSDProxyVolumeName() string {
 	return t.namespace.name + "-tsdproxy-data"
 }
 
+// effectiveMode resolves the mode an Enable with the requested mode would run
+// in, mirroring Enable's own resolution: an explicit mode wins, an empty one
+// keeps an already-enabled install's stored mode (tolerating a corrupt label,
+// which Enable self-heals to the sidecar), and a fresh enable defaults to the
+// sidecar. A real inspect failure is an error, not a silent sidecar default:
+// callers use this to decide whether the host-mode pre-flight must run, and
+// guessing wrong would skip it.
+func (t *Tailscale) effectiveMode(ctx context.Context, requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
+	if errdefs.IsNotFound(err) {
+		return TailscaleModeSidecar, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspecting docktail container: %w", err)
+	}
+	stored, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
+	if stored.Mode != "" {
+		return stored.Mode, nil
+	}
+	return TailscaleModeSidecar, nil
+}
+
 // daemonFor returns the TailscaleDaemon matching where tailscaled runs: the
 // host CLI in host mode, docker exec into the sidecar otherwise.
 func (t *Tailscale) daemonFor(mode string) TailscaleDaemon {

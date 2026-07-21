@@ -2,6 +2,8 @@ package docker
 
 import (
 	"context"
+	"net"
+	"os"
 	"strings"
 	"testing"
 
@@ -38,6 +40,28 @@ func TestEnableTailscaleFailsFastWithoutDaemon(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "once-admin socket")
+}
+
+func TestEnableTailscaleHostModePreflightBeforeProbeAndContainers(t *testing.T) {
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+	ln, err := net.Listen("unix", AdminSocketPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+	require.NoError(t, os.WriteFile(AdminNginxConfPath(), []byte(AdminNginxConfig()), 0o644))
+	t.Setenv("ONCE_TAILSCALED_DIR", t.TempDir())
+
+	ns := &Namespace{name: "test"}
+	ns.admin = NewAdmin(ns)
+
+	// With no host socket, --mode host must fail on the pre-flight before the
+	// credential probe (the error is the socket one, not a credentials one) and
+	// before any Docker work (a nil client would panic past that point).
+	_, err = ns.EnableTailscale(context.Background(),
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeHost})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), tailscaledSocketFile)
+	assert.Contains(t, err.Error(), "--mode sidecar")
 }
 
 func TestApplicationLookup(t *testing.T) {

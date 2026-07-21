@@ -24,9 +24,23 @@ type TailscaleDaemon interface {
 	// MachineHostnames returns the Magic DNS labels of every machine on the
 	// tailnet (this node and its peers), lowercased and sorted.
 	MachineHostnames(ctx context.Context) ([]string, error)
+	// SelfStatus returns this node's daemon version, tags, and node key, for
+	// the host-mode pre-flight.
+	SelfStatus(ctx context.Context) (TailscaleSelfStatus, error)
 	// ServeStatus returns the daemon's serve config: advertised services and
 	// funnel state.
 	ServeStatus(ctx context.Context) (TailscaleServeStatus, error)
+}
+
+// TailscaleSelfStatus is this node's slice of `tailscale status --json`.
+type TailscaleSelfStatus struct {
+	// Version is the daemon's version string (e.g. "1.88.4-t1234abcd").
+	Version string
+	// Tags holds the node's ACL tags (e.g. tag:once); empty when untagged.
+	Tags []string
+	// NodeKey is the node's public key ("nodekey:..."), matching the nodeKey
+	// field of the cloud API's devices list.
+	NodeKey string
 }
 
 // TailscaleServeStatus is the parsed `tailscale serve status --json` output.
@@ -65,25 +79,27 @@ type cliTailscaleDaemon struct {
 }
 
 func (d *cliTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error) {
-	res, err := d.run(ctx, "status", "--json")
+	statusJSON, err := d.statusJSON(ctx)
 	if err != nil {
 		return "", err
 	}
-	if res.ExitCode != 0 {
-		return "", fmt.Errorf("tailscale status: %s", strings.TrimSpace(res.Stderr))
-	}
-	return parseMagicDNSSuffix(stripCLIWarnings(res.Stdout))
+	return parseMagicDNSSuffix(statusJSON)
 }
 
 func (d *cliTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, error) {
-	res, err := d.run(ctx, "status", "--json")
+	statusJSON, err := d.statusJSON(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("tailscale status: %s", strings.TrimSpace(res.Stderr))
+	return parseMachineHostnames(statusJSON)
+}
+
+func (d *cliTailscaleDaemon) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
+	statusJSON, err := d.statusJSON(ctx)
+	if err != nil {
+		return TailscaleSelfStatus{}, err
 	}
-	return parseMachineHostnames(stripCLIWarnings(res.Stdout))
+	return parseSelfStatus(statusJSON)
 }
 
 func (d *cliTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
@@ -100,6 +116,19 @@ func (d *cliTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeSta
 		return TailscaleServeStatus{}, fmt.Errorf("tailscale serve status: %s", strings.TrimSpace(res.Stderr))
 	}
 	return parseServeStatus(stripCLIWarnings(res.Stdout))
+}
+
+// statusJSON runs `tailscale status --json` and returns its output with any
+// leading CLI warnings stripped.
+func (d *cliTailscaleDaemon) statusJSON(ctx context.Context) (string, error) {
+	res, err := d.run(ctx, "status", "--json")
+	if err != nil {
+		return "", err
+	}
+	if res.ExitCode != 0 {
+		return "", fmt.Errorf("tailscale status: %s", strings.TrimSpace(res.Stderr))
+	}
+	return stripCLIWarnings(res.Stdout), nil
 }
 
 // FakeTailscaleDaemon implements TailscaleDaemon from canned CLI JSON, routing
@@ -123,6 +152,13 @@ func (f *FakeTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, e
 		return nil, f.StatusErr
 	}
 	return parseMachineHostnames(stripCLIWarnings(f.StatusJSON))
+}
+
+func (f *FakeTailscaleDaemon) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
+	if f.StatusErr != nil {
+		return TailscaleSelfStatus{}, f.StatusErr
+	}
+	return parseSelfStatus(stripCLIWarnings(f.StatusJSON))
 }
 
 func (f *FakeTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
@@ -232,6 +268,27 @@ func parseMachineHostnames(statusJSON string) ([]string, error) {
 	}
 	slices.Sort(names)
 	return slices.Compact(names), nil
+}
+
+// parseSelfStatus reads this node's daemon version, tags, and node key from
+// `tailscale status --json` output. Self.PublicKey is the node key, in the
+// same "nodekey:..." form the cloud API's devices list reports.
+func parseSelfStatus(statusJSON string) (TailscaleSelfStatus, error) {
+	var status struct {
+		Version string
+		Self    struct {
+			PublicKey string
+			Tags      []string
+		}
+	}
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		return TailscaleSelfStatus{}, fmt.Errorf("parsing tailscale status: %w", err)
+	}
+	return TailscaleSelfStatus{
+		Version: status.Version,
+		Tags:    status.Self.Tags,
+		NodeKey: status.Self.PublicKey,
+	}, nil
 }
 
 // parseServeStatus reads advertised services and funnel state from `tailscale

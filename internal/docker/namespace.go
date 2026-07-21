@@ -185,7 +185,8 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 }
 
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
-// validate the exposed app names and the credentials, bring up the network,
+// validate the exposed app names, the host-mode pre-flight (when the
+// effective mode is host), and the credentials, bring up the network,
 // boot the Docktail topology with the given credentials, boot once-admin so
 // it is exposed as a Service too, then verify every expected service is
 // advertised and approved before reporting success. The returned warnings
@@ -206,6 +207,15 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 	settings.Tag = settings.normalizeTag()
+	mode, err := n.tailscale.effectiveMode(ctx, settings.Mode)
+	if err != nil {
+		return nil, err
+	}
+	if mode == TailscaleModeHost {
+		if err := validateHostModePreflight(ctx, tailscaleAPIBaseURL, NewHostTailscaleDaemon(), settings); err != nil {
+			return nil, err
+		}
+	}
 	if err := validateTailscaleCredentials(ctx, settings); err != nil {
 		return nil, err
 	}
