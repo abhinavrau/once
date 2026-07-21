@@ -165,8 +165,12 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 	}
 	for _, s := range report.Services {
 		fmt.Printf("%s\t%s\t%s\n", s.Name, s.URL, s.State)
-		if s.FunnelURL != "" {
-			fmt.Printf("\tFunnel: %s\n", s.FunnelURL)
+		if s.FunnelExpiresAt != nil {
+			funnel := s.FunnelURL
+			if funnel == "" {
+				funnel = "public (URL not known yet; re-run in a moment)"
+			}
+			fmt.Printf("\tFunnel: %s (expires %s)\n", funnel, s.FunnelExpiresAt.Format(time.RFC3339))
 		}
 	}
 	return nil
@@ -214,14 +218,17 @@ func (t *tailscaleCommand) statusReport(ctx context.Context, ns *docker.Namespac
 		statuses = append(statuses, docker.ServiceStatus{Name: name, URL: settings.TailnetURL(name), State: "not running"})
 	}
 
-	funnelURLs := map[string]string{}
+	funnelApps := map[string]*docker.Application{}
 	for _, app := range ns.Applications() {
-		if url := settings.FunnelURL(app.Settings.ActiveFunnelPort()); url != "" {
-			funnelURLs[app.Settings.Host] = url
+		if app.Settings.FunnelEnabled() {
+			funnelApps[app.Settings.Host] = app
 		}
 	}
 	for i, s := range statuses {
-		statuses[i].FunnelURL = funnelURLs[s.Name]
+		if app := funnelApps[s.Name]; app != nil {
+			statuses[i].FunnelURL = settings.FunnelURL(app.Settings.ActiveFunnelPort())
+			statuses[i].FunnelExpiresAt = app.Settings.FunnelExpiresAt
+		}
 	}
 
 	report.Services = statuses

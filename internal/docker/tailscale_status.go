@@ -4,16 +4,19 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 )
 
 // ServiceStatus is one row of `once tailscale status`: a service's tailnet
-// URL and its advertised/approved state rendered for display. FunnelURL is set
-// only while the service has an active Funnel, giving its public address.
+// URL and its advertised/approved state rendered for display. FunnelURL and
+// FunnelExpiresAt are set only while the service has an active Funnel, giving
+// its public address and when that access closes.
 type ServiceStatus struct {
-	Name      string `json:"name"`
-	URL       string `json:"url"`
-	State     string `json:"state"`
-	FunnelURL string `json:"funnelURL,omitempty"`
+	Name            string     `json:"name"`
+	URL             string     `json:"url"`
+	State           string     `json:"state"`
+	FunnelURL       string     `json:"funnelURL,omitempty"`
+	FunnelExpiresAt *time.Time `json:"funnelExpiresAt,omitempty"`
 }
 
 // ServiceStatuses reports each named service's current state: advertised
