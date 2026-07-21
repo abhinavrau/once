@@ -27,7 +27,9 @@ const (
 	trafficErrorPct   = 5
 )
 
-const tailnetRowCount = 2
+// tailnetBaseRowCount is the Tailnet URL + Funnel Status rows; an active
+// Funnel with a known URL adds one more (see tailnetRowCount).
+const tailnetBaseRowCount = 2
 
 type DashboardPanel struct {
 	app              docker.Application
@@ -36,6 +38,7 @@ type DashboardPanel struct {
 	userStats        *userstats.Reader
 	tailscaleEnabled bool
 	tailnetURL       string
+	funnelURL        string
 }
 
 func NewDashboardPanel(app *docker.Application, scraper *metrics.MetricsScraper, dockerScraper *docker.Scraper, userStats *userstats.Reader) DashboardPanel {
@@ -95,7 +98,7 @@ func (p DashboardPanel) View(selected bool, toggling bool, showDetails bool, wid
 	if !detailed {
 		height = StoppedPanelHeight
 	} else if p.showsTailnet() {
-		height += tailnetRowCount
+		height += p.tailnetRowCount()
 	}
 
 	bodyStyle := lipgloss.NewStyle().
@@ -123,7 +126,7 @@ func (p DashboardPanel) Height(showDetails bool) int {
 	if showDetails && p.app.Running {
 		bodyHeight = PanelHeight
 		if p.showsTailnet() {
-			bodyHeight += tailnetRowCount
+			bodyHeight += p.tailnetRowCount()
 		}
 	}
 	return bodyHeight + 2 // top + bottom transition lines
@@ -135,6 +138,15 @@ func (p DashboardPanel) Height(showDetails bool) int {
 // surface: Tailscale is enabled globally and the app is tailnet-exposed.
 func (p DashboardPanel) showsTailnet() bool {
 	return p.tailscaleEnabled && p.app.Settings.Exposure == docker.ExposureTailnet
+}
+
+// tailnetRowCount is the number of detail rows renderTailnetRows emits: the
+// two base rows plus a Funnel URL row when an active Funnel's URL is known.
+func (p DashboardPanel) tailnetRowCount() int {
+	if p.funnelURL != "" {
+		return tailnetBaseRowCount + 1
+	}
+	return tailnetBaseRowCount
 }
 
 func (p DashboardPanel) renderTailnetRows() string {
@@ -149,10 +161,14 @@ func (p DashboardPanel) renderTailnetRows() string {
 		tailnet = "registering…"
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	rows := []string{
 		row("Tailnet URL", tailnet),
 		row("Funnel Status", funnelStatusText(p.app.Settings.FunnelExpiresAt, time.Now())),
-	)
+	}
+	if p.funnelURL != "" {
+		rows = append(rows, row("Funnel URL", p.funnelURL))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 func (p DashboardPanel) renderHealthBadge(cards [3]MetricCard) string {

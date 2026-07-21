@@ -21,11 +21,13 @@ const (
 	DeployStageDownloading DeployStage = iota
 	DeployStageStarting
 	DeployStageFinished
+	DeployStageWaiting
 )
 
 type DeployProgress struct {
 	Stage      DeployStage
 	Percentage int
+	Status     string // human-readable description for DeployStageWaiting
 }
 
 type DeployProgressCallback func(DeployProgress)

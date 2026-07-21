@@ -2,8 +2,11 @@ package docker
 
 import (
 	"context"
+	"net"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,10 +37,32 @@ func TestEnableTailscaleFailsFastWithoutDaemon(t *testing.T) {
 
 	// The daemon precondition must run before any Docker work; a nil client would
 	// panic in EnsureNetwork/tailscale.Enable if the check were reordered below it.
-	_, err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+	_, err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "once-admin socket")
+}
+
+func TestEnableTailscaleHostModePreflightBeforeProbeAndContainers(t *testing.T) {
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+	ln, err := net.Listen("unix", AdminSocketPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+	require.NoError(t, os.WriteFile(AdminNginxConfPath(), []byte(AdminNginxConfig()), 0o644))
+	t.Setenv("ONCE_TAILSCALED_DIR", t.TempDir())
+
+	ns := &Namespace{name: "test"}
+	ns.admin = NewAdmin(ns)
+
+	// With no host socket, --mode host must fail on the pre-flight before the
+	// credential probe (the error is the socket one, not a credentials one) and
+	// before any Docker work (a nil client would panic past that point).
+	_, err = ns.EnableTailscale(context.Background(),
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeHost}, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), tailscaledSocketFile)
+	assert.Contains(t, err.Error(), "--mode sidecar")
 }
 
 func TestApplicationLookup(t *testing.T) {
@@ -67,6 +92,75 @@ func TestApplicationByHost(t *testing.T) {
 	assert.Equal(t, "app2", app.Settings.Name)
 
 	assert.Nil(t, ns.ApplicationByHost("missing.localhost"))
+}
+
+func TestApplicationByNameOrHost(t *testing.T) {
+	ns := &Namespace{name: "once"}
+	ns.applications = append(ns.applications,
+		NewApplication(ns, ApplicationSettings{Name: "once-campfire-73baaa", Host: "once-campfire", Exposure: ExposureTailnet}),
+		NewApplication(ns, ApplicationSettings{Name: "once-campfire", Host: "other.localhost"}),
+	)
+
+	app := ns.ApplicationByNameOrHost("once-campfire-73baaa")
+	require.NotNil(t, app)
+	assert.Equal(t, "once-campfire-73baaa", app.Settings.Name)
+
+	// name match wins over another app's host
+	app = ns.ApplicationByNameOrHost("once-campfire")
+	require.NotNil(t, app)
+	assert.Equal(t, "once-campfire", app.Settings.Name)
+
+	ns.applications = ns.applications[:1]
+	app = ns.ApplicationByNameOrHost("once-campfire")
+	require.NotNil(t, app)
+	assert.Equal(t, "once-campfire-73baaa", app.Settings.Name)
+
+	assert.Nil(t, ns.ApplicationByNameOrHost("missing"))
+}
+
+func TestAllocateFunnelPort(t *testing.T) {
+	ns := &Namespace{name: "once"}
+	newApp := func(name string) *Application {
+		app := NewApplication(ns, ApplicationSettings{Name: name, Host: name, Exposure: ExposureTailnet})
+		ns.applications = append(ns.applications, app)
+		return app
+	}
+	activate := func(app *Application) int {
+		t.Helper()
+		port, err := ns.allocateFunnelPort(app)
+		require.NoError(t, err)
+		expires := time.Now().Add(time.Hour)
+		app.Settings.FunnelExpiresAt = &expires
+		app.Settings.FunnelPort = port
+		return port
+	}
+
+	campfire, fizzy, writebook := newApp("campfire"), newApp("fizzy"), newApp("writebook")
+
+	// Concurrent funnels each get their own public port instead of colliding
+	// on the node's single 443 endpoint.
+	assert.Equal(t, 443, activate(campfire))
+	assert.Equal(t, 8443, activate(fizzy))
+	assert.Equal(t, 10000, activate(writebook))
+
+	// A re-enable keeps the app's live port; a fourth concurrent funnel is
+	// rejected rather than colliding.
+	port, err := ns.allocateFunnelPort(fizzy)
+	require.NoError(t, err)
+	assert.Equal(t, 8443, port)
+	_, err = ns.allocateFunnelPort(newApp("fourth"))
+	assert.ErrorIs(t, err, ErrFunnelPortsExhausted)
+
+	// A pre-allocation label (funnel active, no port recorded) holds 443.
+	ns2 := &Namespace{name: "once"}
+	legacy := NewApplication(ns2, ApplicationSettings{Name: "legacy", Host: "legacy", Exposure: ExposureTailnet})
+	expires := time.Now().Add(time.Hour)
+	legacy.Settings.FunnelExpiresAt = &expires
+	next := NewApplication(ns2, ApplicationSettings{Name: "next", Host: "next", Exposure: ExposureTailnet})
+	ns2.applications = append(ns2.applications, legacy, next)
+	port, err = ns2.allocateFunnelPort(next)
+	require.NoError(t, err)
+	assert.Equal(t, 8443, port)
 }
 
 func TestHostInUse(t *testing.T) {

@@ -2,7 +2,9 @@ package docker
 
 import (
 	"encoding/json"
+	"reflect"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -37,6 +39,11 @@ type BackupSettings struct {
 	AutoBackup bool   `json:"autoBackup,omitempty"`
 }
 
+// removedSettingsFields are label fields older versions of Once wrote that no
+// longer exist. They are shed on rewrite, unlike unknown fields from newer
+// versions, which are preserved.
+var removedSettingsFields = []string{"tailscaleExcluded"}
+
 type ApplicationSettings struct {
 	Name       string             `json:"name"`
 	Image      string             `json:"image"`
@@ -52,21 +59,51 @@ type ApplicationSettings struct {
 	// Funnel until this time. Written atomically with the tailscale_funnel label
 	// option in the same container recreation, so the two never drift apart.
 	FunnelExpiresAt *time.Time `json:"funnelExpiresAt,omitempty"`
+	// FunnelPort is the public port the Funnel serves on (443, 8443, or 10000).
+	// Funnel is per-node with one endpoint per public port, so distinct ports
+	// are what let multiple apps' Funnels coexist. Zero means 443 (labels
+	// written before ports were allocated).
+	FunnelPort int `json:"funnelPort,omitempty"`
+
+	// extra preserves label fields written by a newer version of Once, so a
+	// binary that predates a field doesn't destroy it when it rewrites the
+	// label on a container roll (as older daemons once did to "exposure").
+	extra map[string]json.RawMessage
 }
 
 func UnmarshalApplicationSettings(s string) (ApplicationSettings, error) {
 	var settings ApplicationSettings
 	err := json.Unmarshal([]byte(s), &settings)
+	if err != nil {
+		return settings, err
+	}
+	settings.extra = unknownFields([]byte(s), reflect.TypeOf(settings))
+	for _, removed := range removedSettingsFields {
+		delete(settings.extra, removed)
+	}
 	// Backfill apps deployed before the exposure field existed; the derived
 	// value is persisted to the label the next time the container is recreated.
-	if err == nil && settings.Exposure == "" {
+	if settings.Exposure == "" {
 		settings.Exposure = ExposureForHost(settings.Host)
 	}
-	return settings, err
+	return settings, nil
 }
 
 func (s ApplicationSettings) Marshal() string {
 	b, _ := json.Marshal(s)
+	if len(s.extra) == 0 {
+		return string(b)
+	}
+	var merged map[string]json.RawMessage
+	if json.Unmarshal(b, &merged) != nil {
+		return string(b)
+	}
+	for k, v := range s.extra {
+		if _, known := merged[k]; !known {
+			merged[k] = v
+		}
+	}
+	b, _ = json.Marshal(merged)
 	return string(b)
 }
 
@@ -86,6 +123,18 @@ func (s ApplicationSettings) TLSEnabled() bool {
 
 func (s ApplicationSettings) FunnelEnabled() bool {
 	return s.FunnelExpiresAt != nil
+}
+
+// ActiveFunnelPort returns the public port an active Funnel serves on, or 0
+// when no Funnel is active.
+func (s ApplicationSettings) ActiveFunnelPort() int {
+	if s.FunnelExpiresAt == nil {
+		return 0
+	}
+	if s.FunnelPort == 0 {
+		return 443
+	}
+	return s.FunnelPort
 }
 
 // FunnelExpired reports whether a set Funnel expiry has passed, so the daemon
@@ -114,6 +163,9 @@ func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 		return false
 	}
 	if !funnelExpiryEqual(s.FunnelExpiresAt, other.FunnelExpiresAt) {
+		return false
+	}
+	if s.FunnelPort != other.FunnelPort {
 		return false
 	}
 	if len(s.EnvVars) != len(other.EnvVars) {
@@ -152,6 +204,27 @@ func (s ApplicationSettings) BuildEnv(vol ApplicationVolumeSettings) []string {
 }
 
 // Helpers
+
+// unknownFields returns the JSON object fields of data that no exported field
+// of struct type t claims via its json tag - the fields a newer version of
+// Once wrote that this binary doesn't model.
+func unknownFields(data []byte, t reflect.Type) map[string]json.RawMessage {
+	var all map[string]json.RawMessage
+	if json.Unmarshal(data, &all) != nil {
+		return nil
+	}
+	for _, f := range reflect.VisibleFields(t) {
+		tag, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if tag == "" {
+			tag = f.Name
+		}
+		delete(all, tag)
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	return all
+}
 
 func funnelExpiryEqual(a, b *time.Time) bool {
 	if a == nil || b == nil {

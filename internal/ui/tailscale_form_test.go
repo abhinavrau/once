@@ -2,24 +2,88 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/basecamp/once/internal/docker"
 )
 
-func TestTailscaleForm_EnableFormShowsBootstrapFieldsWithPrefilledTag(t *testing.T) {
+func TestTailscaleForm_EnableFormShowsCredentialFieldsWithPrefilledTag(t *testing.T) {
 	m := NewTailscaleForm(newTestNamespace())
 
-	assert.Equal(t, 3, m.form.ItemCount())
+	assert.Equal(t, 4, m.form.ItemCount())
 	assert.Equal(t, "tag:once", m.form.TextField(tailscaleTagField).Value())
+	assert.Equal(t, 0, m.form.RadioField(tailscaleModeField).Selected(), "sidecar should be preselected on a fresh enable")
 
 	view := m.View()
-	assert.Contains(t, view, "Bootstrap Client ID")
-	assert.Contains(t, view, "Bootstrap Client Secret")
+	assert.Contains(t, view, "Client ID")
+	assert.Contains(t, view, "Client Secret")
+	assert.Contains(t, view, "(•) Sidecar")
 	assert.Contains(t, view, "Enable")
+	assert.Contains(t, view, "copy policy snippet")
+}
+
+func TestTailscaleForm_EnabledFormShowsStoredSettingsWithBothActions(t *testing.T) {
+	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{
+		ClientID:     "K123456CNTRL",
+		ClientSecret: "tskey-client-secret",
+		Tag:          "tag:custom",
+		Mode:         docker.TailscaleModeHost,
+	})
+
+	assert.Equal(t, "K123456CNTRL", m.form.TextField(tailscaleClientIDField).Value())
+	assert.Equal(t, "tskey-client-secret", m.form.TextField(tailscaleClientSecretField).Value())
+	assert.Equal(t, "tag:custom", m.form.TextField(tailscaleTagField).Value())
+	assert.Equal(t, 1, m.form.RadioField(tailscaleModeField).Selected(), "stored host mode should preselect Host")
+
+	view := m.View()
+	assert.Contains(t, view, "Tailscale is enabled")
+	assert.Contains(t, view, "(•) Host")
+	assert.Contains(t, view, "Enable")
+	assert.Contains(t, view, "Disable")
+	assert.NotContains(t, view, "tskey-client-secret", "the stored secret must stay masked")
+}
+
+func TestTailscaleForm_EnabledFormSubmitReenablesWithEditedMode(t *testing.T) {
+	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{
+		ClientID:     "id",
+		ClientSecret: "secret",
+		Tag:          "tag:once",
+		Mode:         docker.TailscaleModeSidecar,
+	})
+	m.form.RadioField(tailscaleModeField).SetSelected(1)
+
+	msg := submitAfterTabs(t, m.form, m.form.ItemCount())
+	assert.Equal(t, tailscaleEnableSubmitMsg{id: "id", secret: "secret", tag: "tag:once", mode: docker.TailscaleModeHost}, msg)
+}
+
+func TestTailscaleForm_EnabledFormDisableActionWorksWithEmptySeamSettings(t *testing.T) {
+	// Under the headscale control seam no credentials or tag are stored; the
+	// fields must not be required, or neither action could ever submit.
+	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{Mode: docker.TailscaleModeSidecar})
+
+	msg := submitAfterTabs(t, m.form, m.form.ItemCount()+1) // fields, Enable, → Disable action
+	assert.IsType(t, tailscaleDisableSubmitMsg{}, msg)
+}
+
+func TestTailscaleForm_SubmitCarriesSelectedMode(t *testing.T) {
+	submitMode := func(selected int) string {
+		m := NewTailscaleForm(newTestNamespace())
+		m.form.TextField(tailscaleClientIDField).SetValue("id")
+		m.form.TextField(tailscaleClientSecretField).SetValue("secret")
+		m.form.RadioField(tailscaleModeField).SetSelected(selected)
+
+		msg, ok := submitAfterTabs(t, m.form, m.form.ItemCount()).(tailscaleEnableSubmitMsg)
+		require.True(t, ok)
+		return msg.mode
+	}
+
+	assert.Equal(t, docker.TailscaleModeSidecar, submitMode(0))
+	assert.Equal(t, docker.TailscaleModeHost, submitMode(1))
 }
 
 func TestTailscaleForm_EnableSubmitRunsInBackground(t *testing.T) {
@@ -29,96 +93,78 @@ func TestTailscaleForm_EnableSubmitRunsInBackground(t *testing.T) {
 
 	got := c.(TailscaleForm)
 	assert.True(t, got.running)
-	assert.Equal(t, "tag:once", got.tag)
 	assert.NotNil(t, cmd)
 }
 
-func TestTailscaleForm_ConsentShowsDiffWithApplyAndDecline(t *testing.T) {
+func TestTailscaleForm_StatusShowsWhileRunningAndKeepsListening(t *testing.T) {
 	m := NewTailscaleForm(newTestNamespace())
 	m.running = true
+	m.statusChan = make(chan string, 1)
 
-	c, _ := m.Update(tailscaleConsentMsg{policyClientID: "k123", update: &docker.PolicyUpdate{}})
+	c, cmd := m.Update(tailscaleStatusMsg("waiting up to 1m30s for the tailnet to approve: whoami"))
 
 	got := c.(TailscaleForm)
-	assert.Equal(t, tailscaleFormStateConsent, got.state)
-	assert.False(t, got.running)
+	assert.Contains(t, got.View(), "waiting up to 1m30s")
+	require.NotNil(t, cmd, "the form must keep listening for the next status")
 
-	view := got.View()
-	assert.Contains(t, view, "GitOps")
-	assert.Contains(t, view, "Apply")
-	assert.Contains(t, view, "Decline")
+	got.statusChan <- "next status"
+	assert.Equal(t, tailscaleStatusMsg("next status"), cmd())
+
+	// The channel closing (task finished) ends the relay without a message.
+	close(got.statusChan)
+	_, cmd = got.Update(tailscaleStatusMsg("late status"))
+	assert.Nil(t, cmd())
 }
 
-func TestTailscaleForm_DeclineShowsCopyableSnippetWithoutWriting(t *testing.T) {
+func TestTailscaleForm_CopyKeyCopiesSnippetForEnteredTag(t *testing.T) {
 	m := NewTailscaleForm(newTestNamespace())
-	m.tag = "tag:once"
-	c, _ := m.Update(tailscaleConsentMsg{policyClientID: "k123", update: &docker.PolicyUpdate{}})
-	m = c.(TailscaleForm)
 
-	c, _ = m.Update(tailscaleDeclineMsg{})
-
-	got := c.(TailscaleForm)
-	assert.Equal(t, tailscaleFormStateSnippet, got.state)
-	assert.Empty(t, got.policyClientID, "the one-shot policy client should be revoked and forgotten")
-
-	view := got.View()
-	assert.Contains(t, view, "tagOwners")
-	assert.Contains(t, view, "tag:once")
-	assert.Contains(t, view, "Continue")
-
-	// The snippet view offers clipboard copy.
-	_, cmd := got.Update(keyPressMsg("c"))
+	_, cmd := m.Update(keyPressMsg("ctrl+p"))
 	assert.NotNil(t, cmd)
 }
 
-func TestTailscaleForm_PolicyStepFailureFallsBackToSnippet(t *testing.T) {
+func TestTailscaleForm_FinishedErrorStaysOpen(t *testing.T) {
 	m := NewTailscaleForm(newTestNamespace())
 	m.running = true
-	m.tag = "tag:once"
-
-	c, _ := m.Update(tailscaleSnippetMsg{note: "Could not plan the policy update: boom"})
-
-	got := c.(TailscaleForm)
-	assert.Equal(t, tailscaleFormStateSnippet, got.state)
-	view := got.View()
-	assert.Contains(t, view, "boom")
-	assert.Contains(t, view, "tagOwners")
-}
-
-func TestTailscaleForm_RevokeFailureIsSurfaced(t *testing.T) {
-	m := NewTailscaleForm(newTestNamespace())
-	m.tag = "tag:once"
-	c, _ := m.Update(tailscaleDeclineMsg{})
-	m = c.(TailscaleForm)
-
-	c, _ = m.Update(tailscalePolicyRevokeFailedMsg{err: errors.New("HTTP 500")})
-
-	got := c.(TailscaleForm)
-	assert.Contains(t, got.View(), "Could not delete the one-shot policy OAuth client")
-}
-
-func TestTailscaleForm_FinishedErrorReturnsToSetup(t *testing.T) {
-	m := NewTailscaleForm(newTestNamespace())
-	m.running = true
-	m.state = tailscaleFormStateSnippet
 
 	c, _ := m.Update(tailscaleFormFinishedMsg{err: errors.New("probe failed")})
 
 	got := c.(TailscaleForm)
 	require.Error(t, got.err)
-	assert.Equal(t, tailscaleFormStateSetup, got.state)
 	assert.False(t, got.running)
 	assert.Contains(t, got.View(), "probe failed")
 }
 
-func TestTailscaleForm_CloseRequestCleansUpPolicyClient(t *testing.T) {
+func TestTailscaleForm_TagPolicyErrorPointsAtSnippet(t *testing.T) {
 	m := NewTailscaleForm(newTestNamespace())
-	c, _ := m.Update(tailscaleConsentMsg{policyClientID: "k123", update: &docker.PolicyUpdate{}})
-	m = c.(TailscaleForm)
+	m.running = true
 
-	c, cmd := m.Update(tailscaleCloseRequestMsg{})
+	c, _ := m.Update(tailscaleFormFinishedMsg{err: fmt.Errorf("probe: %w", docker.ErrTagNotInPolicy)})
 
 	got := c.(TailscaleForm)
-	assert.Empty(t, got.policyClientID)
-	assert.NotNil(t, cmd)
+	assert.Contains(t, got.View(), "ctrl+p copies the required policy snippet")
+}
+
+func TestTailscaleForm_FinishedSuccessCloses(t *testing.T) {
+	m := NewTailscaleForm(newTestNamespace())
+	m.running = true
+
+	_, cmd := m.Update(tailscaleFormFinishedMsg{})
+
+	require.NotNil(t, cmd)
+	assert.IsType(t, TailscaleFormCloseMsg{}, cmd())
+}
+
+// Helpers
+
+// submitAfterTabs tabs through the form and presses enter, returning the
+// message the landed-on button emits.
+func submitAfterTabs(t *testing.T, f Form, tabs int) tea.Msg {
+	t.Helper()
+	for range tabs {
+		f, _ = f.Update(keyPressMsg("tab"))
+	}
+	_, cmd := f.Update(keyPressMsg("enter"))
+	require.NotNil(t, cmd)
+	return cmd()
 }

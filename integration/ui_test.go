@@ -64,10 +64,10 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.send(keyMsg("tab"))   // → Host
 	d.send(keyMsg("tab"))   // → Install
 	d.send(keyMsg("enter"))
-	d.waitForView("Bootstrap Client ID", 5*time.Second)
+	d.waitForView("Client ID", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "Bootstrap Client ID")
+		return !strings.Contains(d.viewContent(), "Client ID")
 	}, 5*time.Second)
 
 	// Back on the form with focus still on Install: wrap around to the
@@ -117,8 +117,9 @@ func TestUIInstallAndManageApp(t *testing.T) {
 // credentials, submit, and assert it ran the same enable lifecycle the CLI uses
 // - the once-tailscale sidecar and once-docktail boot, the deployed local app
 // stays off the tailnet, and once-admin comes up. It also
-// checks esc dismissal and that re-opening the form offers disable once
-// Tailscale is enabled.
+// checks esc dismissal and that re-opening the form shows the stored settings
+// editable once Tailscale is enabled: a re-enable into host mode surfaces the
+// pre-flight error, and an unchanged resubmit is an idempotent no-op.
 func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -135,7 +136,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 
 	cp := newControlPlane(t, ctx, ns)
 	useControlSeam(t, ctx, cp)
-	forceSidecarMode(t)
+	hideHostTailscaled(t)
 
 	// Enable boots once-admin, which bind-mounts the daemon's Unix socket; run the
 	// admin server in-process and wait for the socket so Boot doesn't fail.
@@ -162,22 +163,23 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 
 	// -- esc dismisses the overlay --
 	d.send(keyMsg("t"))
-	d.waitForView("Bootstrap Client ID", 5*time.Second)
+	d.waitForView("Client ID", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "Bootstrap Client ID")
+		return !strings.Contains(d.viewContent(), "Client ID")
 	}, 5*time.Second)
 
 	// -- open the form and enable Tailscale --
-	// The bootstrap fields are focused in tab order; the tag is prefilled with
+	// The credential fields are focused in tab order; the tag is prefilled with
 	// tag:once. Under the control seam the credentials are unused: enable skips
-	// SaaS OAuth (and with it the policy consent flow) and boots directly.
+	// SaaS OAuth (and with it the credential probe) and boots directly.
 	d.send(keyMsg("t"))
-	d.waitForView("Bootstrap Client ID", 5*time.Second)
+	d.waitForView("Client ID", 5*time.Second)
 	d.typeText("unused-with-control-seam")
-	d.send(keyMsg("tab")) // → Bootstrap Client Secret
+	d.send(keyMsg("tab")) // → Client Secret
 	d.typeText("unused-with-control-seam")
 	d.send(keyMsg("tab"))   // → Tag (keep the tag:once prefill)
+	d.send(keyMsg("tab"))   // → Mode (keep the sidecar default)
 	d.send(keyMsg("tab"))   // → Enable
 	d.send(keyMsg("enter")) // submit
 
@@ -192,7 +194,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 
 	// The Docktail topology booted, the sidecar joined the control plane, and
 	// the retrofitted app carries the service labels.
-	_, err = cli.ContainerInspect(ctx, ns.Name()+"-docktail")
+	docktailBefore, err := cli.ContainerInspect(ctx, ns.Name()+"-docktail")
 	require.NoError(t, err, "once-docktail should be running after enabling via the form")
 
 	sidecarName := ns.Name() + "-tailscale"
@@ -208,15 +210,38 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
 	require.NoError(t, err, "once-admin should be running after enabling via the form")
 
-	// -- re-opening the form offers disable (the bootstrap credential is never
-	// stored, so there is nothing to pre-populate) --
+	// -- re-opening the form shows the stored settings, editable, with Disable
+	// as the secondary action --
 	d.send(keyMsg("t"))
 	d.waitForView("Tailscale is enabled", 5*time.Second)
-	assert.Contains(t, d.viewContent(), "Disable", "the overlay should offer disable when Tailscale is enabled")
-	d.send(keyMsg("esc"))
+	overlay := d.viewContent()
+	assert.Contains(t, overlay, "Disable", "disable should stay reachable on the enabled overlay")
+	assert.Contains(t, overlay, "Client ID", "the enabled overlay should show the settings fields")
+	assert.Contains(t, overlay, "(•) Sidecar", "the stored mode should pre-populate the mode selector")
+
+	// -- re-enabling into host mode fails the pre-flight fast (the host
+	// tailscaled is hidden) and surfaces the error in the form --
+	d.send(keyMsg("tab"))   // → Client Secret
+	d.send(keyMsg("tab"))   // → Tag
+	d.send(keyMsg("tab"))   // → Mode
+	d.send(keyMsg("space")) // Sidecar → Host
+	d.send(keyMsg("tab"))   // → Enable
+	d.send(keyMsg("enter")) // submit
+	d.waitForView("host mode needs a running tailscaled", 30*time.Second)
+
+	// -- flipping back to sidecar and resubmitting unchanged settings is an
+	// idempotent no-op that closes the form without rebuilding the topology --
+	d.send(keyMsg("shift+tab")) // → Mode
+	d.send(keyMsg("space"))     // Host → Sidecar
+	d.send(keyMsg("tab"))       // → Enable
+	d.send(keyMsg("enter"))     // submit
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "Tailscale is enabled")
-	}, 5*time.Second)
+		return !strings.Contains(d.viewContent(), "close")
+	}, 3*time.Minute)
+
+	docktailAfter, err := cli.ContainerInspect(ctx, ns.Name()+"-docktail")
+	require.NoError(t, err)
+	assert.Equal(t, docktailBefore.ID, docktailAfter.ID, "an unchanged re-enable must not rebuild once-docktail")
 
 	// -- with Tailscale enabled, a TUI install preselects tailnet with the
 	// name-derived service name, and installing advertises the app --

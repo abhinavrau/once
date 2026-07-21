@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -135,6 +136,30 @@ func TestExposureMarshalRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ExposureLocal, restored.Exposure)
 	assert.True(t, original.Equal(restored))
+}
+
+func TestMarshalPreservesUnknownFields(t *testing.T) {
+	// A label written by a newer version of Once carries fields this binary's
+	// struct doesn't have (as "exposure" once was to older binaries). Rolling
+	// the container must write them back, not destroy them.
+	label := `{"name":"app","image":"img:latest","host":"app.localhost","futureSetting":{"nested":true},"futureFlag":"on"}`
+
+	settings, err := UnmarshalApplicationSettings(label)
+	require.NoError(t, err)
+
+	settings.AutoUpdate = true
+	out := settings.Marshal()
+	assert.Contains(t, out, `"futureSetting":{"nested":true}`)
+	assert.Contains(t, out, `"futureFlag":"on"`)
+	assert.Contains(t, out, `"autoUpdate":true`)
+
+	// The preserved fields survive a second round trip unchanged.
+	again, err := UnmarshalApplicationSettings(out)
+	require.NoError(t, err)
+	assert.Contains(t, again.Marshal(), `"futureSetting":{"nested":true}`)
+
+	// Known fields never duplicate or leak into the preserved set.
+	assert.Equal(t, 1, strings.Count(out, `"name"`))
 }
 
 func TestExposureEqualDiffers(t *testing.T) {

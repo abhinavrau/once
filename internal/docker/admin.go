@@ -110,7 +110,7 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 	resp, err := a.namespace.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:  adminImage,
-			Labels: docktailLabels("once-admin", a.namespace.name, true, false),
+			Labels: docktailLabels("once-admin", a.namespace.name, true, 0),
 		},
 		&container.HostConfig{
 			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyAlways},

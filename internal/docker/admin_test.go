@@ -65,7 +65,7 @@ func TestRequireDaemonErrorsWhenConfigAbsent(t *testing.T) {
 }
 
 func TestAdminCarriesDocktailLabels(t *testing.T) {
-	labels := docktailLabels("once-admin", "once", true, false)
+	labels := docktailLabels("once-admin", "once", true, 0)
 
 	assert.Equal(t, "true", labels["docktail.service.enable"])
 	assert.Equal(t, "once-admin", labels["docktail.service.name"])

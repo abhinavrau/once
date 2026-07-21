@@ -26,7 +26,7 @@ const (
 // endpoints are Tailscale SaaS only, and even local advertisement cannot
 // succeed because `tailscale serve --service --https` needs the control
 // plane's HTTPS cert machinery, which headscale lacks.
-func (t *Tailscale) VerifyServices(ctx context.Context, expected []string) error {
+func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progress DeployProgressCallback) error {
 	if len(expected) == 0 || controlSeamActive() {
 		return nil
 	}
@@ -36,10 +36,15 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string) error
 		return err
 	}
 
-	if err := waitForAdvertised(ctx, t.daemonFor(settings.Mode), expected, serviceVerifyTimeout, serviceVerifyPoll); err != nil {
+	announce := func(line string) {
+		if progress != nil {
+			progress(DeployProgress{Stage: DeployStageWaiting, Status: line})
+		}
+	}
+	if err := waitForAdvertised(ctx, t.daemonFor(settings.Mode), expected, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
 		return err
 	}
-	return waitForApproved(ctx, tailscaleAPIBaseURL, settings, expected, serviceVerifyTimeout, serviceVerifyPoll)
+	return waitForApproved(ctx, tailscaleAPIBaseURL, settings, expected, serviceVerifyTimeout, serviceVerifyPoll, announce)
 }
 
 // Helpers
@@ -47,7 +52,10 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string) error
 // waitForAdvertised polls the local daemon's serve status until every expected
 // service is advertised, or fails at timeout: with the daemon's error if it
 // couldn't be read, else naming the services still missing.
-func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []string, timeout, poll time.Duration) error {
+func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []string, timeout, poll time.Duration, announce func(string)) error {
+	if announce != nil {
+		announce(fmt.Sprintf("waiting up to %s for the local tailscaled to advertise: %s", timeout, strings.Join(expected, ", ")))
+	}
 	deadline := time.Now().Add(timeout)
 	missing := expected
 	for {
@@ -76,10 +84,13 @@ func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []s
 // Docktail uses) until every expected service has an approved advertising
 // host. A host stuck at not-approved fails immediately: approval needs a
 // human or an autoApprovers rule, so waiting cannot fix it.
-func waitForApproved(ctx context.Context, baseURL string, settings TailscaleSettings, expected []string, timeout, poll time.Duration) error {
+func waitForApproved(ctx context.Context, baseURL string, settings TailscaleSettings, expected []string, timeout, poll time.Duration, announce func(string)) error {
 	token, err := tailscaleOAuthToken(ctx, baseURL, settings.ClientID, settings.ClientSecret)
 	if err != nil {
 		return err
+	}
+	if announce != nil {
+		announce(fmt.Sprintf("waiting up to %s for the tailnet to approve: %s", timeout, strings.Join(expected, ", ")))
 	}
 
 	deadline := time.Now().Add(timeout)

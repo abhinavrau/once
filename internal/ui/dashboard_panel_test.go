@@ -159,7 +159,7 @@ func TestDashboardPanelHeightGrowsWithTailnetRows(t *testing.T) {
 	panel.tailscaleEnabled = true
 	panel.app.Settings.Exposure = docker.ExposureTailnet
 
-	assert.Equal(t, PanelHeight+tailnetRowCount+2, panel.Height(true))
+	assert.Equal(t, PanelHeight+tailnetBaseRowCount+2, panel.Height(true))
 	// Collapsed details never show tailnet rows.
 	assert.Equal(t, StoppedPanelHeight+2, panel.Height(false))
 }
@@ -173,6 +173,21 @@ func TestDashboardPanelShowsActiveFunnel(t *testing.T) {
 
 	view := ansi.Strip(panel.View(false, false, true, 120, DashboardScales{}))
 	assert.Contains(t, view, "Active (Expires in")
+}
+
+func TestDashboardPanelShowsFunnelURLRow(t *testing.T) {
+	panel := testPanel(true)
+	panel.tailscaleEnabled = true
+	panel.app.Settings.Exposure = docker.ExposureTailnet
+	expiresAt := time.Now().Add(20 * time.Minute)
+	panel.app.Settings.FunnelExpiresAt = &expiresAt
+	panel.funnelURL = "https://once-tailscale-1.tailnet-name.ts.net:8443"
+
+	view := ansi.Strip(panel.View(false, false, true, 120, DashboardScales{}))
+	assert.Contains(t, view, "Funnel URL")
+	assert.Contains(t, view, "https://once-tailscale-1.tailnet-name.ts.net:8443")
+	// The extra row is accounted for in the panel's reserved height.
+	assert.Equal(t, PanelHeight+tailnetBaseRowCount+1+2, panel.Height(true))
 }
 
 // Helpers

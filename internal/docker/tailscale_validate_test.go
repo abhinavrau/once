@@ -109,11 +109,11 @@ func TestValidateOAuthCredentialsSuccess(t *testing.T) {
 
 	require.NoError(t, validateAgainst(p, "tag:once"))
 
-	// The probe key must match the sidecar auth key Once mints: single-use,
+	// The probe key must match the sidecar auth key Once mints: reusable,
 	// non-ephemeral, preauthorized, tagged.
 	create := p.keyRequest.Capabilities.Devices.Create
 	assert.False(t, create.Ephemeral)
-	assert.False(t, create.Reusable)
+	assert.True(t, create.Reusable)
 	assert.True(t, create.Preauthorized)
 	assert.Equal(t, []string{"tag:once"}, create.Tags)
 	assert.Equal(t, "once-tailscale", p.keyRequest.Description)
@@ -172,10 +172,20 @@ func TestValidateOAuthCredentialsRejectsUnownedTag(t *testing.T) {
 
 	err := validateAgainst(p, "tag:wrong")
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTagNotInPolicy)
 	assert.Contains(t, err.Error(), "tag:wrong")
 	assert.Contains(t, err.Error(), "tagOwners")
 	assert.Contains(t, err.Error(), "invalid or not permitted")
 	assert.NotContains(t, err.Error(), "auth_keys", "an unowned tag must not read as a scope problem")
+}
+
+func TestValidateOAuthCredentialsServerErrorIsNotATagProblem(t *testing.T) {
+	p := newProbeServer(t)
+	p.keyStatus = http.StatusInternalServerError
+
+	err := validateAgainst(p, "tag:once")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrTagNotInPolicy, "a 5xx must not tell the user to edit the tailnet policy")
 }
 
 func TestValidateOAuthCredentialsMissingServicesScope(t *testing.T) {
@@ -196,6 +206,7 @@ func TestValidateOAuthCredentialsRejectsUndefinedServiceTag(t *testing.T) {
 
 	err := validateAgainst(p, "tag:once")
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTagNotInPolicy)
 	assert.Contains(t, err.Error(), "tag:once")
 	assert.Contains(t, err.Error(), "tagOwners")
 	assert.False(t, p.deletedService, "a rejected create leaves nothing to delete")
@@ -259,11 +270,12 @@ func TestMintSidecarAuthKeyMatchesProbeShape(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "tskey-auth-xyz", key)
 
-	// Exactly the shape the probe proved: single-use, non-ephemeral,
+	// Exactly the shape the probe proved: reusable (a restart-always container
+	// must be able to re-auth after dying mid-login), non-ephemeral,
 	// preauthorized, tagged, described as the sidecar.
 	assert.Equal(t, "once-tailscale", p.keyRequest.Description)
 	assert.True(t, p.keyRequest.Capabilities.Devices.Create.Preauthorized)
-	assert.False(t, p.keyRequest.Capabilities.Devices.Create.Reusable)
+	assert.True(t, p.keyRequest.Capabilities.Devices.Create.Reusable)
 	assert.False(t, p.keyRequest.Capabilities.Devices.Create.Ephemeral)
 	assert.Equal(t, []string{"tag:once"}, p.keyRequest.Capabilities.Devices.Create.Tags)
 

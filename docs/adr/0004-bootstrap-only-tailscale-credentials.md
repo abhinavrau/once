@@ -1,5 +1,9 @@
 # Bootstrap-Only Tailscale Credentials
 
+Superseded by ADR-0006: the Tailscale API attenuates minted OAuth client
+scopes to the creator's, so the single-scope bootstrap credential this ADR
+assumed cannot exist.
+
 Enabling Tailscale originally offered two peer modes: a direct mode, where the user hand-created a three-scope runtime OAuth client plus a separate throwaway `policy_file` client just to write the tailnet policy, and a bootstrap mode, where the user supplied one client-minting (`oauth_keys` scope) credential and Once minted the rest itself. Direct mode required two to three admin-console round trips, ordered correctly around a tagOwners chicken-and-egg, with each mis-scoped checkbox a delayed failure.
 
 We decided to support **bootstrap only**. The user creates exactly one OAuth client; `once tailscale enable --client-id ... --client-secret ...` is the whole setup. Once mints the narrowly scoped runtime credential it stores, and a one-shot policy credential it uses to write the required policy sections and then deletes. The bootstrap credential itself is used once and never stored. `--tag` defaults to `tag:once`.

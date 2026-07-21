@@ -18,8 +18,22 @@ func TestWaitForAdvertisedAllServicesPresent(t *testing.T) {
 		ServeJSON: `{"Services":{"svc:whoami":{},"svc:once-admin":{}}}`,
 	}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, time.Second, time.Millisecond)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, time.Second, time.Millisecond, nil)
 	require.NoError(t, err)
+}
+
+func TestWaitForAdvertisedAnnouncesPhaseOnce(t *testing.T) {
+	daemon := &FakeTailscaleDaemon{
+		ServeJSON: `{"Services":{"svc:whoami":{},"svc:once-admin":{}}}`,
+	}
+
+	var lines []string
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, time.Second, time.Millisecond,
+		func(line string) { lines = append(lines, line) })
+	require.NoError(t, err)
+	require.Len(t, lines, 1, "an immediately-resolved wait must announce exactly once")
+	assert.Contains(t, lines[0], "whoami, once-admin")
+	assert.Contains(t, lines[0], "1s", "the announcement must state the time bound")
 }
 
 func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
@@ -27,7 +41,7 @@ func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
 		ServeJSON: `{"Services":{"svc:whoami":{}}}`,
 	}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, 10*time.Millisecond, time.Millisecond)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "once-admin")
 	assert.NotContains(t, err.Error(), "whoami,", "advertised services must not be reported missing")
@@ -37,7 +51,7 @@ func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
 func TestWaitForAdvertisedSurfacesDaemonError(t *testing.T) {
 	daemon := &FakeTailscaleDaemon{ServeErr: errors.New("no tailscaled socket")}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, 10*time.Millisecond, time.Millisecond)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no tailscaled socket")
 	assert.NotContains(t, err.Error(), "not yet advertised", "a daemon failure must not read as services being slow")
@@ -46,7 +60,7 @@ func TestWaitForAdvertisedSurfacesDaemonError(t *testing.T) {
 func TestWaitForAdvertisedEmptyServeConfig(t *testing.T) {
 	daemon := &FakeTailscaleDaemon{ServeJSON: `{}`}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, 10*time.Millisecond, time.Millisecond)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whoami")
 }
@@ -96,10 +110,22 @@ func newApprovalServer(t *testing.T) *approvalServer {
 	return a
 }
 
-func waitForApprovedAgainst(a *approvalServer, expected ...string) error {
+func waitForApprovedAgainst(a *approvalServer, announce func(string), expected ...string) error {
 	return waitForApproved(context.Background(), a.srv.URL,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"},
-		expected, 50*time.Millisecond, time.Millisecond)
+		expected, 50*time.Millisecond, time.Millisecond, announce)
+}
+
+func TestWaitForApprovedAnnouncesPhaseOnce(t *testing.T) {
+	a := newApprovalServer(t)
+	a.hosts["whoami"] = `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`
+
+	var lines []string
+	err := waitForApprovedAgainst(a, func(line string) { lines = append(lines, line) }, "whoami")
+	require.NoError(t, err)
+	require.Len(t, lines, 1, "an immediately-resolved wait must announce exactly once")
+	assert.Contains(t, lines[0], "whoami")
+	assert.Contains(t, lines[0], "50ms", "the announcement must state the time bound")
 }
 
 func TestWaitForApprovedSuccess(t *testing.T) {
@@ -107,7 +133,7 @@ func TestWaitForApprovedSuccess(t *testing.T) {
 	a.hosts["whoami"] = `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`
 	a.hosts["once-admin"] = `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:manual","configured":"ready"}]}`
 
-	require.NoError(t, waitForApprovedAgainst(a, "whoami", "once-admin"))
+	require.NoError(t, waitForApprovedAgainst(a, nil, "whoami", "once-admin"))
 
 	// The devices reads must be byte-compatible with Docktail's listServiceHosts
 	// requests: GET /tailnet/-/services/svc:<name>/devices.
@@ -121,7 +147,7 @@ func TestWaitForApprovedPendingApprovalFailsFast(t *testing.T) {
 	a := newApprovalServer(t)
 	a.hosts["whoami"] = `{"hosts":[{"stableNodeID":"n1","approvalLevel":"not-approved","configured":"ready"}]}`
 
-	err := waitForApprovedAgainst(a, "whoami")
+	err := waitForApprovedAgainst(a, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"whoami"`)
 	assert.Contains(t, err.Error(), "pending approval")
@@ -134,7 +160,7 @@ func TestWaitForApprovedServiceNeverAppears(t *testing.T) {
 	a := newApprovalServer(t)
 	a.hosts["whoami"] = `{"hosts":[]}`
 
-	err := waitForApprovedAgainst(a, "whoami")
+	err := waitForApprovedAgainst(a, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "never appeared in the tailnet: whoami")
 	assert.Greater(t, len(a.devicePaths), 1, "an unknown service is polled until the deadline")
@@ -143,7 +169,7 @@ func TestWaitForApprovedServiceNeverAppears(t *testing.T) {
 func TestWaitForApprovedMissingServiceDefinitionPollsThenFails(t *testing.T) {
 	a := newApprovalServer(t) // no hosts configured: every devices read is a 404
 
-	err := waitForApprovedAgainst(a, "whoami")
+	err := waitForApprovedAgainst(a, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "never appeared in the tailnet: whoami")
 }
@@ -153,7 +179,7 @@ func TestWaitForApprovedSurfacesAPIErrors(t *testing.T) {
 	a.hosts["whoami"] = `{"hosts":[]}`
 	a.statuses["whoami"] = http.StatusForbidden
 
-	err := waitForApprovedAgainst(a, "whoami")
+	err := waitForApprovedAgainst(a, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `service "whoami"`)
 	assert.Contains(t, err.Error(), "boom")
@@ -165,11 +191,11 @@ func TestVerifyServicesSkipsControlSeam(t *testing.T) {
 
 	// Services do not exist on headscale; verification must short-circuit
 	// before touching Docker or any API.
-	err := (&Tailscale{}).VerifyServices(context.Background(), []string{"whoami"})
+	err := (&Tailscale{}).VerifyServices(context.Background(), []string{"whoami"}, nil)
 	require.NoError(t, err)
 }
 
 func TestVerifyServicesNoExpectedServices(t *testing.T) {
-	err := (&Tailscale{}).VerifyServices(context.Background(), nil)
+	err := (&Tailscale{}).VerifyServices(context.Background(), nil, nil)
 	require.NoError(t, err)
 }

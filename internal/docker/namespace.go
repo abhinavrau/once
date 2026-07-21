@@ -132,6 +132,16 @@ func (n *Namespace) ApplicationByHost(host string) *Application {
 	return nil
 }
 
+// ApplicationByNameOrHost resolves a user-supplied identifier: the app's
+// unique name first, falling back to its host (the name `tailscale status`
+// and the proxy route show).
+func (n *Namespace) ApplicationByNameOrHost(nameOrHost string) *Application {
+	if app := n.Application(nameOrHost); app != nil {
+		return app
+	}
+	return n.ApplicationByHost(nameOrHost)
+}
+
 func (n *Namespace) HostInUse(host string) bool {
 	return n.ApplicationByHost(host) != nil
 }
@@ -143,6 +153,31 @@ func (n *Namespace) HostInUseByAnother(host string, excludeApp string) bool {
 		}
 	}
 	return false
+}
+
+// allocateFunnelPort picks the public port for self's Funnel: the port it
+// already holds while active (a re-enable must not move a live URL), else the
+// first free one. Funnel serves one endpoint per public port per node, so a
+// port may back only one app at a time.
+func (n *Namespace) allocateFunnelPort(self *Application) (int, error) {
+	used := map[int]bool{}
+	for _, app := range n.applications {
+		if app == self {
+			continue
+		}
+		if p := app.Settings.ActiveFunnelPort(); p != 0 {
+			used[p] = true
+		}
+	}
+	if p := self.Settings.ActiveFunnelPort(); p != 0 && !used[p] {
+		return p, nil
+	}
+	for _, p := range funnelPublicPorts {
+		if !used[p] {
+			return p, nil
+		}
+	}
+	return 0, ErrFunnelPortsExhausted
 }
 
 func (n *Namespace) UniqueName(base string) (string, error) {
@@ -185,12 +220,18 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 }
 
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
-// validate the exposed app names and the credentials, bring up the network,
+// validate the exposed app names, the host-mode pre-flight (when the
+// effective mode is host), and the credentials, bring up the network,
 // boot the Docktail topology with the given credentials, boot once-admin so
 // it is exposed as a Service too, then verify every expected service is
 // advertised and approved before reporting success. The returned warnings
-// name any tailnet machines whose Magic DNS entries shadow a service.
-func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) ([]string, error) {
+// name any tailnet machines whose Magic DNS entries shadow a service, and
+// lead with the --mode host notice when a fresh enable defaulted to the
+// sidecar alongside a host tailscaled.
+func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings, progress DeployProgressCallback) ([]string, error) {
+	if err := ValidateTailscaleMode(settings.Mode); err != nil {
+		return nil, err
+	}
 	exposed := n.exposedTailscaleServices()
 	for _, name := range exposed {
 		if err := ValidateTailscaleServiceName(name); err != nil {
@@ -201,20 +242,34 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 	settings.Tag = settings.normalizeTag()
+	mode, err := n.tailscale.effectiveMode(ctx, settings.Mode)
+	if err != nil {
+		return nil, err
+	}
+	if mode == TailscaleModeHost {
+		if err := validateHostModePreflight(ctx, tailscaleAPIBaseURL, NewHostTailscaleDaemon(), settings); err != nil {
+			return nil, err
+		}
+	}
 	if err := validateTailscaleCredentials(ctx, settings); err != nil {
 		return nil, err
 	}
 	if err := n.EnsureNetwork(ctx); err != nil {
 		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
-	if err := n.tailscale.Enable(ctx, settings); err != nil {
+	notice, err := n.tailscale.Enable(ctx, settings)
+	if err != nil {
 		return nil, fmt.Errorf("enabling Tailscale: %w", err)
 	}
 	if err := n.admin.Boot(ctx); err != nil {
 		return nil, fmt.Errorf("booting once-admin: %w", err)
 	}
-	warnings := n.tailscale.ShadowWarnings(ctx, exposed)
-	return warnings, n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices())
+	var warnings []string
+	if notice != "" {
+		warnings = append(warnings, notice)
+	}
+	warnings = append(warnings, n.tailscale.ShadowWarnings(ctx, exposed)...)
+	return warnings, n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices(), progress)
 }
 
 // DisableTailscale is the full disable lifecycle shared by the CLI and TUI:

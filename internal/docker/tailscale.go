@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,10 +21,13 @@ import (
 
 // Images are pinned to exact versions, the same doctrine as proxyImage.
 // Bumped via Once releases through the self-update mechanism. The tailscale
-// image must be v1.86.0+ for Tailscale Services.
+// image must be v1.92.1+: Services exist from v1.86, but docktail proxies
+// service traffic straight to container IPs, and serve only accepts
+// non-localhost targets from v1.92.1 (older daemons reject them with "only
+// localhost or 127.0.0.1 proxies are currently supported").
 const (
 	docktailImage         = "ghcr.io/marvinvr/docktail:1.5.0"
-	tailscaleSidecarImage = "tailscale/tailscale:v1.88.4"
+	tailscaleSidecarImage = "tailscale/tailscale:v1.98.9"
 )
 
 // Paths shared between tailscaled and docktail. The socket directory is
@@ -38,11 +41,23 @@ const (
 )
 
 // TailscaleSettings.Mode values: where the tailscaled that backs Docktail
-// lives, so status and disable know what Once manages.
+// lives, so status and disable know what Once manages. The sidecar is the
+// default; host mode is explicit opt-in (ADR-0007).
 const (
 	TailscaleModeHost    = "host"
 	TailscaleModeSidecar = "sidecar"
 )
+
+// ValidateTailscaleMode rejects a requested mode other than host, sidecar, or
+// empty (empty keeps an already-enabled install's stored mode and defaults a
+// fresh enable to the sidecar).
+func ValidateTailscaleMode(mode string) error {
+	switch mode {
+	case "", TailscaleModeHost, TailscaleModeSidecar:
+		return nil
+	}
+	return fmt.Errorf("invalid Tailscale mode %q: must be %q or %q", mode, TailscaleModeHost, TailscaleModeSidecar)
+}
 
 // Funnel durations: a short default so apps don't stay public by accident, and
 // a hard 24h cap (see PRD "Out of Scope").
@@ -59,6 +74,15 @@ const (
 	funnelActivationPoll    = time.Second
 )
 
+// sidecarLogin bounds the post-boot wait for the sidecar's tailscaled to
+// register and log in (backend state Running). Only a crash-looping container
+// fails it; a merely slow login times out non-fatally and the suffix and
+// verify waits pick it up from there.
+const (
+	sidecarLoginTimeout = 30 * time.Second
+	sidecarLoginPoll    = time.Second
+)
+
 // suffixWait bounds the post-boot wait for tailscaled to join the control
 // plane and report the Magic DNS suffix. Non-fatal on timeout: DomainSuffix()
 // lazily reads and persists it later, so a slow tailnet never fails enable.
@@ -70,7 +94,11 @@ const (
 var (
 	ErrFunnelDurationInvalid = errors.New("funnel duration must be positive")
 	ErrFunnelDurationTooLong = fmt.Errorf("funnel duration must not exceed %s", MaxFunnelDuration)
+	ErrFunnelPortsExhausted  = errors.New("all Funnel public ports (443, 8443, 10000) are in use; disable another app's Funnel first")
 )
+
+// funnelPublicPorts are the public ports Tailscale Funnel can serve HTTPS on.
+var funnelPublicPorts = []int{443, 8443, 10000}
 
 // ValidateFunnelDuration enforces the positive/≤24h bounds on a requested
 // Funnel duration.
@@ -107,6 +135,11 @@ type TailscaleSettings struct {
 	// read from the local tailscaled at enable time. With it stored, app tailnet
 	// URLs are computed without any live lookup.
 	DomainSuffix string `json:"domainSuffix,omitempty"`
+	// NodeHost is the sidecar node's own tailnet hostname (e.g.
+	// once-tailscale-1.tailnet-name.ts.net), learned the first time a Funnel
+	// activates. Funnel is per-node, so every app's Funnel URL is this host
+	// with the app's public port - stored so those URLs need no live lookup.
+	NodeHost string `json:"nodeHost,omitempty"`
 	// Mode records whether Docktail drives a tailscaled already on the host
 	// (TailscaleModeHost) or the Once-managed once-tailscale sidecar
 	// (TailscaleModeSidecar).
@@ -120,6 +153,16 @@ func (s TailscaleSettings) TailnetURL(appName string) string {
 		return ""
 	}
 	return "https://" + appName + "." + s.DomainSuffix
+}
+
+// FunnelURL builds the public URL a Funnel on the given public port serves,
+// from the stored node hostname, or "" when the node host isn't known yet.
+// Funnel is per-node: all apps share this host and differ only by port.
+func (s TailscaleSettings) FunnelURL(port int) string {
+	if s.NodeHost == "" || port == 0 {
+		return ""
+	}
+	return funnelURL(s.NodeHost + ":" + strconv.Itoa(port))
 }
 
 func UnmarshalTailscaleSettings(s string) (TailscaleSettings, error) {
@@ -163,9 +206,9 @@ func (s TailscaleSettings) normalizeTag() string {
 }
 
 // Tailscale manages the Docktail topology: the once-docktail container that
-// advertises labelled containers as Tailscale Services, plus - when the host
-// runs no tailscaled of its own - the unprivileged once-tailscale sidecar it
-// drives. Mirroring Proxy, the once-docktail container's existence is the
+// advertises labelled containers as Tailscale Services, plus - in the default
+// sidecar mode - the unprivileged once-tailscale sidecar it drives. Mirroring
+// Proxy, the once-docktail container's existence is the
 // source of truth for "Tailscale enabled"; its settings live in the once label
 // on the container itself.
 type Tailscale struct {
@@ -178,36 +221,51 @@ func NewTailscale(ns *Namespace) *Tailscale {
 	return &Tailscale{namespace: ns}
 }
 
-// Enable boots the Docktail topology. When a host tailscaled is detected (its
-// socket directory is present), only once-docktail boots, driving the host
-// daemon; otherwise the once-tailscale sidecar boots first (userspace
-// networking, unprivileged) and docktail drives it over a shared socket volume.
-// Re-running with the same credentials just ensures everything is running;
-// changed credentials rebuild the topology while the sidecar's state volume
-// (node identity) is kept.
-func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) error {
+// Enable boots the Docktail topology: once-docktail, plus - in sidecar mode -
+// the once-tailscale sidecar it drives over a shared socket volume (userspace
+// networking, unprivileged). settings.Mode is the requested mode: empty keeps
+// an already-enabled install's stored mode and defaults a fresh enable to the
+// sidecar; host mode is explicit opt-in (ADR-0007). Re-running with the same
+// credentials and mode just ensures everything is running; changed credentials
+// or mode rebuild the topology while the sidecar's state volume (node
+// identity) is kept. The returned notice, when non-empty, tells the user a
+// fresh enable defaulted to the sidecar even though a host tailscaled is
+// present.
+func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) (string, error) {
+	var notice string
 	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
-	if err == nil {
+	switch {
+	case err == nil:
 		existing, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
-		if existing.ClientID == settings.ClientID && existing.ClientSecret == settings.ClientSecret && existing.Tag == settings.Tag {
-			return t.ensureRunning(ctx, info)
+		if settings.Mode == "" {
+			settings.Mode = existing.Mode
+		}
+		if existing.ClientID == settings.ClientID && existing.ClientSecret == settings.ClientSecret && existing.Tag == settings.Tag && existing.Mode == settings.Mode {
+			return "", t.ensureRunning(ctx, info)
 		}
 		// The sidecar's auth key and advertised tag derive from the credentials,
-		// and the suffix may belong to a different tailnet now, so rebuild the
-		// topology from scratch (keeping the state volume).
+		// the suffix may belong to a different tailnet now, and a mode change
+		// moves where tailscaled lives - either way, rebuild the topology from
+		// scratch (keeping the state volume).
 		if err := t.removeTopology(ctx); err != nil {
-			return err
+			return "", err
 		}
-	} else if !errdefs.IsNotFound(err) {
-		return fmt.Errorf("inspecting docktail container: %w", err)
+	case !errdefs.IsNotFound(err):
+		return "", fmt.Errorf("inspecting docktail container: %w", err)
+	default:
+		if settings.Mode == "" && hostTailscaledPresent() {
+			notice = "a tailscaled is already running on this host; Once boots its own sidecar by default - re-run with `--mode host` to drive the host daemon instead"
+		}
+	}
+	// Also covers a rebuild whose stored settings carry no mode (corrupt or
+	// legacy label): defaulting here self-heals it to the sidecar.
+	if settings.Mode == "" {
+		settings.Mode = TailscaleModeSidecar
 	}
 
-	if hostTailscaledPresent() {
-		settings.Mode = TailscaleModeHost
-	} else {
-		settings.Mode = TailscaleModeSidecar
+	if settings.Mode == TailscaleModeSidecar {
 		if err := t.bootSidecar(ctx, settings); err != nil {
-			return err
+			return "", err
 		}
 	}
 
@@ -218,16 +276,16 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 	}
 
 	if err := t.pullImage(ctx, docktailImage); err != nil {
-		return err
+		return "", err
 	}
 	if err := t.create(ctx, settings); err != nil {
-		return err
+		return "", err
 	}
 	t.Settings = &settings
 
 	// Retrofit running apps so they appear on the tailnet immediately, not just
 	// on their next deploy. once-docktail now exists, so the roll injects labels.
-	return t.namespace.RollApplications(ctx)
+	return notice, t.namespace.RollApplications(ctx)
 }
 
 // Disable removes once-docktail and the Once-managed sidecar, keeping the
@@ -301,21 +359,33 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 }
 
 // WaitForFunnelActive polls the local tailscaled until it reports a Funnel
-// proxying to the app's container, or returns an error on timeout. Funnel is
-// per-node, so matching the app's backend is what proves *this* app went
-// public - another app's active Funnel must not count. Funnel also needs the
-// tailnet ACL's funnel node attribute, which Once can't manage - surfacing
-// activation failure prevents reporting a Funnel active when it isn't.
-func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) error {
+// proxying to the app's container, then returns the funnel's public URL - the
+// node's own hostname, not the app's tailnet service name, because Funnel is
+// per-node. That per-node scoping is also why matching the app's backend is
+// what proves *this* app went public - another app's active Funnel must not
+// count. Funnel also needs the tailnet ACL's funnel node attribute, which
+// Once can't manage - surfacing activation failure prevents reporting a
+// Funnel active when it isn't.
+func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (string, error) {
 	settings, err := t.LoadSettings(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	backend, err := app.funnelBackend(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
+	hostPort, err := waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
+	if err != nil {
+		return "", err
+	}
+	// Persist the node's hostname (write-through, like DomainSuffix) so status
+	// and the TUI can render every Funnel URL without a live serve read.
+	if host, _, ok := strings.Cut(hostPort, ":"); ok && host != settings.NodeHost {
+		settings.NodeHost = host
+		_ = t.persistSettings(ctx, settings)
+	}
+	return funnelURL(hostPort), nil
 }
 
 // LegacyTSDProxyWarning returns a message telling the user how to move off a
@@ -380,6 +450,31 @@ func (t *Tailscale) legacyTSDProxyVolumeName() string {
 	return t.namespace.name + "-tsdproxy-data"
 }
 
+// effectiveMode resolves the mode an Enable with the requested mode would run
+// in, mirroring Enable's own resolution: an explicit mode wins, an empty one
+// keeps an already-enabled install's stored mode (tolerating a corrupt label,
+// which Enable self-heals to the sidecar), and a fresh enable defaults to the
+// sidecar. A real inspect failure is an error, not a silent sidecar default:
+// callers use this to decide whether the host-mode pre-flight must run, and
+// guessing wrong would skip it.
+func (t *Tailscale) effectiveMode(ctx context.Context, requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
+	if errdefs.IsNotFound(err) {
+		return TailscaleModeSidecar, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspecting docktail container: %w", err)
+	}
+	stored, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
+	if stored.Mode != "" {
+		return stored.Mode, nil
+	}
+	return TailscaleModeSidecar, nil
+}
+
 // daemonFor returns the TailscaleDaemon matching where tailscaled runs: the
 // host CLI in host mode, docker exec into the sidecar otherwise.
 func (t *Tailscale) daemonFor(mode string) TailscaleDaemon {
@@ -416,18 +511,28 @@ func (t *Tailscale) ensureRunning(ctx context.Context, info container.InspectRes
 // no NET_ADMIN, no host networking - with its node state on a volume and its
 // socket shared with docktail via another. On the SaaS path its auth key is
 // minted with the same shape the enable-time probe proved; on the control seam
-// the pre-minted key and control URL are used instead.
+// the pre-minted key and control URL are used instead. Booting includes the
+// login wait: a sidecar that crash-loops instead of joining fails here, naming
+// the real problem, rather than much later in the service verify. A sidecar
+// found already crash-looping is rebuilt with a freshly minted key.
 func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings) error {
 	info, err := t.namespace.client.ContainerInspect(ctx, t.sidecarName())
-	if err == nil {
+	switch {
+	case err == nil && sidecarWedged(info.State):
+		// A crash-looping sidecar can't be started out of its loop: its baked-in
+		// TS_AUTHKEY may be dead (revoked, expired). Rebuild it with a freshly
+		// minted key - the state volume survives, so the node identity does too.
+		if err := t.removeContainer(ctx, t.sidecarName()); err != nil {
+			return err
+		}
+	case err == nil:
 		if !info.State.Running {
 			if err := t.namespace.client.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
 				return fmt.Errorf("starting tailscale sidecar: %w", err)
 			}
 		}
-		return nil
-	}
-	if !errdefs.IsNotFound(err) {
+		return t.awaitSidecarLogin(ctx)
+	case !errdefs.IsNotFound(err):
 		return fmt.Errorf("inspecting tailscale sidecar: %w", err)
 	}
 
@@ -482,7 +587,25 @@ func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings)
 		t.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("starting tailscale sidecar: %w", err)
 	}
-	return nil
+	return t.awaitSidecarLogin(ctx)
+}
+
+func (t *Tailscale) awaitSidecarLogin(ctx context.Context) error {
+	daemon := NewSidecarTailscaleDaemon(t.namespace.client, t.sidecarName())
+	return waitForSidecarLogin(ctx, daemon, t.sidecarCrashed, sidecarLoginTimeout, sidecarLoginPoll)
+}
+
+// sidecarCrashed reports whether the sidecar container has died or is
+// restart-looping, with a message quoting its recent logs - a rejected
+// TS_AUTHKEY presents exactly this way. Inspect failures read as "not
+// crashed"; the login wait's daemon probe surfaces those.
+func (t *Tailscale) sidecarCrashed(ctx context.Context) (string, bool) {
+	info, err := t.namespace.client.ContainerInspect(ctx, t.sidecarName())
+	if err != nil || !sidecarWedged(info.State) {
+		return "", false
+	}
+	msg := fmt.Sprintf("the %s sidecar keeps exiting (exit code %d) instead of joining the tailnet", t.sidecarName(), info.State.ExitCode)
+	return withRecentLogs(ctx, t.namespace.client, t.sidecarName(), msg), true
 }
 
 // create boots once-docktail: Docker socket read-only, the tailscaled socket
@@ -603,9 +726,10 @@ func (t *Tailscale) removeVolume(ctx context.Context, name string) error {
 // serve on 443, matching the https:// URLs Once displays; network pins direct
 // container-IP proxying to the namespace network the app is attached to.
 //
-// When funnel is set, the same backend is also exposed to the public internet
-// via docktail.funnel.* (public side 443/https).
-func docktailLabels(appName, network string, enabled, funnel bool) map[string]string {
+// When funnelPort is set, the same backend is also exposed to the public
+// internet via docktail.funnel.* (https on that public port). Each app gets
+// its own public port because Funnel serves one endpoint per port per node.
+func docktailLabels(appName, network string, enabled bool, funnelPort int) map[string]string {
 	if !enabled {
 		return nil
 	}
@@ -616,9 +740,10 @@ func docktailLabels(appName, network string, enabled, funnel bool) map[string]st
 		"docktail.service.service-protocol": "https",
 		"docktail.service.network":          network,
 	}
-	if funnel {
+	if funnelPort != 0 {
 		labels["docktail.funnel.enable"] = "true"
 		labels["docktail.funnel.port"] = "80"
+		labels["docktail.funnel.funnel-port"] = strconv.Itoa(funnelPort)
 	}
 	return labels
 }
@@ -640,24 +765,74 @@ func hostTailscaledDir() string {
 }
 
 // hostTailscaledPresent detects a tailscaled already running on the host by
-// its socket, which decides host mode vs booting the sidecar.
+// its socket. It no longer decides the mode (the sidecar is the default); it
+// only triggers the fresh-enable notice pointing at --mode host.
 func hostTailscaledPresent() bool {
 	info, err := os.Stat(filepath.Join(hostTailscaledDir(), tailscaledSocketFile))
 	return err == nil && !info.IsDir()
 }
 
 // waitForFunnelBackend polls the local daemon until a funnel-enabled endpoint
-// proxies to backend. Timeout and poll are parameters so tests can run the
-// timeout path fast.
-func waitForFunnelBackend(ctx context.Context, daemon TailscaleDaemon, backend string, timeout, poll time.Duration) error {
+// proxies to backend, and returns that endpoint's "host:port" - the public
+// address the funnel serves on. Timeout and poll are parameters so tests can
+// run the timeout path fast.
+func waitForFunnelBackend(ctx context.Context, daemon TailscaleDaemon, backend string, timeout, poll time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		status, err := daemon.ServeStatus(ctx)
-		if err == nil && slices.Contains(status.FunnelBackends, backend) {
+		if err == nil {
+			if hostPort, ok := status.FunnelBackends[backend]; ok {
+				return hostPort, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("funnel did not activate; check that the once-docktail container is running and your tailnet ACL grants the funnel node attribute")
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}
+
+// funnelURL renders a funnel endpoint's "host:port" as the URL users open,
+// with the default HTTPS port elided.
+func funnelURL(hostPort string) string {
+	if host, ok := strings.CutSuffix(hostPort, ":443"); ok {
+		return "https://" + host
+	}
+	return "https://" + hostPort
+}
+
+// sidecarWedged reports whether a sidecar container state means it cannot
+// come up on its own: restart-looping, or exited with a failure. A manually
+// stopped sidecar usually exits nonzero (SIGTERM) and so also reads as wedged;
+// the rebuild that follows is harmless since the state volume is kept.
+func sidecarWedged(state *container.State) bool {
+	if state == nil {
+		return false
+	}
+	return state.Restarting || (state.Status == "exited" && state.ExitCode != 0)
+}
+
+// waitForSidecarLogin polls until the sidecar's tailscaled reports a Running
+// backend (registered and logged in). A crashed container fails immediately
+// via the crashed probe. Timing out is non-fatal, like the suffix wait: a slow
+// control plane must not fail enable, and the later waits surface persistent
+// problems. daemon, crashed, and the durations are parameters so tests can
+// drive the wait with fakes.
+func waitForSidecarLogin(ctx context.Context, daemon TailscaleDaemon, crashed func(context.Context) (string, bool), timeout, poll time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if msg, ok := crashed(ctx); ok {
+			return errors.New(msg)
+		}
+		if self, err := daemon.SelfStatus(ctx); err == nil && self.BackendState == "Running" {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("funnel did not activate; check that the once-docktail container is running and your tailnet ACL grants the funnel node attribute")
+			return nil
 		}
 		select {
 		case <-ctx.Done():

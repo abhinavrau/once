@@ -4,12 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 )
+
+// ErrTagNotInPolicy marks enable failures that are fixed by merging Once's
+// snippet into the tailnet policy, so callers can print it alongside the
+// error. Only 400 responses carry it: that is how the API rejects an
+// undefined or unpermitted tag, while 429s and 5xxs mean something else.
+var ErrTagNotInPolicy = errors.New("define the tag in your tailnet policy (Access Controls -> tagOwners) first")
 
 const (
 	tailscaleAPIBaseURL = "https://api.tailscale.com/api/v2"
@@ -79,6 +89,46 @@ func validateOAuthCredentials(ctx context.Context, baseURL string, settings Tail
 	return probeServiceDefinition(ctx, baseURL, token, settings.Tag)
 }
 
+// minHostDaemonMajor/Minor is the oldest host tailscaled that supports
+// Tailscale Services with the remote (container IP) serve targets docktail
+// uses; older daemons reject them with "only localhost or 127.0.0.1 proxies
+// are currently supported".
+const (
+	minHostDaemonMajor = 1
+	minHostDaemonMinor = 92
+)
+
+// validateHostModePreflight is the host-mode counterpart of the credential
+// probe (ADR-0007): four hard checks that fail within seconds naming the fix,
+// instead of the enable booting the full topology and dying much later in the
+// service-advertisement verify. The tailnet-membership check needs the SaaS
+// devices API, so it is skipped on the headscale control seam; the local
+// checks apply everywhere. baseURL and daemon are parameterised so tests can
+// use an httptest server and the canned-JSON fake.
+func validateHostModePreflight(ctx context.Context, baseURL string, daemon TailscaleDaemon, settings TailscaleSettings) error {
+	if !hostTailscaledPresent() {
+		return fmt.Errorf("host mode needs a running tailscaled on this host, but its socket %s is missing; install and start Tailscale, or use --mode sidecar",
+			filepath.Join(hostTailscaledDir(), tailscaledSocketFile))
+	}
+
+	self, err := daemon.SelfStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("reading the host tailscaled's status: %w", err)
+	}
+	if missing := missingNodeTags(settings.Tag, self.Tags); len(missing) > 0 {
+		return fmt.Errorf("the host node is not tagged with %s, so it cannot advertise Once's Services; run `sudo tailscale up --advertise-tags=%s`, or use --mode sidecar",
+			strings.Join(missing, ","), settings.Tag)
+	}
+	if !hostDaemonSupportsServices(self.Version) {
+		return fmt.Errorf("the host tailscaled reports version %q, but Tailscale Services needs v%d.%d or newer; upgrade Tailscale on this host, or use --mode sidecar",
+			self.Version, minHostDaemonMajor, minHostDaemonMinor)
+	}
+	if controlSeamActive() {
+		return nil
+	}
+	return validateHostInTailnet(ctx, baseURL, settings, self.NodeKey)
+}
+
 // mintSidecarAuthKey mints the tagged auth key the once-tailscale sidecar
 // registers with. It shares createTailscaleAuthKey with the enable-time probe,
 // so the key the sidecar boots with always has exactly the shape the probe
@@ -93,6 +143,73 @@ func mintSidecarAuthKey(ctx context.Context, baseURL string, settings TailscaleS
 }
 
 // Helpers
+
+// validateHostInTailnet proves the host node is a device in the OAuth
+// client's tailnet via the devices-list API, catching a host daemon logged
+// into a different tailnet than the credential. The node key is the join key:
+// `tailscale status --json` reports it as Self.PublicKey and the devices list
+// as nodeKey.
+func validateHostInTailnet(ctx context.Context, baseURL string, settings TailscaleSettings, nodeKey string) error {
+	token, err := tailscaleOAuthToken(ctx, baseURL, settings.ClientID, settings.ClientSecret)
+	if err != nil {
+		return err
+	}
+
+	status, body, err := tailscaleAPICall(ctx, http.MethodGet, baseURL+"/tailnet/-/devices", token, nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("listing the tailnet's devices (HTTP %d): %s", status, errorMessage(body))
+	}
+
+	var resp struct {
+		Devices []struct {
+			NodeKey string `json:"nodeKey"`
+		} `json:"devices"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("decoding the tailnet devices list: %w", err)
+	}
+	for _, device := range resp.Devices {
+		if device.NodeKey == nodeKey {
+			return nil
+		}
+	}
+	return fmt.Errorf("the host node is not in the OAuth client's tailnet - the host tailscaled is likely logged into a different tailnet; run `sudo tailscale login` with the account that owns the OAuth client, or use --mode sidecar")
+}
+
+// missingNodeTags returns the segments of the (normalized, comma-separated)
+// required tag that are absent from the node's tags.
+func missingNodeTags(required string, present []string) []string {
+	var missing []string
+	for _, tag := range strings.Split(required, ",") {
+		if tag != "" && !slices.Contains(present, tag) {
+			missing = append(missing, tag)
+		}
+	}
+	return missing
+}
+
+// hostDaemonSupportsServices reports whether a tailscaled version string (e.g.
+// "1.88.4-t1234abcd") is at least the Tailscale Services minimum. An
+// unparseable version reads as unsupported, so the pre-flight surfaces it.
+func hostDaemonSupportsServices(version string) bool {
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	minorDigits, _, _ := strings.Cut(parts[1], "-")
+	minor, err := strconv.Atoi(minorDigits)
+	if err != nil {
+		return false
+	}
+	return major > minHostDaemonMajor || (major == minHostDaemonMajor && minor >= minHostDaemonMinor)
+}
 
 // tailscaleOAuthToken exchanges the OAuth client credentials for an access
 // token. A failure here means the client ID or secret is wrong or revoked.
@@ -131,13 +248,18 @@ func tailscaleOAuthToken(ctx context.Context, baseURL, clientID, clientSecret st
 }
 
 // createTailscaleAuthKey mints a tagged auth key of the shape Once uses for
-// the once-tailscale sidecar's TS_AUTHKEY: single-use, non-ephemeral (the
-// sidecar keeps its node state in a volume), preauthorized, tagged. A 403
-// means the OAuth client lacks the auth_keys scope; any other rejection means
-// it does not own the requested tag.
+// the once-tailscale sidecar's TS_AUTHKEY: reusable, non-ephemeral (the
+// sidecar keeps its node state in a volume), preauthorized, tagged. Reusable
+// matters because the sidecar restarts on failure: a single-use key is
+// consumed by registration even when the login never finishes (e.g. the
+// container is killed waiting for the netmap), which turns one transient
+// failure into a permanent "invalid key" crash loop. A 403 means the OAuth
+// client lacks the auth_keys scope; any other rejection means it does not own
+// the requested tag.
 func createTailscaleAuthKey(ctx context.Context, baseURL, token, tag string) (id, key string, err error) {
 	var reqBody tsKeyRequest
 	reqBody.Description = "once-tailscale"
+	reqBody.Capabilities.Devices.Create.Reusable = true
 	reqBody.Capabilities.Devices.Create.Preauthorized = true
 	reqBody.Capabilities.Devices.Create.Tags = strings.Split(tag, ",")
 
@@ -153,8 +275,10 @@ func createTailscaleAuthKey(ctx context.Context, baseURL, token, tag string) (id
 	switch {
 	case status == http.StatusForbidden:
 		return "", "", fmt.Errorf("the OAuth client is missing the auth_keys scope (Keys -> Auth Keys: Write), needed to mint the Tailscale sidecar's auth key (HTTP %d): %s", status, errorMessage(body))
+	case status == http.StatusBadRequest:
+		return "", "", fmt.Errorf("Tailscale refused to mint an auth key for tag %q (HTTP %d): %s; ensure the OAuth client is tagged with this tag, and %w", tag, status, errorMessage(body), ErrTagNotInPolicy)
 	case status != http.StatusOK:
-		return "", "", fmt.Errorf("Tailscale refused to mint an auth key for tag %q (HTTP %d): %s; ensure the OAuth client is tagged with this tag or owns it via tagOwners (Access Controls -> Tags)", tag, status, errorMessage(body))
+		return "", "", fmt.Errorf("Tailscale refused to mint an auth key for tag %q (HTTP %d): %s", tag, status, errorMessage(body))
 	}
 
 	var respBody struct {
@@ -226,8 +350,10 @@ func probeServiceDefinition(ctx context.Context, baseURL, token, tag string) err
 	switch {
 	case status == http.StatusForbidden:
 		return servicesScopeError(status, body)
+	case status == http.StatusBadRequest:
+		return fmt.Errorf("Tailscale rejected the probe Service definition for tag %q (HTTP %d): %s; %w", tag, status, errorMessage(body), ErrTagNotInPolicy)
 	case status != http.StatusOK:
-		return fmt.Errorf("Tailscale rejected the probe Service definition for tag %q (HTTP %d): %s; ensure the tag is defined in your tailnet policy (Access Controls -> tagOwners)", tag, status, errorMessage(body))
+		return fmt.Errorf("Tailscale rejected the probe Service definition for tag %q (HTTP %d): %s", tag, status, errorMessage(body))
 	}
 
 	// The Service now exists; clean it up whether or not the devices check passes.
