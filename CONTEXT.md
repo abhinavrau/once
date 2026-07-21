@@ -95,17 +95,12 @@ Tailscale's automatic name registration and resolution service that assigns a un
 Tailscale's first-party primitive for exposing a service on the tailnet under a stable `svc:` name with its own Magic DNS entry, advertised by a host node rather than registered as a device of its own.
 
 **Docktail**:
-A single utility container (`once-docktail`) that watches Docker labels and advertises labelled containers as Tailscale Services through one real `tailscaled` - either the host's or the unprivileged `once-tailscale` sidecar Once boots when the host runs none.
+A single utility container (`once-docktail`) that watches Docker labels and advertises labelled containers as Tailscale Services through one real `tailscaled` - the unprivileged `once-tailscale` sidecar Once boots by default, or the host's own daemon when the user explicitly opts in.
 _Avoid_: TSDProxy, Tailscale Docker Proxy.
 
-**Bootstrap Credential**:
-The single client-minting OAuth credential a user supplies when enabling Tailscale - the only credential a user ever creates. Used once to mint the Runtime and Policy Credentials, then discarded - never stored.
-
 **Runtime Credential**:
-The narrowly scoped OAuth client Once mints from the Bootstrap Credential, stores, and uses for ongoing Tailscale operations.
-
-**Policy Credential**:
-A one-shot OAuth client minted from the Bootstrap Credential to write the tailnet policy sections Once needs, deleted immediately after. Never minted if the user declines the policy write and applies the printed snippet by hand.
+The single minimal-scope, tagged OAuth client the user creates directly in the Tailscale admin console and supplies when enabling Tailscale - the only Tailscale credential that ever exists. Stored and used for ongoing Tailscale operations.
+_Avoid_: bootstrap credential, policy credential - the minting hierarchy they named was removed by ADR-0006.
 
 **Tailscale Funnel**:
 A Tailscale feature that routes public internet traffic to a specific port on a tailnet node, enabling temporary public access.
