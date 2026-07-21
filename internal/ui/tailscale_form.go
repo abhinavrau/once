@@ -16,7 +16,12 @@ const (
 	tailscaleClientIDField = iota
 	tailscaleClientSecretField
 	tailscaleTagField
+	tailscaleModeField
 )
+
+// tailscaleModeChoices maps the mode radio's option order to settings values;
+// sidecar first so a fresh enable defaults to it (ADR-0007).
+var tailscaleModeChoices = []string{docker.TailscaleModeSidecar, docker.TailscaleModeHost}
 
 const tailscaleFormTextWidth = 72
 
@@ -28,7 +33,7 @@ var (
 type TailscaleFormCloseMsg struct{}
 
 type tailscaleEnableSubmitMsg struct {
-	id, secret, tag string
+	id, secret, tag, mode string
 }
 
 type tailscaleDisableSubmitMsg struct{}
@@ -83,10 +88,13 @@ func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 		tagField := NewTextField("tag:once")
 		tagField.SetValue("tag:once")
 
+		modeField := NewRadioField("Sidecar", "Host")
+
 		m.form = NewForm("Enable",
 			FormItem{Label: "Client ID", Field: clientIDField, Required: true},
 			FormItem{Label: "Client Secret", Field: clientSecretField, Required: true},
 			FormItem{Label: "Tag", Field: tagField, Required: true},
+			FormItem{Label: "Mode", Field: modeField},
 		)
 		m.form.OnSubmit(func(f *Form) tea.Cmd {
 			return func() tea.Msg {
@@ -94,6 +102,7 @@ func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 					id:     f.TextField(tailscaleClientIDField).Value(),
 					secret: f.TextField(tailscaleClientSecretField).Value(),
 					tag:    f.TextField(tailscaleTagField).Value(),
+					mode:   tailscaleModeChoices[f.RadioField(tailscaleModeField).Selected()],
 				}
 			}
 		})
@@ -204,7 +213,7 @@ func (m TailscaleForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
 func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 	ns := m.namespace
 	return func() tea.Msg {
-		settings := docker.TailscaleSettings{Tag: msg.tag}
+		settings := docker.TailscaleSettings{Tag: msg.tag, Mode: msg.mode}
 		if !docker.TailscaleControlSeamActive() {
 			settings.ClientID, settings.ClientSecret = msg.id, msg.secret
 		}

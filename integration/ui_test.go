@@ -178,6 +178,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	d.send(keyMsg("tab")) // → Client Secret
 	d.typeText("unused-with-control-seam")
 	d.send(keyMsg("tab"))   // → Tag (keep the tag:once prefill)
+	d.send(keyMsg("tab"))   // → Mode (keep the sidecar default)
 	d.send(keyMsg("tab"))   // → Enable
 	d.send(keyMsg("enter")) // submit
 

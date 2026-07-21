@@ -14,14 +14,38 @@ import (
 func TestTailscaleForm_EnableFormShowsCredentialFieldsWithPrefilledTag(t *testing.T) {
 	m := NewTailscaleForm(newTestNamespace())
 
-	assert.Equal(t, 3, m.form.ItemCount())
+	assert.Equal(t, 4, m.form.ItemCount())
 	assert.Equal(t, "tag:once", m.form.TextField(tailscaleTagField).Value())
+	assert.Equal(t, 0, m.form.RadioField(tailscaleModeField).Selected(), "sidecar should be preselected on a fresh enable")
 
 	view := m.View()
 	assert.Contains(t, view, "Client ID")
 	assert.Contains(t, view, "Client Secret")
+	assert.Contains(t, view, "(•) Sidecar")
 	assert.Contains(t, view, "Enable")
 	assert.Contains(t, view, "copy policy snippet")
+}
+
+func TestTailscaleForm_SubmitCarriesSelectedMode(t *testing.T) {
+	submitMode := func(selected int) string {
+		m := NewTailscaleForm(newTestNamespace())
+		m.form.TextField(tailscaleClientIDField).SetValue("id")
+		m.form.TextField(tailscaleClientSecretField).SetValue("secret")
+		m.form.RadioField(tailscaleModeField).SetSelected(selected)
+
+		f := m.form
+		for range f.ItemCount() {
+			f, _ = f.Update(keyPressMsg("tab"))
+		}
+		_, cmd := f.Update(keyPressMsg("enter"))
+		require.NotNil(t, cmd)
+		msg, ok := cmd().(tailscaleEnableSubmitMsg)
+		require.True(t, ok)
+		return msg.mode
+	}
+
+	assert.Equal(t, docker.TailscaleModeSidecar, submitMode(0))
+	assert.Equal(t, docker.TailscaleModeHost, submitMode(1))
 }
 
 func TestTailscaleForm_EnableSubmitRunsInBackground(t *testing.T) {
