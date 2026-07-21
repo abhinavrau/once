@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -26,7 +27,7 @@ func TestTailscaleForm_EnableFormShowsCredentialFieldsWithPrefilledTag(t *testin
 	assert.Contains(t, view, "copy policy snippet")
 }
 
-func TestTailscaleForm_EnabledFormShowsStoredSettingsWithDisableSubmit(t *testing.T) {
+func TestTailscaleForm_EnabledFormShowsStoredSettingsWithBothActions(t *testing.T) {
 	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{
 		ClientID:     "K123456CNTRL",
 		ClientSecret: "tskey-client-secret",
@@ -42,22 +43,31 @@ func TestTailscaleForm_EnabledFormShowsStoredSettingsWithDisableSubmit(t *testin
 	view := m.View()
 	assert.Contains(t, view, "Tailscale is enabled")
 	assert.Contains(t, view, "(•) Host")
+	assert.Contains(t, view, "Enable")
 	assert.Contains(t, view, "Disable")
 	assert.NotContains(t, view, "tskey-client-secret", "the stored secret must stay masked")
 }
 
-func TestTailscaleForm_EnabledFormDisableSubmitsWithEmptySeamSettings(t *testing.T) {
+func TestTailscaleForm_EnabledFormSubmitReenablesWithEditedMode(t *testing.T) {
+	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{
+		ClientID:     "id",
+		ClientSecret: "secret",
+		Tag:          "tag:once",
+		Mode:         docker.TailscaleModeSidecar,
+	})
+	m.form.RadioField(tailscaleModeField).SetSelected(1)
+
+	msg := submitAfterTabs(t, m.form, m.form.ItemCount())
+	assert.Equal(t, tailscaleEnableSubmitMsg{id: "id", secret: "secret", tag: "tag:once", mode: docker.TailscaleModeHost}, msg)
+}
+
+func TestTailscaleForm_EnabledFormDisableActionWorksWithEmptySeamSettings(t *testing.T) {
 	// Under the headscale control seam no credentials or tag are stored; the
-	// informational fields must not be required, or Disable could never submit.
+	// fields must not be required, or neither action could ever submit.
 	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{Mode: docker.TailscaleModeSidecar})
 
-	f := m.form
-	for range f.ItemCount() {
-		f, _ = f.Update(keyPressMsg("tab"))
-	}
-	_, cmd := f.Update(keyPressMsg("enter"))
-	require.NotNil(t, cmd)
-	assert.IsType(t, tailscaleDisableSubmitMsg{}, cmd())
+	msg := submitAfterTabs(t, m.form, m.form.ItemCount()+1) // fields, Enable, → Disable action
+	assert.IsType(t, tailscaleDisableSubmitMsg{}, msg)
 }
 
 func TestTailscaleForm_SubmitCarriesSelectedMode(t *testing.T) {
@@ -67,13 +77,7 @@ func TestTailscaleForm_SubmitCarriesSelectedMode(t *testing.T) {
 		m.form.TextField(tailscaleClientSecretField).SetValue("secret")
 		m.form.RadioField(tailscaleModeField).SetSelected(selected)
 
-		f := m.form
-		for range f.ItemCount() {
-			f, _ = f.Update(keyPressMsg("tab"))
-		}
-		_, cmd := f.Update(keyPressMsg("enter"))
-		require.NotNil(t, cmd)
-		msg, ok := cmd().(tailscaleEnableSubmitMsg)
+		msg, ok := submitAfterTabs(t, m.form, m.form.ItemCount()).(tailscaleEnableSubmitMsg)
 		require.True(t, ok)
 		return msg.mode
 	}
@@ -149,4 +153,18 @@ func TestTailscaleForm_FinishedSuccessCloses(t *testing.T) {
 
 	require.NotNil(t, cmd)
 	assert.IsType(t, TailscaleFormCloseMsg{}, cmd())
+}
+
+// Helpers
+
+// submitAfterTabs tabs through the form and presses enter, returning the
+// message the landed-on button emits.
+func submitAfterTabs(t *testing.T, f Form, tabs int) tea.Msg {
+	t.Helper()
+	for range tabs {
+		f, _ = f.Update(keyPressMsg("tab"))
+	}
+	_, cmd := f.Update(keyPressMsg("enter"))
+	require.NotNil(t, cmd)
+	return cmd()
 }

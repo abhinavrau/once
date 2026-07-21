@@ -17,10 +17,10 @@ driver must be updated in the same change.
 
 **Blocked by:** 05 - TUI overlay shows stored settings on an enabled install.
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Submitting the enabled overlay's form with settings unchanged completes without rebuilding the topology (idempotent re-enable)
-- [ ] Submitting with a different mode selected rebuilds and the install runs in the new mode
-- [ ] The host-mode pre-flight failures from ticket 02 surface in the form when re-enabling into host mode
-- [ ] Disable is still reachable from the enabled overlay and still works
-- [ ] The form's integration driver is updated in the same change; the UI integration test passes without hanging
+- [x] Submitting the enabled overlay's form with settings unchanged completes without rebuilding the topology (idempotent re-enable)
+- [x] Submitting with a different mode selected rebuilds and the install runs in the new mode
+- [x] The host-mode pre-flight failures from ticket 02 surface in the form when re-enabling into host mode
+- [x] Disable is still reachable from the enabled overlay and still works
+- [x] The form's integration driver is updated in the same change; the UI integration test passes without hanging

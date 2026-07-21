@@ -93,7 +93,7 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if key.Matches(msg, tailscaleFormCloseKey) {
 			return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
 		}
-		if !m.enabled && key.Matches(msg, tailscaleCopyKey) {
+		if key.Matches(msg, tailscaleCopyKey) {
 			return m, tea.SetClipboard(docker.PolicySnippet(m.form.TextField(tailscaleTagField).Value()))
 		}
 		m.err = nil
@@ -216,7 +216,7 @@ func (m TailscaleForm) setupView() string {
 		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Warning).Width(tailscaleFormTextWidth).Render(strings.Join(m.warnings, "\n")), "")
 	}
 
-	intro := "Tailscale is enabled."
+	intro := "Tailscale is enabled. Enable re-applies the settings below\n(changing the mode, credentials, or tag rebuilds the topology)."
 	if !m.enabled {
 		intro = "Merge the tailnet policy snippet (ctrl+p copies it) at\nlogin.tailscale.com/admin/acls, then create an OAuth client in the\nadmin console (Settings -> Trust credentials) with write access to\nAuth Keys, Devices Core, and Services, tagged with the tag below,\nand paste it here."
 	}
@@ -228,9 +228,11 @@ func (m TailscaleForm) setupView() string {
 // Helpers
 
 // newTailscaleForm builds the overlay for a known enabled state. On an enabled
-// install the fields show the stored settings and are informational: Disable is
-// the submit, and none of the fields are required because the headscale control
-// seam stores no credentials or tag.
+// install the fields show the stored settings and submitting re-enables (the
+// same lifecycle the CLI runs: unchanged settings are a no-op, changed ones
+// rebuild the topology), with Disable as a secondary action. The fields are
+// not required there because the headscale control seam stores no credentials
+// or tag.
 func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.TailscaleSettings) TailscaleForm {
 	m := TailscaleForm{
 		namespace: ns,
@@ -238,12 +240,7 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 		help:      NewHelp(),
 		progress:  NewProgress(0, Colors.Border),
 	}
-
-	if enabled {
-		m.help.SetBindings([]key.Binding{tailscaleFormCloseKey})
-	} else {
-		m.help.SetBindings([]key.Binding{tailscaleCopyKey, tailscaleFormCloseKey})
-	}
+	m.help.SetBindings([]key.Binding{tailscaleCopyKey, tailscaleFormCloseKey})
 
 	clientIDField := NewTextField("K123456CNTRL")
 	clientIDField.SetValue(settings.ClientID)
@@ -264,31 +261,24 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 		modeField.SetSelected(i)
 	}
 
-	submitLabel := "Enable"
-	if enabled {
-		submitLabel = "Disable"
-	}
-	m.form = NewForm(submitLabel,
+	m.form = NewForm("Enable",
 		FormItem{Label: "Client ID", Field: clientIDField, Required: !enabled},
 		FormItem{Label: "Client Secret", Field: clientSecretField, Required: !enabled},
 		FormItem{Label: "Tag", Field: tagField, Required: !enabled},
 		FormItem{Label: "Mode", Field: modeField},
 	)
-	if enabled {
-		m.form.OnSubmit(func(f *Form) tea.Cmd {
-			return func() tea.Msg { return tailscaleDisableSubmitMsg{} }
-		})
-	} else {
-		m.form.OnSubmit(func(f *Form) tea.Cmd {
-			return func() tea.Msg {
-				return tailscaleEnableSubmitMsg{
-					id:     f.TextField(tailscaleClientIDField).Value(),
-					secret: f.TextField(tailscaleClientSecretField).Value(),
-					tag:    f.TextField(tailscaleTagField).Value(),
-					mode:   tailscaleModeChoices[f.RadioField(tailscaleModeField).Selected()],
-				}
+	m.form.OnSubmit(func(f *Form) tea.Cmd {
+		return func() tea.Msg {
+			return tailscaleEnableSubmitMsg{
+				id:     f.TextField(tailscaleClientIDField).Value(),
+				secret: f.TextField(tailscaleClientSecretField).Value(),
+				tag:    f.TextField(tailscaleTagField).Value(),
+				mode:   tailscaleModeChoices[f.RadioField(tailscaleModeField).Selected()],
 			}
-		})
+		}
+	})
+	if enabled {
+		m.form.SetActionButton("Disable", func() tea.Msg { return tailscaleDisableSubmitMsg{} })
 	}
 	m.form.OnCancel(requestTailscaleFormClose)
 
