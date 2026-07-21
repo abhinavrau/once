@@ -217,7 +217,7 @@ func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 		if !docker.TailscaleControlSeamActive() {
 			settings.ClientID, settings.ClientSecret = msg.id, msg.secret
 		}
-		warnings, err := ns.EnableTailscale(context.Background(), settings)
+		warnings, err := ns.EnableTailscale(context.Background(), settings, nil)
 		return tailscaleFormFinishedMsg{err: err, warnings: warnings}
 	}
 }

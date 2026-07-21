@@ -45,7 +45,7 @@ func TestEnableTailscaleRejectsInvalidServiceNames(t *testing.T) {
 	ns := &Namespace{name: "test"}
 	ns.applications = append(ns.applications, NewApplication(ns, ApplicationSettings{Name: "my-app", Host: "my_app", Exposure: ExposureTailnet}))
 
-	_, err := ns.EnableTailscale(t.Context(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+	_, err := ns.EnableTailscale(t.Context(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"}, nil)
 	require.ErrorContains(t, err, `service name "my_app" is not a valid DNS label`)
 
 	// A local app's host is never advertised, so it must not block enable
@@ -53,6 +53,6 @@ func TestEnableTailscaleRejectsInvalidServiceNames(t *testing.T) {
 	ns.applications[0].Settings.Exposure = ExposureLocal
 	ns.admin = NewAdmin(ns)
 	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
-	_, err = ns.EnableTailscale(t.Context(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+	_, err = ns.EnableTailscale(t.Context(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"}, nil)
 	require.ErrorContains(t, err, "once-admin socket")
 }

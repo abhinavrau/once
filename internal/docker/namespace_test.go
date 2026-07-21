@@ -36,7 +36,7 @@ func TestEnableTailscaleFailsFastWithoutDaemon(t *testing.T) {
 
 	// The daemon precondition must run before any Docker work; a nil client would
 	// panic in EnsureNetwork/tailscale.Enable if the check were reordered below it.
-	_, err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+	_, err := ns.EnableTailscale(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret"}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "once-admin socket")
@@ -57,7 +57,7 @@ func TestEnableTailscaleHostModePreflightBeforeProbeAndContainers(t *testing.T) 
 	// credential probe (the error is the socket one, not a credentials one) and
 	// before any Docker work (a nil client would panic past that point).
 	_, err = ns.EnableTailscale(context.Background(),
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeHost})
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeHost}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), tailscaledSocketFile)

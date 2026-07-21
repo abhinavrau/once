@@ -107,7 +107,12 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 	if !docker.TailscaleControlSeamActive() {
 		settings.ClientID, settings.ClientSecret = t.clientID, t.clientSecret
 	}
-	warnings, err := ns.EnableTailscale(ctx, settings)
+	var warnings []string
+	err := runShowingProgress("tailscale enable", func(progress docker.DeployProgressCallback) error {
+		var err error
+		warnings, err = ns.EnableTailscale(ctx, settings, progress)
+		return err
+	})
 	printTailscaleWarnings(warnings)
 	if errors.Is(err, docker.ErrTagNotInPolicy) {
 		printPolicySnippet(t.tag)

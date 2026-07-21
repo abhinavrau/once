@@ -193,7 +193,7 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 // name any tailnet machines whose Magic DNS entries shadow a service, and
 // lead with the --mode host notice when a fresh enable defaulted to the
 // sidecar alongside a host tailscaled.
-func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings) ([]string, error) {
+func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings, progress DeployProgressCallback) ([]string, error) {
 	if err := ValidateTailscaleMode(settings.Mode); err != nil {
 		return nil, err
 	}
@@ -234,7 +234,7 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		warnings = append(warnings, notice)
 	}
 	warnings = append(warnings, n.tailscale.ShadowWarnings(ctx, exposed)...)
-	return warnings, n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices())
+	return warnings, n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices(), progress)
 }
 
 // DisableTailscale is the full disable lifecycle shared by the CLI and TUI:

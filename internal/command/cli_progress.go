@@ -38,17 +38,7 @@ func newCLIProgress(label string, task func(docker.DeployProgressCallback) error
 }
 
 func runWithProgress(label string, task func(docker.DeployProgressCallback) error) error {
-	var err error
-
-	if isTerminal() {
-		p := newCLIProgress(label, task)
-		if _, runErr := tea.NewProgram(p).Run(); runErr != nil {
-			return runErr
-		}
-		err = p.err
-	} else {
-		err = task(func(docker.DeployProgress) {})
-	}
+	err := runShowingProgress(label, task)
 
 	if err != nil {
 		fmt.Printf("%s: %s\n", label, lipgloss.NewStyle().Foreground(lipgloss.Red).Render("failed"))
@@ -57,6 +47,24 @@ func runWithProgress(label string, task func(docker.DeployProgressCallback) erro
 	}
 
 	return err
+}
+
+// runShowingProgress renders progress with a spinner on a terminal; when
+// stdout is piped it prints waiting statuses as plain lines, so automated
+// callers see progress without ANSI frames.
+func runShowingProgress(label string, task func(docker.DeployProgressCallback) error) error {
+	if isTerminal() {
+		p := newCLIProgress(label, task)
+		if _, runErr := tea.NewProgram(p).Run(); runErr != nil {
+			return runErr
+		}
+		return p.err
+	}
+	return task(func(p docker.DeployProgress) {
+		if p.Stage == docker.DeployStageWaiting {
+			fmt.Println(p.Status)
+		}
+	})
 }
 
 func (m *cliProgress) Init() tea.Cmd {
@@ -81,6 +89,9 @@ func (m *cliProgress) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.progress = m.progress.SetPercent(msg.p.Percentage)
 		case docker.DeployStageStarting:
 			m.stage = "starting"
+			m.progress = m.progress.SetPercent(-1)
+		case docker.DeployStageWaiting:
+			m.stage = msg.p.Status
 			m.progress = m.progress.SetPercent(-1)
 		}
 		return m, m.waitForProgress()
