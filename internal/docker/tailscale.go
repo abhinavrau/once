@@ -71,6 +71,15 @@ const (
 	funnelActivationPoll    = time.Second
 )
 
+// sidecarLogin bounds the post-boot wait for the sidecar's tailscaled to
+// register and log in (backend state Running). Only a crash-looping container
+// fails it; a merely slow login times out non-fatally and the suffix and
+// verify waits pick it up from there.
+const (
+	sidecarLoginTimeout = 30 * time.Second
+	sidecarLoginPoll    = time.Second
+)
+
 // suffixWait bounds the post-boot wait for tailscaled to join the control
 // plane and report the Magic DNS suffix. Non-fatal on timeout: DomainSuffix()
 // lazily reads and persists it later, so a slow tailnet never fails enable.
@@ -468,18 +477,28 @@ func (t *Tailscale) ensureRunning(ctx context.Context, info container.InspectRes
 // no NET_ADMIN, no host networking - with its node state on a volume and its
 // socket shared with docktail via another. On the SaaS path its auth key is
 // minted with the same shape the enable-time probe proved; on the control seam
-// the pre-minted key and control URL are used instead.
+// the pre-minted key and control URL are used instead. Booting includes the
+// login wait: a sidecar that crash-loops instead of joining fails here, naming
+// the real problem, rather than much later in the service verify. A sidecar
+// found already crash-looping is rebuilt with a freshly minted key.
 func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings) error {
 	info, err := t.namespace.client.ContainerInspect(ctx, t.sidecarName())
-	if err == nil {
+	switch {
+	case err == nil && sidecarWedged(info.State):
+		// A crash-looping sidecar can't be started out of its loop: its baked-in
+		// TS_AUTHKEY may be dead (revoked, expired). Rebuild it with a freshly
+		// minted key - the state volume survives, so the node identity does too.
+		if err := t.removeContainer(ctx, t.sidecarName()); err != nil {
+			return err
+		}
+	case err == nil:
 		if !info.State.Running {
 			if err := t.namespace.client.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
 				return fmt.Errorf("starting tailscale sidecar: %w", err)
 			}
 		}
-		return nil
-	}
-	if !errdefs.IsNotFound(err) {
+		return t.awaitSidecarLogin(ctx)
+	case !errdefs.IsNotFound(err):
 		return fmt.Errorf("inspecting tailscale sidecar: %w", err)
 	}
 
@@ -534,7 +553,25 @@ func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings)
 		t.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("starting tailscale sidecar: %w", err)
 	}
-	return nil
+	return t.awaitSidecarLogin(ctx)
+}
+
+func (t *Tailscale) awaitSidecarLogin(ctx context.Context) error {
+	daemon := NewSidecarTailscaleDaemon(t.namespace.client, t.sidecarName())
+	return waitForSidecarLogin(ctx, daemon, t.sidecarCrashed, sidecarLoginTimeout, sidecarLoginPoll)
+}
+
+// sidecarCrashed reports whether the sidecar container has died or is
+// restart-looping, with a message quoting its recent logs - a rejected
+// TS_AUTHKEY presents exactly this way. Inspect failures read as "not
+// crashed"; the login wait's daemon probe surfaces those.
+func (t *Tailscale) sidecarCrashed(ctx context.Context) (string, bool) {
+	info, err := t.namespace.client.ContainerInspect(ctx, t.sidecarName())
+	if err != nil || !sidecarWedged(info.State) {
+		return "", false
+	}
+	msg := fmt.Sprintf("the %s sidecar keeps exiting (exit code %d) instead of joining the tailnet", t.sidecarName(), info.State.ExitCode)
+	return withRecentLogs(ctx, t.namespace.client, t.sidecarName(), msg), true
 }
 
 // create boots once-docktail: Docker socket read-only, the tailscaled socket
@@ -711,6 +748,43 @@ func waitForFunnelBackend(ctx context.Context, daemon TailscaleDaemon, backend s
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("funnel did not activate; check that the once-docktail container is running and your tailnet ACL grants the funnel node attribute")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}
+
+// sidecarWedged reports whether a sidecar container state means it cannot
+// come up on its own: restart-looping, or exited with a failure. A manually
+// stopped sidecar usually exits nonzero (SIGTERM) and so also reads as wedged;
+// the rebuild that follows is harmless since the state volume is kept.
+func sidecarWedged(state *container.State) bool {
+	if state == nil {
+		return false
+	}
+	return state.Restarting || (state.Status == "exited" && state.ExitCode != 0)
+}
+
+// waitForSidecarLogin polls until the sidecar's tailscaled reports a Running
+// backend (registered and logged in). A crashed container fails immediately
+// via the crashed probe. Timing out is non-fatal, like the suffix wait: a slow
+// control plane must not fail enable, and the later waits surface persistent
+// problems. daemon, crashed, and the durations are parameters so tests can
+// drive the wait with fakes.
+func waitForSidecarLogin(ctx context.Context, daemon TailscaleDaemon, crashed func(context.Context) (string, bool), timeout, poll time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if msg, ok := crashed(ctx); ok {
+			return errors.New(msg)
+		}
+		if self, err := daemon.SelfStatus(ctx); err == nil && self.BackendState == "Running" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return nil
 		}
 		select {
 		case <-ctx.Done():

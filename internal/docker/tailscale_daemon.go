@@ -34,6 +34,8 @@ type TailscaleDaemon interface {
 
 // TailscaleSelfStatus is this node's slice of `tailscale status --json`.
 type TailscaleSelfStatus struct {
+	// BackendState is the daemon's ipn state (e.g. "Running", "NeedsLogin").
+	BackendState string
 	// Version is the daemon's version string (e.g. "1.88.4-t1234abcd").
 	Version string
 	// Tags holds the node's ACL tags (e.g. tag:once); empty when untagged.
@@ -275,8 +277,9 @@ func parseMachineHostnames(statusJSON string) ([]string, error) {
 // same "nodekey:..." form the cloud API's devices list reports.
 func parseSelfStatus(statusJSON string) (TailscaleSelfStatus, error) {
 	var status struct {
-		Version string
-		Self    struct {
+		BackendState string
+		Version      string
+		Self         struct {
 			PublicKey string
 			Tags      []string
 		}
@@ -285,9 +288,10 @@ func parseSelfStatus(statusJSON string) (TailscaleSelfStatus, error) {
 		return TailscaleSelfStatus{}, fmt.Errorf("parsing tailscale status: %w", err)
 	}
 	return TailscaleSelfStatus{
-		Version: status.Version,
-		Tags:    status.Self.Tags,
-		NodeKey: status.Self.PublicKey,
+		BackendState: status.BackendState,
+		Version:      status.Version,
+		Tags:         status.Self.Tags,
+		NodeKey:      status.Self.PublicKey,
 	}, nil
 }
 

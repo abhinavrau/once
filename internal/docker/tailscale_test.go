@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -108,6 +109,29 @@ func TestWaitForFunnelBackend(t *testing.T) {
 	daemon = &FakeTailscaleDaemon{ServeErr: assert.AnError}
 	err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
 	require.ErrorContains(t, err, "funnel did not activate")
+}
+
+func TestWaitForSidecarLogin(t *testing.T) {
+	running := &FakeTailscaleDaemon{StatusJSON: `{"BackendState": "Running"}`}
+	healthy := func(context.Context) (string, bool) { return "", false }
+
+	require.NoError(t, waitForSidecarLogin(t.Context(), running, healthy, time.Second, time.Millisecond))
+
+	// A crash-looping container fails immediately with its message, however
+	// long the timeout - that is how a rejected auth key presents.
+	crashed := func(context.Context) (string, bool) {
+		return "the once-tailscale sidecar keeps exiting; recent logs:\ninvalid key", true
+	}
+	err := waitForSidecarLogin(t.Context(), running, crashed, time.Hour, time.Millisecond)
+	require.ErrorContains(t, err, "invalid key")
+
+	// A daemon that is slow to log in or unreachable is non-fatal at timeout:
+	// the suffix and verify waits that follow surface persistent problems.
+	slow := &FakeTailscaleDaemon{StatusErr: assert.AnError}
+	require.NoError(t, waitForSidecarLogin(t.Context(), slow, healthy, 30*time.Millisecond, 10*time.Millisecond))
+
+	needsLogin := &FakeTailscaleDaemon{StatusJSON: `{"BackendState": "NeedsLogin"}`}
+	require.NoError(t, waitForSidecarLogin(t.Context(), needsLogin, healthy, 30*time.Millisecond, 10*time.Millisecond))
 }
 
 func TestValidateFunnelDuration(t *testing.T) {

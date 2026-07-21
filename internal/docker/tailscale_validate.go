@@ -246,13 +246,18 @@ func tailscaleOAuthToken(ctx context.Context, baseURL, clientID, clientSecret st
 }
 
 // createTailscaleAuthKey mints a tagged auth key of the shape Once uses for
-// the once-tailscale sidecar's TS_AUTHKEY: single-use, non-ephemeral (the
-// sidecar keeps its node state in a volume), preauthorized, tagged. A 403
-// means the OAuth client lacks the auth_keys scope; any other rejection means
-// it does not own the requested tag.
+// the once-tailscale sidecar's TS_AUTHKEY: reusable, non-ephemeral (the
+// sidecar keeps its node state in a volume), preauthorized, tagged. Reusable
+// matters because the sidecar restarts on failure: a single-use key is
+// consumed by registration even when the login never finishes (e.g. the
+// container is killed waiting for the netmap), which turns one transient
+// failure into a permanent "invalid key" crash loop. A 403 means the OAuth
+// client lacks the auth_keys scope; any other rejection means it does not own
+// the requested tag.
 func createTailscaleAuthKey(ctx context.Context, baseURL, token, tag string) (id, key string, err error) {
 	var reqBody tsKeyRequest
 	reqBody.Description = "once-tailscale"
+	reqBody.Capabilities.Devices.Create.Reusable = true
 	reqBody.Capabilities.Devices.Create.Preauthorized = true
 	reqBody.Capabilities.Devices.Create.Tags = strings.Split(tag, ",")
 
