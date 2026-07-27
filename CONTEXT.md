@@ -69,8 +69,12 @@ Install and start an Application for the first time — pull the image, create t
 Replace an Application's running container with a fresh one at zero downtime, reusing the same image and volume and picking up Configuration changes.
 _Avoid_: restart, recreate.
 
+**Apply Settings**:
+Validate an Application's changed Configuration, check the new Host is free, roll the container to pick it up, and restore the previous Configuration if the roll fails. Distinct from Roll, which is only the container replacement.
+_Avoid_: update - that is the image-driven operation.
+
 **Update**:
-Pull an Application's image and roll it only if the image changed.
+Pull an Application's image and roll it only if the image changed. Image-driven only: changing Configuration is Apply Settings, even though the CLI spells it `once update`.
 _Avoid_: upgrade.
 
 **Boot**:
