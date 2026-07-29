@@ -37,8 +37,8 @@ func TestDurationFromExpiry(t *testing.T) {
 func TestApplyFunnelDisableWhenInactive(t *testing.T) {
 	app := &docker.Application{Settings: docker.ApplicationSettings{Name: "books"}}
 
-	// ts is nil: the inactive-disable branch returns before touching it.
-	msg, err := applyFunnel(app, nil, "once", true, false, "")
+	// ns is nil: the inactive-disable branch returns before touching it.
+	msg, err := applyFunnel(nil, app, false, "")
 	require.NoError(t, err)
 	assert.Equal(t, "Funnel is already inactive", msg)
 }
@@ -46,24 +46,29 @@ func TestApplyFunnelDisableWhenInactive(t *testing.T) {
 func TestApplyFunnelRejectsBadDuration(t *testing.T) {
 	app := &docker.Application{Settings: docker.ApplicationSettings{Name: "books"}}
 
-	// Both rejections happen before any docker/tailscale call, so ts is nil.
-	_, err := applyFunnel(app, nil, "once", true, true, "nonsense")
+	// An unparseable duration is rejected before the spine runs, so ns is nil.
+	_, err := applyFunnel(nil, app, true, "nonsense")
 	assert.ErrorContains(t, err, "invalid duration")
 
-	_, err = applyFunnel(app, nil, "once", true, true, "48h")
-	assert.Error(t, err) // exceeds 24h max, rejected before any side effect
+	// An out-of-bounds duration is rejected by the spine's validation before
+	// any Docker or service-manager call.
+	ns, err := docker.NewNamespace("once")
+	require.NoError(t, err)
+	_, err = applyFunnel(ns, app, true, "48h")
+	assert.ErrorIs(t, err, docker.ErrFunnelDurationTooLong)
 }
 
-func TestApplyFunnelRejectsWhenTailscaleDisabled(t *testing.T) {
-	app := &docker.Application{Settings: docker.ApplicationSettings{Name: "books"}}
-
-	_, err := applyFunnel(app, nil, "once", false, true, "10m")
+func TestFunnelUserErrorWordsTailscaleDisabledForTheTUI(t *testing.T) {
+	err := funnelUserError(docker.ErrTailscaleNotEnabled)
 	assert.ErrorContains(t, err, "enable Tailscale first")
+	assert.ErrorContains(t, err, "press t on the dashboard")
+
+	assert.Equal(t, assert.AnError, funnelUserError(assert.AnError))
 }
 
 func TestSettingsFormFunnelStatusLineWhenDisabled(t *testing.T) {
 	app := &docker.Application{Settings: docker.ApplicationSettings{Name: "books"}}
 
-	form := NewSettingsFormFunnel(app, nil, "once", false)
+	form := NewSettingsFormFunnel(nil, app, false)
 	assert.Contains(t, form.StatusLine(), "Tailscale is not enabled")
 }

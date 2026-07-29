@@ -285,6 +285,39 @@ func (n *Namespace) DisableTailscale(ctx context.Context) error {
 	return nil
 }
 
+// EnableFunnel is the full Funnel-enable lifecycle shared by the CLI and TUI:
+// validate the requested duration, confirm Tailscale is enabled (live, at
+// submit time) and the background daemon is running (Funnel teardown at expiry
+// runs there - without it the app would stay public indefinitely), enable the
+// Funnel on the app with its expiry, then wait for the local tailscaled to
+// confirm a Funnel is actually serving before reporting success. Returns the
+// public URL and the expiry time. A disabled Tailscale reads as
+// ErrTailscaleNotEnabled so each frontend can word the fix for its interface.
+func (n *Namespace) EnableFunnel(ctx context.Context, app *Application, duration time.Duration) (string, time.Time, error) {
+	if err := ValidateFunnelDuration(duration); err != nil {
+		return "", time.Time{}, err
+	}
+	enabled, err := n.tailscale.Enabled(ctx)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("checking Tailscale: %w", err)
+	}
+	if !enabled {
+		return "", time.Time{}, ErrTailscaleNotEnabled
+	}
+	if err := requireBackgroundDaemon(n.name); err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Now().Add(duration)
+	if err := app.EnableFunnel(ctx, expiresAt); err != nil {
+		return "", time.Time{}, fmt.Errorf("enabling Funnel: %w", err)
+	}
+	url, err := n.tailscale.WaitForFunnelActive(ctx, app)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return url, expiresAt, nil
+}
+
 // Teardown is best effort: every removal is attempted even when an earlier one
 // fails, so one hiccup can't strand the rest of the namespace's containers.
 func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {

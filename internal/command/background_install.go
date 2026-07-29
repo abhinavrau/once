@@ -8,14 +8,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/basecamp/once/internal/docker"
 	"github.com/basecamp/once/internal/service"
 )
 
 type backgroundInstallCommand struct {
 	cmd *cobra.Command
 }
-
-const backgroundServiceSuffix = "-background"
 
 func newBackgroundInstallCommand() *backgroundInstallCommand {
 	b := &backgroundInstallCommand{}
@@ -48,7 +47,7 @@ func (b *backgroundInstallCommand) run(cmd *cobra.Command, args []string) error 
 		return err
 	}
 
-	serviceName := namespace + backgroundServiceSuffix
+	serviceName := docker.BackgroundServiceName(namespace)
 
 	if svc.IsInstalled(serviceName) {
 		fmt.Printf("Service %s is already installed\n", svc.ServiceName(serviceName))
