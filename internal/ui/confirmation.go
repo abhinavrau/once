@@ -35,6 +35,11 @@ func NewConfirmation(message, confirmLabel string) Confirmation {
 	}
 }
 
+func (m Confirmation) SetMessage(message string) Confirmation {
+	m.message = message
+	return m
+}
+
 func (m Confirmation) Update(msg tea.Msg) (Confirmation, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
