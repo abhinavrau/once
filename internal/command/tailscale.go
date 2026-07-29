@@ -113,7 +113,7 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 		warnings, err = ns.EnableTailscale(ctx, settings, progress)
 		return err
 	})
-	printTailscaleWarnings(warnings)
+	printWarnings(warnings)
 	if errors.Is(err, docker.ErrTagNotInPolicy) {
 		printPolicySnippet(t.tag)
 	}
@@ -304,7 +304,7 @@ func (t *tailscaleCommand) funnelDisable(ctx context.Context, ns *docker.Namespa
 func withLegacyTSDProxyWarning(fn NamespaceRunE) func(*cobra.Command, []string) error {
 	return WithNamespace(func(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 		if w := ns.Tailscale().LegacyTSDProxyWarning(ctx); w != "" {
-			printTailscaleWarnings([]string{w})
+			printWarnings([]string{w})
 		}
 		return fn(ctx, ns, cmd, args)
 	})
@@ -315,11 +315,11 @@ func withLegacyTSDProxyWarning(fn NamespaceRunE) func(*cobra.Command, []string) 
 // tailnet machines.
 func warnShadowedServiceName(ctx context.Context, ns *docker.Namespace, settings docker.ApplicationSettings) {
 	if settings.Exposure == docker.ExposureTailnet {
-		printTailscaleWarnings(ns.Tailscale().ShadowWarnings(ctx, []string{settings.Host}))
+		printWarnings(ns.Tailscale().ShadowWarnings(ctx, []string{settings.Host}))
 	}
 }
 
-func printTailscaleWarnings(warnings []string) {
+func printWarnings(warnings []string) {
 	for _, w := range warnings {
 		fmt.Println("Warning:", w)
 	}

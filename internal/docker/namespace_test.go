@@ -29,6 +29,32 @@ func TestUniqueName(t *testing.T) {
 	assert.NotEqual(t, name, name2)
 }
 
+func TestDeployPreconditionsRunBeforeDockerWork(t *testing.T) {
+	// The preconditions must run before any Docker work; the nil client would
+	// panic in Setup if a check were reordered below it.
+	ns := &Namespace{name: "test"}
+	ns.addApplication(ApplicationSettings{Name: "taken", Host: "taken.localhost"})
+
+	// Validation comes first: an invalid Configuration on a taken host reports
+	// the validation error, not the host collision.
+	settings := DefaultApplicationSettings()
+	settings.Host = "taken.localhost"
+	_, _, err := ns.Deploy(context.Background(), settings, nil)
+	assert.ErrorIs(t, err, ErrImageRequired)
+
+	settings.Backup.AutoBackup = true
+	_, _, err = ns.Deploy(context.Background(), settings, nil)
+	assert.ErrorIs(t, err, ErrImageRequired)
+
+	settings.Image = "image:latest"
+	_, _, err = ns.Deploy(context.Background(), settings, nil)
+	assert.ErrorIs(t, err, ErrAutoBackupWithoutPath)
+
+	settings.Backup.AutoBackup = false
+	_, _, err = ns.Deploy(context.Background(), settings, nil)
+	assert.ErrorIs(t, err, ErrHostnameInUse)
+}
+
 func TestEnableTailscaleFailsFastWithoutDaemon(t *testing.T) {
 	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
 

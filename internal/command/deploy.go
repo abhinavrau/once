@@ -2,8 +2,6 @@ package command
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 
 	"github.com/spf13/cobra"
 
@@ -44,14 +42,9 @@ func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 		return err
 	}
 
-	baseName := docker.NameFromImageRef(imageRef)
-	host, err := docker.ResolveHost(exposure, d.flags.host, baseName)
+	host, err := docker.ResolveHost(exposure, d.flags.host, docker.NameFromImageRef(imageRef))
 	if err != nil {
 		return err
-	}
-
-	if ns.HostInUse(host) {
-		return docker.ErrHostnameInUse
 	}
 
 	settings, err := d.flags.buildSettings(imageRef, host, exposure)
@@ -59,33 +52,12 @@ func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 		return err
 	}
 
-	if err := ns.Setup(ctx); err != nil {
-		return fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)
-	}
-
-	name, err := ns.UniqueName(baseName)
-	if err != nil {
-		return fmt.Errorf("generating app name: %w", err)
-	}
-	settings.Name = name
-
-	app := docker.NewApplication(ns, settings)
-
-	warnShadowedServiceName(ctx, ns, settings)
-	warnPublicDNS(ctx, settings)
-
-	return runWithProgress("Deploying "+host, func(progress docker.DeployProgressCallback) error {
-		if err := app.Deploy(ctx, progress); err != nil {
-			if cleanupErr := app.Destroy(context.Background(), true); cleanupErr != nil {
-				slog.Error("Failed to clean up after deploy failure", "app", name, "error", cleanupErr)
-			}
-			return fmt.Errorf("%w: %w", docker.ErrDeployFailed, err)
-		}
-
-		if err := app.VerifyHTTPOrRemove(ctx); err != nil {
-			return err
-		}
-
-		return nil
+	var warnings []string
+	err = runWithProgress("Deploying "+host, func(progress docker.DeployProgressCallback) error {
+		_, w, deployErr := ns.Deploy(ctx, settings, progress)
+		warnings = w
+		return deployErr
 	})
+	printWarnings(warnings)
+	return err
 }

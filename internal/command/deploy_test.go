@@ -59,12 +59,6 @@ func TestParseEnvVars(t *testing.T) {
 	})
 }
 
-func TestBuildSettingsImageRequired(t *testing.T) {
-	f := &settingsFlags{}
-	_, err := f.buildSettings("", "app.example.com", docker.ExposurePublic)
-	assert.ErrorIs(t, err, docker.ErrImageRequired)
-}
-
 func TestBuildSettingsStoresExposure(t *testing.T) {
 	f := &settingsFlags{}
 	s, err := f.buildSettings("image:latest", "app.localhost", docker.ExposureLocal)
@@ -169,18 +163,4 @@ func TestFlaglessDeploySettingsAreTheDefaults(t *testing.T) {
 	want.Host = "app.localhost"
 	want.Exposure = exposure
 	assert.Equal(t, want, s)
-}
-
-func TestBuildSettingsAutoBackupRequiresPath(t *testing.T) {
-	t.Run("auto-backup without path", func(t *testing.T) {
-		f := &settingsFlags{autoBackup: true}
-		_, err := f.buildSettings("image:latest", "app.example.com", docker.ExposurePublic)
-		assert.ErrorIs(t, err, docker.ErrAutoBackupWithoutPath)
-	})
-
-	t.Run("auto-backup with path", func(t *testing.T) {
-		f := &settingsFlags{autoBackup: true, backupPath: "/backups"}
-		_, err := f.buildSettings("image:latest", "app.example.com", docker.ExposurePublic)
-		require.NoError(t, err)
-	})
 }

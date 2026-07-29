@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -26,12 +25,14 @@ type installProgressMsg struct {
 }
 
 type installDoneMsg struct {
-	app *docker.Application
-	err error
+	app      *docker.Application
+	warnings []string
+	err      error
 }
 
 type InstallActivityDoneMsg struct {
-	App *docker.Application
+	App      *docker.Application
+	Warnings []string
 }
 
 type InstallActivityFailedMsg struct {
@@ -94,7 +95,7 @@ func (m *InstallActivity) Update(msg tea.Msg) tea.Cmd {
 		if msg.err != nil {
 			return func() tea.Msg { return InstallActivityFailedMsg{Err: msg.err} }
 		}
-		return func() tea.Msg { return InstallActivityDoneMsg{App: msg.app} }
+		return func() tea.Msg { return InstallActivityDoneMsg{App: msg.app, Warnings: msg.warnings} }
 
 	case ProgressTickMsg:
 		var cmd tea.Cmd
@@ -163,54 +164,33 @@ func (m *InstallActivity) runInstall(ctx context.Context) {
 
 	m.progressChan <- installProgressMsg{stage: stagePreparing}
 
-	if err := m.namespace.Setup(ctx); err != nil {
-		m.doneChan <- installDoneMsg{err: fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)}
-		return
-	}
-
-	m.progressChan <- installProgressMsg{stage: stageDownloading, percentage: 0}
-
-	appName, err := m.namespace.UniqueName(docker.NameFromImageRef(m.imageRef))
-	if err != nil {
-		m.doneChan <- installDoneMsg{err: fmt.Errorf("generating app name: %w", err)}
-		return
-	}
-	app := docker.NewApplication(m.namespace, installSettings(appName, m.imageRef, m.hostname, m.exposure))
-
 	progress := func(p docker.DeployProgress) {
 		switch p.Stage {
 		case docker.DeployStageDownloading:
 			m.progressChan <- installProgressMsg{stage: stageDownloading, percentage: p.Percentage}
 		case docker.DeployStageStarting:
 			m.progressChan <- installProgressMsg{stage: stageStarting, percentage: 100}
+		case docker.DeployStageWaiting:
+			m.progressChan <- installProgressMsg{stage: stageVerifying}
 		}
 	}
 
-	if err := app.Deploy(ctx, progress); err != nil {
-		if cleanupErr := app.Destroy(context.Background(), true); cleanupErr != nil {
-			slog.Error("Failed to clean up after deploy failure", "app", appName, "error", cleanupErr)
-		}
-		m.doneChan <- installDoneMsg{err: fmt.Errorf("%w: %w", docker.ErrDeployFailed, err)}
-		return
-	}
-
-	m.progressChan <- installProgressMsg{stage: stageVerifying}
-
-	if err := app.VerifyHTTPOrRemove(ctx); err != nil {
+	app, warnings, err := m.namespace.Deploy(ctx, installSettings(m.imageRef, m.hostname, m.exposure), progress)
+	if err != nil {
 		m.doneChan <- installDoneMsg{err: err}
 		return
 	}
 
-	m.doneChan <- installDoneMsg{app: app}
+	m.doneChan <- installDoneMsg{app: app, warnings: warnings}
 }
 
 // Helpers
 
 // installSettings builds a freshly installed app's settings from the shared
 // defaults, so TUI installs and flagless CLI deploys start life identically.
-func installSettings(name, image, host string, exposure docker.Exposure) docker.ApplicationSettings {
+// The deploy spine assigns the app's unique name.
+func installSettings(image, host string, exposure docker.Exposure) docker.ApplicationSettings {
 	s := docker.DefaultApplicationSettings()
-	s.Name = name
 	s.Image = image
 	s.Host = host
 	s.Exposure = exposure

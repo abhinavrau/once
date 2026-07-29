@@ -95,10 +95,6 @@ func (f *settingsFlags) buildSettings(image, host string, exposure docker.Exposu
 		AutoBackup: f.autoBackup,
 	}
 
-	if err := s.Validate(); err != nil {
-		return docker.ApplicationSettings{}, err
-	}
-
 	return s, nil
 }
 

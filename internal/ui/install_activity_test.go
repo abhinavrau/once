@@ -13,10 +13,9 @@ import (
 // and flagless CLI deploys (anchored by TestFlaglessDeploySettingsAreTheDefaults
 // in internal/command) from drifting apart.
 func TestInstallSettingsStartFromDefaults(t *testing.T) {
-	s := installSettings("books", "image:latest", "books.localhost", docker.ExposureLocal)
+	s := installSettings("image:latest", "books.localhost", docker.ExposureLocal)
 
 	want := docker.DefaultApplicationSettings()
-	want.Name = "books"
 	want.Image = "image:latest"
 	want.Host = "books.localhost"
 	want.Exposure = docker.ExposureLocal
