@@ -11,10 +11,17 @@ import (
 )
 
 var removeKeys = struct {
-	Back key.Binding
+	Choice key.Binding
+	Back   key.Binding
 }{
-	Back: WithHelp(NewKeyBinding("esc"), "esc", "back"),
+	Choice: WithHelp(NewKeyBinding("left", "right", "space"), "←/→", "data choice"),
+	Back:   WithHelp(NewKeyBinding("esc"), "esc", "back"),
 }
+
+const (
+	removeChoiceKeepData = iota
+	removeChoiceDeleteData
+)
 
 type removeFinishedMsg struct {
 	err error
@@ -23,6 +30,7 @@ type removeFinishedMsg struct {
 type Remove struct {
 	namespace     *docker.Namespace
 	app           *docker.Application
+	dataChoice    *RadioField
 	confirmation  Confirmation
 	width, height int
 	help          Help
@@ -33,11 +41,13 @@ type Remove struct {
 
 func NewRemove(ns *docker.Namespace, app *docker.Application) Remove {
 	h := NewHelp()
-	h.SetBindings([]key.Binding{removeKeys.Back})
+	h.SetBindings([]key.Binding{removeKeys.Choice, removeKeys.Back})
+	dataChoice := NewRadioField("Keep data", "Delete data")
 	return Remove{
 		namespace:    ns,
 		app:          app,
-		confirmation: NewConfirmation("Remove application and data?", "Remove"),
+		dataChoice:   dataChoice,
+		confirmation: NewConfirmation(removeConfirmMessage(dataChoice.Selected()), "Remove"),
 		help:         h,
 		progress:     NewProgress(0, Colors.Border),
 	}
@@ -77,6 +87,11 @@ func (m Remove) Update(msg tea.Msg) (Component, tea.Cmd) {
 			}
 			if key.Matches(msg, removeKeys.Back) {
 				return m, func() tea.Msg { return NavigateToDashboardMsg{AppName: m.app.Settings.Name} }
+			}
+			if key.Matches(msg, removeKeys.Choice) {
+				cmd := m.dataChoice.Update(msg)
+				m.confirmation = m.confirmation.SetMessage(removeConfirmMessage(m.dataChoice.Selected()))
+				return m, cmd
 			}
 			var cmd tea.Cmd
 			m.confirmation, cmd = m.confirmation.Update(msg)
@@ -121,7 +136,7 @@ func (m Remove) View() string {
 		if m.err != nil {
 			errorLine = lipgloss.NewStyle().Foreground(Colors.Error).Width(m.width).Align(lipgloss.Center).Render(docker.ErrorMessage(m.err))
 		}
-		contentView = lipgloss.JoinVertical(lipgloss.Center, errorLine, "", m.confirmation.View())
+		contentView = lipgloss.JoinVertical(lipgloss.Center, errorLine, "", m.dataChoice.View(), "", m.confirmation.View())
 	}
 
 	var helpLine string
@@ -147,8 +162,18 @@ func (m Remove) View() string {
 // Private
 
 func (m Remove) runRemove() tea.Cmd {
+	removeData := m.dataChoice.Selected() == removeChoiceDeleteData
 	return func() tea.Msg {
-		err := m.app.Remove(context.Background(), true)
+		err := m.app.Remove(context.Background(), removeData)
 		return removeFinishedMsg{err: err}
 	}
+}
+
+// Helpers
+
+func removeConfirmMessage(selected int) string {
+	if selected == removeChoiceDeleteData {
+		return "Remove application and delete its data?"
+	}
+	return "Remove application? Its data will be kept."
 }

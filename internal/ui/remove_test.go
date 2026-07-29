@@ -16,9 +16,35 @@ func TestRemove_ViewShowsConfirmation(t *testing.T) {
 	m, _ = updateRemove(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	view := m.View()
-	assert.Contains(t, view, "Remove application and data?")
+	assert.Contains(t, view, "(•) Keep data")
+	assert.Contains(t, view, "( ) Delete data")
+	assert.Contains(t, view, "Remove application? Its data will be kept.")
 	assert.Contains(t, view, "Remove")
 	assert.Contains(t, view, "Cancel")
+}
+
+func TestRemove_DefaultChoiceKeepsData(t *testing.T) {
+	m := newTestRemove()
+	assert.Equal(t, removeChoiceKeepData, m.dataChoice.Selected())
+}
+
+func TestRemove_ChoiceTogglesConfirmationMessage(t *testing.T) {
+	m := newTestRemove()
+	m, _ = updateRemove(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m, _ = updateRemove(m, keyPressMsg("right"))
+	assert.Equal(t, removeChoiceDeleteData, m.dataChoice.Selected())
+	view := m.View()
+	assert.Contains(t, view, "(•) Delete data")
+	assert.Contains(t, view, "Remove application and delete its data?")
+	assert.NotContains(t, view, "will be kept")
+
+	m, _ = updateRemove(m, keyPressMsg("left"))
+	assert.Equal(t, removeChoiceKeepData, m.dataChoice.Selected())
+	view = m.View()
+	assert.Contains(t, view, "(•) Keep data")
+	assert.Contains(t, view, "Remove application? Its data will be kept.")
+	assert.NotContains(t, view, "delete its data")
 }
 
 func TestRemove_CancelNavigatesToDashboard(t *testing.T) {
