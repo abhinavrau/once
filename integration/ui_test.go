@@ -103,6 +103,11 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.send(keyMsg("s"))
 	d.waitForView("running", 30*time.Second)
 
+	// The app name carries a unique suffix, so capture it before removing to
+	// find the volume afterwards.
+	require.Len(t, ns.Applications(), 1)
+	appName := ns.Applications()[0].Settings.Name
+
 	// -- Remove via actions menu: keep-data is the default choice --
 	d.send(keyMsg("a"))
 	d.send(keyMsg("r"))
@@ -118,7 +123,7 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.send(keyMsg("tab"))
 	d.send(keyMsg("enter"))
 	d.waitForView("There are no applications installed", 30*time.Second)
-	_, err = docker.FindVolume(ctx, ns, "once-campfire")
+	_, err = docker.FindVolume(ctx, ns, appName)
 	assert.NoError(t, err, "keep-data remove should leave the app volume in place")
 }
 
