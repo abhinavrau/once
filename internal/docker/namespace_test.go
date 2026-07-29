@@ -91,6 +91,19 @@ func TestEnableTailscaleHostModePreflightBeforeProbeAndContainers(t *testing.T) 
 	assert.Contains(t, err.Error(), "--mode sidecar")
 }
 
+func TestEnableFunnelRejectsInvalidDurationBeforePreconditions(t *testing.T) {
+	// A nil tailscale would panic in the live enabled check, so an invalid
+	// duration must be rejected before the Tailscale and daemon preconditions.
+	ns := &Namespace{name: "test"}
+	app := NewApplication(ns, ApplicationSettings{Name: "books", Exposure: ExposureTailnet})
+
+	_, _, err := ns.EnableFunnel(context.Background(), app, -time.Minute)
+	assert.ErrorIs(t, err, ErrFunnelDurationInvalid)
+
+	_, _, err = ns.EnableFunnel(context.Background(), app, 25*time.Hour)
+	assert.ErrorIs(t, err, ErrFunnelDurationTooLong)
+}
+
 func TestApplicationLookup(t *testing.T) {
 	ns := &Namespace{name: "test"}
 	ns.applications = append(ns.applications, NewApplication(ns, ApplicationSettings{Name: "alpha"}))
