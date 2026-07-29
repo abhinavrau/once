@@ -175,13 +175,7 @@ func (m *InstallActivity) runInstall(ctx context.Context) {
 		m.doneChan <- installDoneMsg{err: fmt.Errorf("generating app name: %w", err)}
 		return
 	}
-	app := docker.NewApplication(m.namespace, docker.ApplicationSettings{
-		Name:       appName,
-		Image:      m.imageRef,
-		Host:       m.hostname,
-		Exposure:   m.exposure,
-		AutoUpdate: true,
-	})
+	app := docker.NewApplication(m.namespace, installSettings(appName, m.imageRef, m.hostname, m.exposure))
 
 	progress := func(p docker.DeployProgress) {
 		switch p.Stage {
@@ -208,4 +202,17 @@ func (m *InstallActivity) runInstall(ctx context.Context) {
 	}
 
 	m.doneChan <- installDoneMsg{app: app}
+}
+
+// Helpers
+
+// installSettings builds a freshly installed app's settings from the shared
+// defaults, so TUI installs and flagless CLI deploys start life identically.
+func installSettings(name, image, host string, exposure docker.Exposure) docker.ApplicationSettings {
+	s := docker.DefaultApplicationSettings()
+	s.Name = name
+	s.Image = image
+	s.Host = host
+	s.Exposure = exposure
+	return s
 }

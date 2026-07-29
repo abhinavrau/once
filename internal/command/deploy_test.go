@@ -148,6 +148,29 @@ func TestRemovedTailscaleFlagFailsWithReplacement(t *testing.T) {
 	assert.NoError(t, f.checkRemoved(cmd))
 }
 
+// Anchors the flagless CLI deploy path to DefaultApplicationSettings. Fails
+// when a flag gains a non-zero default that isn't written there, keeping CLI
+// deploys and TUI installs (anchored by TestInstallSettingsStartFromDefaults
+// in internal/ui) from drifting apart.
+func TestFlaglessDeploySettingsAreTheDefaults(t *testing.T) {
+	cmd := &cobra.Command{}
+	f := &settingsFlags{}
+	f.register(cmd)
+	require.NoError(t, cmd.Flags().Parse(nil))
+
+	exposure, err := docker.ParseExposure(f.expose)
+	require.NoError(t, err)
+
+	s, err := f.buildSettings("image:latest", "app.localhost", exposure)
+	require.NoError(t, err)
+
+	want := docker.DefaultApplicationSettings()
+	want.Image = "image:latest"
+	want.Host = "app.localhost"
+	want.Exposure = exposure
+	assert.Equal(t, want, s)
+}
+
 func TestBuildSettingsAutoBackupRequiresPath(t *testing.T) {
 	t.Run("auto-backup without path", func(t *testing.T) {
 		f := &settingsFlags{autoBackup: true}
