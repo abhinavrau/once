@@ -38,23 +38,15 @@ func TestSettings_CancelNavigatesToDashboard(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestSettings_SubmitUnchangedNavigatesToDashboard(t *testing.T) {
-	s := testSettings()
-	_, cmd := updateSettings(s, SettingsSectionSubmitMsg{Settings: s.app.Settings})
-	require.NotNil(t, cmd)
-
-	msg := cmd()
-	_, ok := msg.(NavigateToDashboardMsg)
-	assert.True(t, ok)
-}
-
-func TestSettings_SubmitChangedStartsDeploy(t *testing.T) {
+func TestSettings_SubmitStartsApply(t *testing.T) {
 	s := testSettings()
 	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	changed := s.app.Settings
 	changed.Host = "new.example.com"
 
+	// The spine owns the ordering (validation, host conflict, no-op
+	// short-circuit), so every submit hands off to it.
 	s, _ = updateSettings(s, SettingsSectionSubmitMsg{Settings: changed})
 	assert.Equal(t, settingsStateDeploying, s.state)
 }
@@ -71,11 +63,10 @@ func TestSettings_DeployFinishedNavigatesToApp(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestSettings_DeployFinishedWithErrorSurfacesErrorAndRestoresSettings(t *testing.T) {
+func TestSettings_DeployFinishedWithErrorSurfacesError(t *testing.T) {
 	s := testSettings()
-	original := s.app.Settings
 
-	changed := original
+	changed := s.app.Settings
 	changed.Host = "new.example.com"
 	s, _ = updateSettings(s, SettingsSectionSubmitMsg{Settings: changed})
 	require.Equal(t, settingsStateDeploying, s.state)
@@ -84,7 +75,21 @@ func TestSettings_DeployFinishedWithErrorSurfacesErrorAndRestoresSettings(t *tes
 	assert.Nil(t, cmd)
 	assert.Equal(t, settingsStateForm, s.state)
 	assert.Equal(t, assert.AnError, s.err)
-	assert.Equal(t, original, s.app.Settings)
+}
+
+func TestSettings_DeployFinishedWithWarningsKeepsFormOpen(t *testing.T) {
+	s := testSettings()
+	s.width = 80
+	s.height = 24
+	s.state = settingsStateDeploying
+
+	s, cmd := updateSettings(s, settingsDeployFinishedMsg{warnings: []string{"could not resolve app.example.com"}})
+	assert.Nil(t, cmd)
+	assert.Equal(t, settingsStateForm, s.state)
+	assert.Contains(t, s.View(), "could not resolve app.example.com")
+
+	s, _ = updateSettings(s, keyPressMsg("a"))
+	assert.Empty(t, s.warnings)
 }
 
 func TestSettings_ActionFinishedWithError(t *testing.T) {
