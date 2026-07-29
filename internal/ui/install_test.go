@@ -273,16 +273,40 @@ func TestInstall_NonPullDeployFailureReturnsToHostname(t *testing.T) {
 	assert.Equal(t, installStateHostname, m.state)
 }
 
-func TestInstall_HostnameInUseBlocksInstall(t *testing.T) {
+func TestInstall_HostnameInUseFailureReturnsToHostname(t *testing.T) {
+	// The deploy spine owns the host-in-use rejection; the TUI surfaces it on
+	// the hostname form like any other deploy failure.
 	ns := newTestNamespace(docker.ApplicationSettings{Name: "myapp", Host: "taken.example.com"})
 	m := NewInstall(ns, "")
 	m, _ = updateInstall(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m, _ = updateInstall(m, InstallAppSelectedMsg{ImageRef: "ghcr.io/basecamp/once-campfire"})
-	assert.Equal(t, installStateHostname, m.state)
 
 	m, _ = updateInstall(m, InstallFormSubmitMsg{ImageRef: "ghcr.io/basecamp/once-campfire", Hostname: "taken.example.com", Exposure: docker.ExposurePublic})
+	assert.Equal(t, installStateActivity, m.state)
+
+	m, _ = updateInstall(m, InstallActivityFailedMsg{Err: docker.ErrHostnameInUse})
 	assert.Equal(t, installStateHostname, m.state)
 	assert.ErrorIs(t, m.err, docker.ErrHostnameInUse)
+}
+
+func TestInstall_DoneWithWarningsShowsThemBeforeNavigating(t *testing.T) {
+	m := newTestInstall()
+	m, _ = updateInstall(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = updateInstall(m, InstallAppSelectedMsg{ImageRef: "ghcr.io/basecamp/once-campfire"})
+	m, _ = updateInstall(m, InstallFormSubmitMsg{ImageRef: "ghcr.io/basecamp/once-campfire", Hostname: "chat.example.com", Exposure: docker.ExposurePublic})
+
+	app := &docker.Application{}
+	m, cmd := updateInstall(m, InstallActivityDoneMsg{App: app, Warnings: []string{"could not resolve chat.example.com"}})
+	require.Nil(t, cmd)
+	assert.Equal(t, installStateWarnings, m.state)
+	assert.Contains(t, ansi.Strip(m.View()), "could not resolve chat.example.com")
+
+	// Enter acknowledges the warnings and navigates to the app.
+	m, cmd = updateInstall(m, keyPressMsg("enter"))
+	require.NotNil(t, cmd)
+	navMsg, ok := cmd().(NavigateToAppMsg)
+	require.True(t, ok)
+	assert.Equal(t, app, navMsg.App)
 }
 
 func TestInstall_UnresolvableHostBlocksInstall(t *testing.T) {

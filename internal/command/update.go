@@ -65,7 +65,9 @@ func (u *updateCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 	}
 
 	warnShadowedServiceName(ctx, ns, settings)
-	warnPublicDNS(ctx, settings)
+	if w := docker.PublicDNSWarning(ctx, settings.Exposure, settings.Host); w != "" {
+		printWarnings([]string{w})
+	}
 
 	oldSettings := app.Settings
 	app.Settings = settings

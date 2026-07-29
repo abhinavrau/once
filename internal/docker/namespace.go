@@ -219,6 +219,49 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 	return err
 }
 
+// Deploy is the full deploy lifecycle shared by the CLI and TUI: validate the
+// settings, reject a host already in use, set up the namespace, assign the
+// app's unique name, run the warn-only checks, deploy with progress, destroy
+// the part-built application if the deploy fails, and verify it answers over
+// HTTP. The returned warnings never block the deploy and may accompany an
+// error; each frontend renders them its own way.
+func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, progress DeployProgressCallback) (*Application, []string, error) {
+	if err := settings.Validate(); err != nil {
+		return nil, nil, err
+	}
+	if n.HostInUse(settings.Host) {
+		return nil, nil, ErrHostnameInUse
+	}
+	if err := n.Setup(ctx); err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", ErrSetupFailed, err)
+	}
+
+	name, err := n.UniqueName(NameFromImageRef(settings.Image))
+	if err != nil {
+		return nil, nil, fmt.Errorf("generating app name: %w", err)
+	}
+	settings.Name = name
+
+	app := NewApplication(n, settings)
+	warnings := n.deployWarnings(ctx, settings)
+
+	if err := app.Deploy(ctx, progress); err != nil {
+		if cleanupErr := app.Destroy(context.Background(), true); cleanupErr != nil {
+			slog.Error("Failed to clean up after deploy failure", "app", name, "error", cleanupErr)
+		}
+		return nil, warnings, fmt.Errorf("%w: %w", ErrDeployFailed, err)
+	}
+
+	if progress != nil {
+		progress(DeployProgress{Stage: DeployStageWaiting, Status: "verifying"})
+	}
+	if err := app.VerifyHTTPOrRemove(ctx); err != nil {
+		return nil, warnings, err
+	}
+
+	return app, warnings, nil
+}
+
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
 // validate the exposed app names, the host-mode pre-flight (when the
 // effective mode is host), and the credentials, bring up the network,
@@ -413,6 +456,19 @@ func (n *Namespace) containerAppName(containerName string) string {
 }
 
 // Private
+
+// deployWarnings collects the warn-only pre-deploy checks: a tailnet service
+// name shadowed by an existing tailnet machine, and the public DNS preflight.
+func (n *Namespace) deployWarnings(ctx context.Context, settings ApplicationSettings) []string {
+	var warnings []string
+	if settings.Exposure == ExposureTailnet {
+		warnings = append(warnings, n.tailscale.ShadowWarnings(ctx, []string{settings.Host})...)
+	}
+	if w := PublicDNSWarning(ctx, settings.Exposure, settings.Host); w != "" {
+		warnings = append(warnings, w)
+	}
+	return warnings
+}
 
 // expectedTailscaleServices lists the services that should exist on the
 // tailnet after enable: one per running tailnet-exposed application (under

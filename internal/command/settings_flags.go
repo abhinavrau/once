@@ -29,20 +29,22 @@ type settingsFlags struct {
 }
 
 func (f *settingsFlags) register(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.host, "host", "", "hostname for the application")
-	cmd.Flags().StringVar(&f.expose, "expose", string(docker.ExposureLocal), "where the application is reachable: local, tailnet, or public")
-	cmd.Flags().BoolVar(&f.disableTLS, "disable-tls", false, "disable TLS for this application")
+	defaults := docker.DefaultApplicationSettings()
+
+	cmd.Flags().StringVar(&f.host, "host", defaults.Host, "hostname for the application")
+	cmd.Flags().StringVar(&f.expose, "expose", string(defaults.Exposure), "where the application is reachable: local, tailnet, or public")
+	cmd.Flags().BoolVar(&f.disableTLS, "disable-tls", defaults.DisableTLS, "disable TLS for this application")
 	cmd.Flags().StringArrayVar(&f.env, "env", nil, "environment variable in KEY=VALUE format (can be repeated)")
-	cmd.Flags().StringVar(&f.smtpServer, "smtp-server", "", "SMTP server address")
-	cmd.Flags().StringVar(&f.smtpPort, "smtp-port", "", "SMTP server port")
-	cmd.Flags().StringVar(&f.smtpUsername, "smtp-username", "", "SMTP username")
-	cmd.Flags().StringVar(&f.smtpPassword, "smtp-password", "", "SMTP password")
-	cmd.Flags().StringVar(&f.smtpFrom, "smtp-from", "", "SMTP from address")
-	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "CPU limit for the container")
-	cmd.Flags().IntVar(&f.memory, "memory", 0, "memory limit in MB for the container")
-	cmd.Flags().BoolVar(&f.autoUpdate, "auto-update", true, "automatically update the application")
-	cmd.Flags().StringVar(&f.backupPath, "backup-path", "", "path for backups")
-	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", false, "enable automatic backups")
+	cmd.Flags().StringVar(&f.smtpServer, "smtp-server", defaults.SMTP.Server, "SMTP server address")
+	cmd.Flags().StringVar(&f.smtpPort, "smtp-port", defaults.SMTP.Port, "SMTP server port")
+	cmd.Flags().StringVar(&f.smtpUsername, "smtp-username", defaults.SMTP.Username, "SMTP username")
+	cmd.Flags().StringVar(&f.smtpPassword, "smtp-password", defaults.SMTP.Password, "SMTP password")
+	cmd.Flags().StringVar(&f.smtpFrom, "smtp-from", defaults.SMTP.From, "SMTP from address")
+	cmd.Flags().IntVar(&f.cpus, "cpus", defaults.Resources.CPUs, "CPU limit for the container")
+	cmd.Flags().IntVar(&f.memory, "memory", defaults.Resources.MemoryMB, "memory limit in MB for the container")
+	cmd.Flags().BoolVar(&f.autoUpdate, "auto-update", defaults.AutoUpdate, "automatically update the application")
+	cmd.Flags().StringVar(&f.backupPath, "backup-path", defaults.Backup.Path, "path for backups")
+	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", defaults.Backup.AutoBackup, "enable automatic backups")
 
 	// Removed flag, kept registered (hidden) so it fails with a clean-break
 	// error naming its replacement instead of cobra's "unknown flag".
@@ -69,32 +71,28 @@ func (f *settingsFlags) buildSettings(image, host string, exposure docker.Exposu
 		return docker.ApplicationSettings{}, docker.ErrBackupPathRelative
 	}
 
-	s := docker.ApplicationSettings{
-		Image:      image,
-		Host:       host,
-		Exposure:   exposure,
-		DisableTLS: f.disableTLS,
-		EnvVars:    envVars,
-		SMTP: docker.SMTPSettings{
-			Server:   f.smtpServer,
-			Port:     f.smtpPort,
-			Username: f.smtpUsername,
-			Password: f.smtpPassword,
-			From:     f.smtpFrom,
-		},
-		Resources: docker.ContainerResources{
-			CPUs:     f.cpus,
-			MemoryMB: f.memory,
-		},
-		AutoUpdate: f.autoUpdate,
-		Backup: docker.BackupSettings{
-			Path:       f.backupPath,
-			AutoBackup: f.autoBackup,
-		},
+	// Start from the defaults so fields without a flag keep their default value.
+	s := docker.DefaultApplicationSettings()
+	s.Image = image
+	s.Host = host
+	s.Exposure = exposure
+	s.DisableTLS = f.disableTLS
+	s.EnvVars = envVars
+	s.SMTP = docker.SMTPSettings{
+		Server:   f.smtpServer,
+		Port:     f.smtpPort,
+		Username: f.smtpUsername,
+		Password: f.smtpPassword,
+		From:     f.smtpFrom,
 	}
-
-	if err := s.Validate(); err != nil {
-		return docker.ApplicationSettings{}, err
+	s.Resources = docker.ContainerResources{
+		CPUs:     f.cpus,
+		MemoryMB: f.memory,
+	}
+	s.AutoUpdate = f.autoUpdate
+	s.Backup = docker.BackupSettings{
+		Path:       f.backupPath,
+		AutoBackup: f.autoBackup,
 	}
 
 	return s, nil

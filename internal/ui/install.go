@@ -19,10 +19,12 @@ var installKeys = struct {
 	Help      key.Binding
 	Tailscale key.Binding
 	Back      key.Binding
+	Continue  key.Binding
 }{
 	Help:      WithHelp(NewKeyBinding("f1"), "F1", "help"),
 	Tailscale: WithHelp(NewKeyBinding("t", "T"), "t", "tailscale"),
 	Back:      WithHelp(NewKeyBinding("esc"), "esc", "back"),
+	Continue:  WithHelp(NewKeyBinding("enter"), "enter", "continue"),
 }
 
 type installState int
@@ -32,6 +34,7 @@ const (
 	installStateImageForm                     // Screen 2: enter image ref
 	installStateHostname                      // Screen 3: enter hostname
 	installStateActivity                      // Installing
+	installStateWarnings                      // Installed, warnings await acknowledgment
 )
 
 type InstallFormSubmitMsg struct {
@@ -54,6 +57,8 @@ type Install struct {
 	starfield     *Starfield
 	logo          *Logo
 	err           error
+	warnings      []string
+	installedApp  *docker.Application
 	cliMode       bool
 	customImage   bool
 	installFlag   string
@@ -166,6 +171,12 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case tea.KeyPressMsg:
+		if m.state == installStateWarnings {
+			if key.Matches(msg, installKeys.Continue) || key.Matches(msg, installKeys.Back) {
+				return m, m.navigateToInstalledApp()
+			}
+			return m, nil
+		}
 		if m.state != installStateActivity {
 			if m.err != nil {
 				m.err = nil
@@ -235,10 +246,6 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 			m.err = err
 			return m, nil
 		}
-		if m.namespace.HostInUse(host) {
-			m.err = docker.ErrHostnameInUse
-			return m, nil
-		}
 		m.state = installStateActivity
 		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, host, msg.Exposure)
 		m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
@@ -257,7 +264,16 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, nil
 
 	case InstallActivityDoneMsg:
-		return m, func() tea.Msg { return NavigateToAppMsg(msg) }
+		m.activity = nil
+		m.installedApp = msg.App
+		// Warnings keep the user on the install screen so they are actually
+		// seen before navigating away.
+		if len(msg.Warnings) > 0 {
+			m.warnings = msg.Warnings
+			m.state = installStateWarnings
+			return m, nil
+		}
+		return m, m.navigateToInstalledApp()
 	}
 
 	if m.state == installStateActivity {
@@ -357,8 +373,24 @@ func (m Install) viewCurrentScreen() string {
 		return m.imageForm.View()
 	case installStateHostname:
 		return m.hostnameForm.View()
+	case installStateWarnings:
+		return m.viewWarnings()
 	}
 	return ""
+}
+
+func (m Install) viewWarnings() string {
+	style := lipgloss.NewStyle().Foreground(Colors.Warning).Width(min(max(m.width-4, 20), 72))
+	lines := make([]string, 0, len(m.warnings))
+	for _, w := range m.warnings {
+		lines = append(lines, style.Render("Warning: "+w))
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func (m Install) navigateToInstalledApp() tea.Cmd {
+	app := m.installedApp
+	return func() tea.Msg { return NavigateToAppMsg{App: app} }
 }
 
 func (m Install) handleBack() (Install, tea.Cmd) {
@@ -510,6 +542,10 @@ func (m Install) writeOverlayRow(sb *strings.Builder, row, left, width int, line
 }
 
 func (m *Install) updateHelpBindings() {
+	if m.state == installStateWarnings {
+		m.help.SetBindings([]key.Binding{installKeys.Continue})
+		return
+	}
 	var bindings []key.Binding
 	if _, content := m.helpForState(); content != "" {
 		bindings = append(bindings, installKeys.Help)
