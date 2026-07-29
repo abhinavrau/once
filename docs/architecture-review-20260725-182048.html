@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review — Once</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose", flowchart: { curve: "basis" } });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 5 4; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      .hatch {
+        background-image: repeating-linear-gradient(45deg, #fecaca 0 6px, #fee2e2 6px 12px);
+      }
+      .hatch-ok {
+        background-image: repeating-linear-gradient(45deg, #a7f3d0 0 6px, #d1fae5 6px 12px);
+      }
+      .mermaid { display: flex; justify-content: center; }
+      .lbl { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans antialiased">
+    <main class="max-w-6xl mx-auto px-6 py-14 space-y-14">
+
+      <!-- ══════════════════ HEADER ══════════════════ -->
+      <header class="border-b border-slate-300 pb-8">
+        <p class="lbl text-slate-500 mb-2">Architecture review</p>
+        <h1 class="font-serif text-5xl tracking-tight mb-3">Once</h1>
+        <p class="text-slate-600 max-w-2xl">
+          Scoped to the hot spots of the last 60 commits: the Tailscale / Exposure subsystem,
+          the <code class="font-mono text-sm bg-slate-200 px-1 rounded">once</code> label,
+          and the <code class="font-mono text-sm bg-slate-200 px-1 rounded">command</code> ↔
+          <code class="font-mono text-sm bg-slate-200 px-1 rounded">ui</code> ↔
+          <code class="font-mono text-sm bg-slate-200 px-1 rounded">docker</code> seams.
+        </p>
+
+        <div class="mt-8 flex flex-wrap gap-x-8 gap-y-3 text-xs text-slate-600">
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 border-2 border-slate-700 bg-white"></span> module</span>
+          <span class="flex items-center gap-2"><svg width="28" height="8"><line class="seam" x1="0" y1="4" x2="28" y2="4" stroke="#475569" stroke-width="2"/></svg> seam</span>
+          <span class="flex items-center gap-2"><svg width="28" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="#dc2626" stroke-width="2"/><path d="M24 1 L28 4 L24 7 Z" fill="#dc2626"/></svg> leakage</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 deep"></span> deep module</span>
+        </div>
+
+        <div class="mt-8 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+          <div class="border border-slate-200 bg-white rounded p-3">
+            <div class="font-serif text-2xl">~180</div><div class="lbl text-slate-500 mt-1">docker exports</div>
+          </div>
+          <div class="border border-slate-200 bg-white rounded p-3">
+            <div class="font-serif text-2xl">46%</div><div class="lbl text-slate-500 mt-1">docker coverage</div>
+          </div>
+          <div class="border border-slate-200 bg-white rounded p-3">
+            <div class="font-serif text-2xl">4</div><div class="lbl text-slate-500 mt-1">label codecs</div>
+          </div>
+          <div class="border border-slate-200 bg-white rounded p-3">
+            <div class="font-serif text-2xl">2</div><div class="lbl text-slate-500 mt-1">real seams in docker</div>
+          </div>
+        </div>
+      </header>
+
+      <!-- ══════════════════ CANDIDATES ══════════════════ -->
+      <section id="candidates" class="space-y-16">
+
+        <!-- ─────────── 1 ─────────── -->
+        <article id="c1" class="scroll-mt-6">
+          <div class="flex items-baseline gap-4 mb-1">
+            <span class="font-serif text-3xl text-slate-400">01</span>
+            <h2 class="font-serif text-3xl tracking-tight">Give Namespace a workflow spine</h2>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-5 ml-14">
+            <span class="text-xs font-medium px-2 py-1 rounded bg-emerald-100 text-emerald-900 border border-emerald-300">Strong</span>
+            <span class="text-xs font-medium px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-300">in-process</span>
+          </div>
+
+          <div class="ml-14 space-y-6">
+            <p class="font-mono text-xs text-slate-500">
+              internal/command/deploy.go · update.go · tailscale.go · remove.go &nbsp;|&nbsp;
+              internal/ui/install_activity.go · settings.go · settings_form_funnel.go · remove.go &nbsp;|&nbsp;
+              internal/docker/namespace.go
+            </p>
+
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="rounded-lg border border-slate-200 bg-white p-4">
+                <p class="lbl text-slate-500 mb-3">Before — workflow assembled twice</p>
+                <pre class="mermaid">
+flowchart TB
+  CLI["command/deploy.go"] --> S1["HostInUse"]
+  CLI --> S2["Setup"]
+  CLI --> S3["UniqueName"]
+  CLI --> S4["Deploy + rollback"]
+  CLI --> S5["VerifyHTTPOrRemove"]
+  CLI --> S6["warnPublicDNS"]
+  TUI["ui/install_activity.go"] --> S1
+  TUI --> S2
+  TUI --> S3
+  TUI --> S4
+  TUI --> S5
+  TUI -.->|missing| S6
+  classDef leak stroke:#dc2626,stroke-width:2px,fill:#fef2f2;
+  classDef front fill:#e0e7ff,stroke:#4338ca;
+  class S6 leak
+  class CLI,TUI front
+                </pre>
+              </div>
+
+              <div class="rounded-lg border border-slate-200 bg-white p-4">
+                <p class="lbl text-slate-500 mb-3">After — one deep module, two thin callers</p>
+                <pre class="mermaid">
+flowchart TB
+  CLI["command/deploy.go"] --> N
+  TUI["ui/install_activity.go"] --> N
+  N["Namespace.DeployApplication<br/>(settings, progress)"]
+  N --- I["HostInUse · Setup · UniqueName<br/>Deploy · rollback · Verify · warn"]
+  classDef deep fill:#0f172a,stroke:#0f172a,color:#f8fafc;
+  classDef front fill:#e0e7ff,stroke:#4338ca;
+  classDef inner fill:#f1f5f9,stroke:#cbd5e1,color:#64748b;
+  class N deep
+  class CLI,TUI front
+  class I inner
+                </pre>
+              </div>
+            </div>
+
+            <div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+              <p class="lbl text-slate-500 px-4 pt-3">What the duplication has already cost</p>
+              <table class="w-full text-sm">
+                <thead class="text-left text-xs text-slate-500 border-b border-slate-200">
+                  <tr><th class="px-4 py-2 font-medium">Workflow step</th><th class="px-4 py-2 font-medium">CLI</th><th class="px-4 py-2 font-medium">TUI</th></tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                  <tr><td class="px-4 py-2 font-mono text-xs">warnPublicDNS</td><td class="px-4 py-2 text-emerald-700">runs</td><td class="px-4 py-2 text-red-700">absent</td></tr>
+                  <tr><td class="px-4 py-2 font-mono text-xs">Settings.Validate()</td><td class="px-4 py-2 text-emerald-700">2 call sites</td><td class="px-4 py-2 text-red-700">never called</td></tr>
+                  <tr><td class="px-4 py-2 font-mono text-xs">deploy error</td><td class="px-4 py-2 text-emerald-700">returned</td><td class="px-4 py-2 text-red-700">discarded <span class="text-slate-500">(settings.go:180)</span></td></tr>
+                  <tr><td class="px-4 py-2 font-mono text-xs">settings rollback</td><td class="px-4 py-2 text-emerald-700">restores old</td><td class="px-4 py-2 text-red-700">none</td></tr>
+                  <tr><td class="px-4 py-2 font-mono text-xs">removeData</td><td class="px-4 py-2 text-emerald-700">flag</td><td class="px-4 py-2 text-red-700">hardcoded true</td></tr>
+                  <tr><td class="px-4 py-2 font-mono text-xs">requireBackgroundDaemon</td><td class="px-4 py-2 text-slate-600" colspan="2">byte-identical copy in both packages <span class="text-slate-500">(command/tailscale.go:336 ≡ ui/settings_form_funnel.go:136)</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-5">
+              <div><p class="lbl text-slate-500 mb-1">Problem</p><p class="text-sm">Every workflow except <code class="font-mono text-xs">EnableTailscale</code> is re-assembled independently in <code class="font-mono text-xs">command</code> and <code class="font-mono text-xs">ui</code>, and the two copies have drifted apart.</p></div>
+              <div><p class="lbl text-slate-500 mb-1">Solution</p><p class="text-sm">Move ordering, preconditions, rollback and warnings behind <code class="font-mono text-xs">Namespace</code> methods, exactly as <code class="font-mono text-xs">Namespace.EnableTailscale</code> already does.</p></div>
+              <div>
+                <p class="lbl text-slate-500 mb-1">Wins</p>
+                <ul class="text-sm space-y-1 list-disc list-inside marker:text-emerald-600">
+                  <li>locality: drift stops being possible</li>
+                  <li>leverage: one interface, two frontends</li>
+                  <li>five behaviour gaps close for free</li>
+                  <li>workflow becomes unit-testable</li>
+                  <li>deletes two copy-pasted helpers</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- ─────────── 2 ─────────── -->
+        <article id="c2" class="scroll-mt-6">
+          <div class="flex items-baseline gap-4 mb-1">
+            <span class="font-serif text-3xl text-slate-400">02</span>
+            <h2 class="font-serif text-3xl tracking-tight">One module owns the <code class="font-mono text-2xl">once</code> label</h2>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-5 ml-14">
+            <span class="text-xs font-medium px-2 py-1 rounded bg-emerald-100 text-emerald-900 border border-emerald-300">Strong</span>
+            <span class="text-xs font-medium px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-300">in-process</span>
+          </div>
+
+          <div class="ml-14 space-y-6">
+            <p class="font-mono text-xs text-slate-500">
+              internal/docker/application_settings.go:74,92,211 · proxy.go:23,45,51 · volume.go:25,31 · tailscale.go:168,174,669
+            </p>
+
+            <div class="grid md:grid-cols-2 gap-5">
+              <!-- BEFORE: mass diagram -->
+              <div class="rounded-lg border border-slate-200 bg-white p-5">
+                <p class="lbl text-slate-500 mb-4">Before — four codecs, one protected</p>
+                <div class="grid grid-cols-4 gap-3 items-end" style="height:210px">
+                  <div class="flex flex-col justify-end h-full">
+                    <div class="hatch-ok border-2 border-emerald-600 rounded-t" style="height:120px"></div>
+                    <div class="bg-slate-800 text-white text-center py-1 text-[10px] font-mono">App</div>
+                    <p class="text-[9px] text-center text-emerald-700 mt-1 leading-tight">extra map<br/>preserved</p>
+                  </div>
+                  <div class="flex flex-col justify-end h-full">
+                    <div class="hatch border-2 border-red-500 rounded-t" style="height:26px"></div>
+                    <div class="bg-slate-800 text-white text-center py-1 text-[10px] font-mono">Proxy</div>
+                    <p class="text-[9px] text-center text-red-700 mt-1 leading-tight">bare<br/>Unmarshal</p>
+                  </div>
+                  <div class="flex flex-col justify-end h-full">
+                    <div class="hatch border-2 border-red-500 rounded-t" style="height:26px"></div>
+                    <div class="bg-slate-800 text-white text-center py-1 text-[10px] font-mono">Volume</div>
+                    <p class="text-[9px] text-center text-red-700 mt-1 leading-tight">bare<br/>Unmarshal</p>
+                  </div>
+                  <div class="flex flex-col justify-end h-full">
+                    <div class="hatch border-2 border-red-500 rounded-t" style="height:26px"></div>
+                    <div class="bg-slate-800 text-white text-center py-1 text-[10px] font-mono">Tailscale</div>
+                    <p class="text-[9px] text-center text-red-700 mt-1 leading-tight">bare +<br/>write-through</p>
+                  </div>
+                </div>
+                <p class="text-xs text-slate-500 mt-4 border-t border-slate-200 pt-3">
+                  Commit <span class="font-mono">3e47d59</span> fixed field-destruction on <em>one</em> of the four.
+                  <code class="font-mono">unknownFields()</code> is written generically over <code class="font-mono">reflect.Type</code> — and has exactly one caller.
+                </p>
+              </div>
+
+              <!-- AFTER -->
+              <div class="rounded-lg border border-slate-200 bg-white p-5">
+                <p class="lbl text-slate-500 mb-4">After — one codec behind one seam</p>
+                <div class="relative" style="height:210px">
+                  <div class="grid grid-cols-4 gap-3 mb-2">
+                    <div class="bg-slate-100 border border-slate-300 rounded text-center py-1 text-[10px] font-mono">App</div>
+                    <div class="bg-slate-100 border border-slate-300 rounded text-center py-1 text-[10px] font-mono">Proxy</div>
+                    <div class="bg-slate-100 border border-slate-300 rounded text-center py-1 text-[10px] font-mono">Volume</div>
+                    <div class="bg-slate-100 border border-slate-300 rounded text-center py-1 text-[10px] font-mono">Tailscale</div>
+                  </div>
+                  <svg width="100%" height="34" class="block">
+                    <line class="seam" x1="0" y1="17" x2="100%" y2="17" stroke="#475569" stroke-width="2"/>
+                    <text x="50%" y="13" text-anchor="middle" class="lbl" fill="#64748b">label seam</text>
+                  </svg>
+                  <div class="deep rounded-lg text-center flex flex-col items-center justify-center" style="height:118px">
+                    <p class="font-mono text-sm text-emerald-300">Label[T].Encode / Decode</p>
+                    <p class="text-[10px] text-slate-400 mt-2 leading-relaxed px-4">
+                      key · json · unknown-field round-trip · removed-field denylist
+                    </p>
+                  </div>
+                </div>
+                <p class="text-xs text-slate-500 mt-4 border-t border-slate-200 pt-3">
+                  Generic over the settings type. Preservation becomes a property of <em>the label</em>, not of one struct.
+                </p>
+              </div>
+            </div>
+
+            <div class="rounded border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm">
+              <span class="font-semibold text-amber-900">Live exposure.</span>
+              <code class="font-mono text-xs">TailscaleSettings</code> is rewritten by two <em>read</em> paths — <code class="font-mono text-xs">DomainSuffix</code> (tailscale.go:357) and <code class="font-mono text-xs">WaitForFunnelActive</code> (tailscale.go:385) both call <code class="font-mono text-xs">persistSettings</code>, which recreates <code class="font-mono text-xs">once-docktail</code> from <code class="font-mono text-xs">Marshal()</code>. It has grown four optional fields since ADR-0002. Same bug shape as 3e47d59, triggered by a status read.
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-5">
+              <div><p class="lbl text-slate-500 mb-1">Problem</p><p class="text-sm">The <code class="font-mono text-xs">once</code> label has no owning module — four hand-written codec pairs, and the field-preservation fix landed in only one.</p></div>
+              <div><p class="lbl text-slate-500 mb-1">Solution</p><p class="text-sm">One generic label module owning key, encode, decode, unknown-field carry and the removed-field denylist. The four settings types become plain data.</p></div>
+              <div>
+                <p class="lbl text-slate-500 mb-1">Wins</p>
+                <ul class="text-sm space-y-1 list-disc list-inside marker:text-emerald-600">
+                  <li>locality: one round-trip to get right</li>
+                  <li>three unprotected labels covered</li>
+                  <li>backup format shares the codec</li>
+                  <li>tested once, without Docker</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- ─────────── 3 ─────────── -->
+        <article id="c3" class="scroll-mt-6">
+          <div class="flex items-baseline gap-4 mb-1">
+            <span class="font-serif text-3xl text-slate-400">03</span>
+            <h2 class="font-serif text-3xl tracking-tight">Put a seam on the Docker client</h2>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-5 ml-14">
+            <span class="text-xs font-medium px-2 py-1 rounded bg-emerald-100 text-emerald-900 border border-emerald-300">Strong</span>
+            <span class="text-xs font-medium px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-300">ports &amp; adapters</span>
+          </div>
+
+          <div class="ml-14 space-y-6">
+            <p class="font-mono text-xs text-slate-500">
+              internal/docker/namespace.go:31,450 · application.go:397,548 · proxy.go:202 · volume.go · tailscale.go:669 &nbsp;|&nbsp; model: logs.go:37 · scraper.go:35
+            </p>
+
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="rounded-lg border border-slate-200 bg-white p-5">
+                <p class="lbl text-slate-500 mb-4">Before — concrete client, no seam</p>
+                <div class="space-y-2 text-xs font-mono" style="min-height:230px">
+                  <div class="border-2 border-slate-700 rounded px-3 py-2 bg-white">Namespace <span class="text-slate-400">/ Application / Proxy / Tailscale</span></div>
+                  <div class="flex justify-center"><svg width="16" height="24"><line x1="8" y1="0" x2="8" y2="18" class="leak" stroke="#dc2626" stroke-width="2"/><path d="M4 18 L8 24 L12 18 Z" fill="#dc2626"/></svg></div>
+                  <div class="border-2 border-red-400 bg-red-50 rounded px-3 py-2">client *client.Client <span class="text-red-600">— concrete</span></div>
+                  <div class="pt-4 space-y-1.5">
+                    <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-red-500"></span><span class="text-[11px]">restoreState · deployWithVolume · persistSettings</span></div>
+                    <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-red-500"></span><span class="text-[11px]">Proxy.Boot · CreateVolume · containerConfig</span></div>
+                    <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-red-500"></span><span class="text-[11px]">every Tailscale lifecycle branch</span></div>
+                  </div>
+                  <p class="text-[11px] text-slate-500 pt-3 border-t border-slate-200 font-sans leading-relaxed">
+                    All integration-only. <code class="font-mono">namespace_test.go:38</code> uses a
+                    <strong>nil-pointer panic as the test seam</strong> to assert call ordering.
+                  </p>
+                </div>
+              </div>
+
+              <div class="rounded-lg border border-slate-200 bg-white p-5">
+                <p class="lbl text-slate-500 mb-4">After — the pattern already in the repo, widened</p>
+                <div class="space-y-2 text-xs font-mono" style="min-height:230px">
+                  <div class="border-2 border-slate-700 rounded px-3 py-2 bg-white">Namespace <span class="text-slate-400">/ Application / Proxy / Tailscale</span></div>
+                  <svg width="100%" height="30" class="block">
+                    <line class="seam" x1="0" y1="15" x2="100%" y2="15" stroke="#475569" stroke-width="2"/>
+                    <text x="50%" y="11" text-anchor="middle" class="lbl" fill="#64748b" style="font-family:ui-sans-serif">containers interface</text>
+                  </svg>
+                  <div class="grid grid-cols-2 gap-2">
+                    <div class="border-2 border-slate-400 rounded px-2 py-2 text-center">dockerContainers<div class="text-[9px] text-slate-500 font-sans">prod</div></div>
+                    <div class="border-2 border-emerald-500 bg-emerald-50 rounded px-2 py-2 text-center">fakeContainers<div class="text-[9px] text-emerald-700 font-sans">tests</div></div>
+                  </div>
+                  <p class="text-[11px] text-slate-500 pt-3 border-t border-slate-200 font-sans leading-relaxed">
+                    Two adapters justify the seam.
+                    <code class="font-mono">logsClient</code> and <code class="font-mono">statsClient</code>
+                    already prove it — they are the only two unit-tested Docker paths in the package.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-5">
+              <div><p class="lbl text-slate-500 mb-1">Problem</p><p class="text-sm"><code class="font-mono text-xs">Namespace.client</code> is a concrete <code class="font-mono text-xs">*client.Client</code>, so half of a 9,000-line package is reachable only through a 10-minute integration suite.</p></div>
+              <div><p class="lbl text-slate-500 mb-1">Solution</p><p class="text-sm">Start narrow, not with a god interface: split <code class="font-mono text-xs">restoreState</code>'s decode from its fetch, extract <code class="font-mono text-xs">containerConfig</code>'s label build, then widen the seam to inspect/create.</p></div>
+              <div>
+                <p class="lbl text-slate-500 mb-1">Wins</p>
+                <ul class="text-sm space-y-1 list-disc list-inside marker:text-emerald-600">
+                  <li>the interface becomes the test surface</li>
+                  <li>label round-trips testable (unblocks 02)</li>
+                  <li>crash-loop rebuild branches covered</li>
+                  <li>integration budget spent on Docker, not logic</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- ─────────── 4 ─────────── -->
+        <article id="c4" class="scroll-mt-6">
+          <div class="flex items-baseline gap-4 mb-1">
+            <span class="font-serif text-3xl text-slate-400">04</span>
+            <h2 class="font-serif text-3xl tracking-tight">Resolve Tailscale mode and daemon once</h2>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-5 ml-14">
+            <span class="text-xs font-medium px-2 py-1 rounded bg-amber-100 text-amber-900 border border-amber-300">Worth exploring</span>
+            <span class="text-xs font-medium px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-300">in-process</span>
+          </div>
+
+          <div class="ml-14 space-y-6">
+            <p class="font-mono text-xs text-slate-500">
+              internal/docker/tailscale.go:240,370,460,480 · tailscale_status.go:26 · tailscale_names.go:30 · tailscale_verify.go:34 · namespace.go:245
+            </p>
+
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="rounded-lg border border-slate-200 bg-white p-4">
+                <p class="lbl text-slate-500 mb-3">Before — four binders, two resolvers</p>
+                <pre class="mermaid">
+flowchart TB
+  A["ServiceStatuses"] --> R1["LoadSettings + daemonFor"]
+  B["ShadowWarnings"] --> R2["LoadSettings + daemonFor"]
+  C["VerifyServices"] --> R3["LoadSettings + daemonFor"]
+  D["WaitForFunnelActive"] --> R4["LoadSettings + daemonFor"]
+  E["Enable"] --> M1["mode rule (copy 1)"]
+  F["effectiveMode"] --> M2["mode rule (copy 2)"]
+  classDef dup fill:#fef2f2,stroke:#dc2626;
+  class R1,R2,R3,R4,M1,M2 dup
+                </pre>
+                <p class="text-xs text-slate-500 mt-2"><code class="font-mono">effectiveMode</code>'s own comment: <em>"mirroring Enable's own resolution."</em> Two copies of one ADR-0007 rule, kept in sync by a comment.</p>
+              </div>
+
+              <div class="rounded-lg border border-slate-200 bg-white p-4">
+                <p class="lbl text-slate-500 mb-3">After — resolve once, hand it down</p>
+                <pre class="mermaid">
+flowchart TB
+  A["ServiceStatuses"] --> R
+  B["ShadowWarnings"] --> R
+  C["VerifyServices"] --> R
+  D["WaitForFunnelActive"] --> R
+  E["Enable"] --> R
+  R["session(ctx)<br/>→ settings + daemon + mode"]
+  R --- X["one ADR-0007 rule<br/>one daemon choice"]
+  classDef deep fill:#0f172a,stroke:#0f172a,color:#f8fafc;
+  classDef inner fill:#f1f5f9,stroke:#cbd5e1,color:#64748b;
+  class R deep
+  class X inner
+                </pre>
+              </div>
+            </div>
+
+            <!-- control seam cross-section -->
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-500 mb-3">The control seam is a hidden global with eight branch points</p>
+              <div class="flex flex-wrap gap-1.5 text-[10px] font-mono">
+                <span class="px-2 py-1 rounded bg-red-50 border border-red-200">tailscale.go:539</span>
+                <span class="px-2 py-1 rounded bg-red-50 border border-red-200">tailscale.go:617</span>
+                <span class="px-2 py-1 rounded bg-red-50 border border-red-200">validate.go:55</span>
+                <span class="px-2 py-1 rounded bg-red-50 border border-red-200">validate.go:126</span>
+                <span class="px-2 py-1 rounded bg-red-50 border border-red-200">verify.go:30</span>
+                <span class="px-2 py-1 rounded bg-red-50 border border-red-200">status.go:43</span>
+                <span class="px-2 py-1 rounded bg-orange-100 border border-orange-300">command/tailscale.go:107</span>
+                <span class="px-2 py-1 rounded bg-orange-100 border border-orange-300">ui/tailscale_form.go:193</span>
+              </div>
+              <p class="text-xs text-slate-500 mt-3">
+                Nothing enumerates them; you find them by grepping. The last two leak the seam into the frontends — both re-implement the same credential suppression.
+              </p>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-5">
+              <div><p class="lbl text-slate-500 mb-1">Problem</p><p class="text-sm">Mode resolution exists twice, the settings+daemon binding four times, and the control seam branches at eight ungathered points across three packages.</p></div>
+              <div><p class="lbl text-slate-500 mb-1">Solution</p><p class="text-sm">Resolve settings, mode and daemon once per operation and pass the result down. Absorb the control-seam credential rule into <code class="font-mono text-xs">EnableTailscale</code>.</p></div>
+              <div>
+                <p class="lbl text-slate-500 mb-1">Wins</p>
+                <ul class="text-sm space-y-1 list-disc list-inside marker:text-amber-600">
+                  <li>ADR-0007's rule lives in one place</li>
+                  <li>deletes four binding wrappers</li>
+                  <li>seam stops leaking into command/ui</li>
+                  <li>shrinks a 45-symbol interface</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- ─────────── 5 ─────────── -->
+        <article id="c5" class="scroll-mt-6">
+          <div class="flex items-baseline gap-4 mb-1">
+            <span class="font-serif text-3xl text-slate-400">05</span>
+            <h2 class="font-serif text-3xl tracking-tight">Turn <code class="font-mono text-2xl">baseURL</code> into an adapter</h2>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-5 ml-14">
+            <span class="text-xs font-medium px-2 py-1 rounded bg-amber-100 text-amber-900 border border-amber-300">Worth exploring</span>
+            <span class="text-xs font-medium px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-300">ports &amp; adapters</span>
+          </div>
+
+          <div class="ml-14 space-y-6">
+            <p class="font-mono text-xs text-slate-500">
+              internal/docker/tailscale_validate.go:68,108,136,152,259,294,312,397,228,411 · tailscale_verify.go:87,140 · tailscale_status.go:36
+            </p>
+
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="rounded-lg border border-slate-200 bg-white p-5">
+                <p class="lbl text-slate-500 mb-4">Before — a test-only parameter, threaded</p>
+                <div class="space-y-1.5" style="min-height:220px">
+                  <div class="border border-slate-300 rounded px-3 py-1.5 text-[11px] font-mono bg-white">EnableTailscale <span class="text-red-600">(baseURL)</span></div>
+                  <div class="border border-slate-300 rounded px-3 py-1.5 text-[11px] font-mono bg-white ml-3">validateOAuthCredentials <span class="text-red-600">(baseURL)</span></div>
+                  <div class="border border-slate-300 rounded px-3 py-1.5 text-[11px] font-mono bg-white ml-6">validateHostModePreflight <span class="text-red-600">(baseURL)</span></div>
+                  <div class="border border-slate-300 rounded px-3 py-1.5 text-[11px] font-mono bg-white ml-9">createTailscaleAuthKey <span class="text-red-600">(baseURL)</span></div>
+                  <div class="border border-slate-300 rounded px-3 py-1.5 text-[11px] font-mono bg-white ml-12">tailscaleAPICall <span class="text-red-600">(baseURL)</span></div>
+                  <div class="border-2 border-red-400 bg-red-50 rounded px-3 py-1.5 text-[11px] font-mono ml-14">http.DefaultClient.Do</div>
+                  <p class="text-[11px] text-slate-500 pt-3 border-t border-slate-200 leading-relaxed">
+                    One production value, one constant, 7 signatures carrying it. Three httptest servers hand-rolled to receive it.
+                  </p>
+                </div>
+              </div>
+
+              <div class="rounded-lg border border-slate-200 bg-white p-5">
+                <p class="lbl text-slate-500 mb-4">After — the seam is a type</p>
+                <div class="space-y-2" style="min-height:220px">
+                  <div class="border-2 border-slate-700 rounded px-3 py-2 text-[11px] font-mono bg-white">validate · verify · status <span class="text-slate-400">(no baseURL)</span></div>
+                  <svg width="100%" height="28" class="block">
+                    <line class="seam" x1="0" y1="14" x2="100%" y2="14" stroke="#475569" stroke-width="2"/>
+                    <text x="50%" y="10" text-anchor="middle" class="lbl" fill="#64748b">tailscaleAPI</text>
+                  </svg>
+                  <div class="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                    <div class="border-2 border-slate-400 rounded px-2 py-2 text-center">httpTailscaleAPI</div>
+                    <div class="border-2 border-emerald-500 bg-emerald-50 rounded px-2 py-2 text-center">fakeTailscaleAPI</div>
+                  </div>
+                  <p class="text-[11px] text-slate-500 pt-3 border-t border-slate-200 leading-relaxed">
+                    Mirrors <code class="font-mono">TailscaleDaemon</code> — the one seam in this subsystem that already works, with a fake that routes canned JSON through the production parsers so it cannot drift.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm">
+              <span class="font-semibold text-amber-900">Keep ADR-0005 intact.</span>
+              The adapter sits <em>above</em> the metadata-only <code class="font-mono text-xs">http.RoundTripper</code>, never replacing it. Do not let the adapter read bodies.
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-5">
+              <div><p class="lbl text-slate-500 mb-1">Problem</p><p class="text-sm">The Tailscale API has no seam. Testability was bought by threading a parameter that has exactly one production value through seven signatures.</p></div>
+              <div><p class="lbl text-slate-500 mb-1">Solution</p><p class="text-sm">One <code class="font-mono text-xs">tailscaleAPI</code> interface with an HTTP adapter and a fake, following the <code class="font-mono text-xs">TailscaleDaemon</code> model.</p></div>
+              <div>
+                <p class="lbl text-slate-500 mb-1">Wins</p>
+                <ul class="text-sm space-y-1 list-disc list-inside marker:text-amber-600">
+                  <li>interface shrinks by seven params</li>
+                  <li>three httptest servers become one fake</li>
+                  <li>SaaS-only paths stay CI-testable</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- ─────────── 6 ─────────── -->
+        <article id="c6" class="scroll-mt-6">
+          <div class="flex items-baseline gap-4 mb-1">
+            <span class="font-serif text-3xl text-slate-400">06</span>
+            <h2 class="font-serif text-3xl tracking-tight">Address Form fields by key, not index</h2>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-5 ml-14">
+            <span class="text-xs font-medium px-2 py-1 rounded bg-amber-100 text-amber-900 border border-amber-300">Worth exploring</span>
+            <span class="text-xs font-medium px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-300">in-process</span>
+          </div>
+
+          <div class="ml-14 space-y-6">
+            <p class="font-mono text-xs text-slate-500">
+              internal/ui/form.go:404,471,508 · tailscale_form.go:17 · settings_form_*.go &nbsp;|&nbsp; integration/ui_test.go:60,194,206
+            </p>
+
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="rounded-lg border border-slate-200 bg-white p-5">
+                <p class="lbl text-slate-500 mb-4">Before — tab-order is the interface</p>
+                <div class="font-mono text-[11px] space-y-1.5" style="min-height:200px">
+                  <div class="flex items-center gap-2"><span class="w-5 text-slate-400">0</span><div class="flex-1 border border-slate-300 rounded px-2 py-1">Client ID</div></div>
+                  <div class="flex items-center gap-2"><span class="w-5 text-slate-400">1</span><div class="flex-1 border border-slate-300 rounded px-2 py-1">Client Secret</div></div>
+                  <div class="flex items-center gap-2"><span class="w-5 text-red-500 font-bold">2</span><div class="flex-1 border-2 border-red-400 bg-red-50 rounded px-2 py-1">Mode <span class="text-red-600">← inserted</span></div></div>
+                  <div class="flex items-center gap-2"><span class="w-5 text-slate-400">3</span><div class="flex-1 border border-slate-300 rounded px-2 py-1">Tag</div></div>
+                  <div class="flex items-center gap-2"><span class="w-5 text-slate-400">n</span><div class="flex-1 border border-dashed border-slate-400 rounded px-2 py-1 text-slate-500">submit / action / cancel</div></div>
+                  <div class="pt-3 mt-2 border-t border-slate-200 font-sans text-[11px] text-slate-600 leading-relaxed">
+                    <span class="text-red-600 font-medium">Failure mode:</span> submit is rejected silently
+                    (<code class="font-mono">submitIfValid</code> just refocuses), the overlay never closes, and the driver's
+                    <code class="font-mono">waitUntil</code> burns <strong>3 of the suite's 10 minutes</strong> before reporting a timeout.
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-lg border border-slate-200 bg-white p-5">
+                <p class="lbl text-slate-500 mb-4">After — keys, plus a rejection message</p>
+                <div class="font-mono text-[11px] space-y-1.5" style="min-height:200px">
+                  <div class="border border-slate-300 rounded px-2 py-1">f.Field("clientID")</div>
+                  <div class="border border-slate-300 rounded px-2 py-1">f.Field("clientSecret")</div>
+                  <div class="border-2 border-emerald-500 bg-emerald-50 rounded px-2 py-1">f.Field("mode") <span class="text-emerald-700">← insert anywhere</span></div>
+                  <div class="border border-slate-300 rounded px-2 py-1">f.Field("tag")</div>
+                  <svg width="100%" height="26" class="block"><line class="seam" x1="0" y1="13" x2="100%" y2="13" stroke="#475569" stroke-width="2"/></svg>
+                  <div class="deep rounded px-3 py-2 text-emerald-300 text-center">FormSubmitRejectedMsg{field, reason}</div>
+                  <div class="pt-3 mt-2 border-t border-slate-200 font-sans text-[11px] text-slate-600 leading-relaxed">
+                    Field sets and validation become table tests in <code class="font-mono">internal/ui</code>.
+                    <code class="font-mono">form_test.go</code> already drives <code class="font-mono">Form.Update</code> without a live TUI — the shape exists, it just isn't reachable by key.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-5">
+              <div><p class="lbl text-slate-500 mb-1">Problem</p><p class="text-sm">Fields are positional ints and rejected submits are invisible from outside, so the integration drivers encode tab counts and fail by timeout instead of assertion.</p></div>
+              <div><p class="lbl text-slate-500 mb-1">Solution</p><p class="text-sm">Key-addressed fields plus a rejection message. Integration then asserts only that Docker did the thing.</p></div>
+              <div>
+                <p class="lbl text-slate-500 mb-1">Wins</p>
+                <ul class="text-sm space-y-1 list-disc list-inside marker:text-amber-600">
+                  <li>reordering a field stops breaking tests</li>
+                  <li>failures are assertions, not timeouts</li>
+                  <li>retires an AGENTS.md hazard note</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- ─────────── 7 ─────────── -->
+        <article id="c7" class="scroll-mt-6">
+          <div class="flex items-baseline gap-4 mb-1">
+            <span class="font-serif text-3xl text-slate-400">07</span>
+            <h2 class="font-serif text-3xl tracking-tight">One progress adapter</h2>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-5 ml-14">
+            <span class="text-xs font-medium px-2 py-1 rounded bg-slate-200 text-slate-700 border border-slate-400">Speculative</span>
+            <span class="text-xs font-medium px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-300">in-process</span>
+          </div>
+
+          <div class="ml-14 space-y-6">
+            <p class="font-mono text-xs text-slate-500">
+              internal/docker/progress.go:18 · command/cli_progress.go:81 · ui/install_activity.go:16,186 · ui/tailscale_form.go:197 · background/runner.go:198
+            </p>
+
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-500 mb-4">One callback, five consumers, no shared translation</p>
+              <div class="grid grid-cols-5 gap-2 text-[10px] text-center">
+                <div class="border border-slate-300 rounded p-2"><div class="font-mono">cli_progress</div><div class="text-slate-500 mt-1">own enum + 2nd Bubbletea program</div></div>
+                <div class="border border-slate-300 rounded p-2"><div class="font-mono">install_activity</div><div class="text-slate-500 mt-1">parallel <code>installStage</code></div></div>
+                <div class="border border-slate-300 rounded p-2"><div class="font-mono">tailscale_form</div><div class="text-slate-500 mt-1">filters to chan string</div></div>
+                <div class="border-2 border-red-400 bg-red-50 rounded p-2"><div class="font-mono">settings / update</div><div class="text-red-700 mt-1">passes nil — loses %</div></div>
+                <div class="border-2 border-red-400 bg-red-50 rounded p-2"><div class="font-mono">background/runner</div><div class="text-red-700 mt-1">passes nil — slog only</div></div>
+              </div>
+              <p class="text-xs text-slate-500 mt-4 border-t border-slate-200 pt-3">
+                The TUI loses download percentage on exactly the operations where the CLI keeps it. <code class="font-mono">command</code> imports <code class="font-mono">ui</code> to borrow the widget.
+              </p>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-5">
+              <div><p class="lbl text-slate-500 mb-1">Problem</p><p class="text-sm">Four incompatible adapters over one callback, and two silent paths.</p></div>
+              <div><p class="lbl text-slate-500 mb-1">Solution</p><p class="text-sm">One presentation-neutral progress module both frontends render. Lower value than 01–06; worth doing <em>with</em> 01, not before it.</p></div>
+              <div>
+                <p class="lbl text-slate-500 mb-1">Wins</p>
+                <ul class="text-sm space-y-1 list-disc list-inside marker:text-slate-500">
+                  <li>one stage vocabulary</li>
+                  <li><code class="font-mono text-xs">command</code> stops importing <code class="font-mono text-xs">ui</code></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <!-- ══════════════════ TOP RECOMMENDATION ══════════════════ -->
+      <section id="top-recommendation">
+        <div class="deep rounded-xl p-8 text-slate-100">
+          <p class="lbl text-emerald-400 mb-3">Top recommendation</p>
+          <h2 class="font-serif text-3xl mb-4">
+            <a href="#c1" class="hover:text-emerald-300 transition-colors">01 — Give Namespace a workflow spine</a>
+          </h2>
+          <p class="text-slate-300 max-w-3xl leading-relaxed">
+            The only candidate whose friction has already shipped as divergent behaviour: the TUI skips the public-DNS preflight,
+            never calls <code class="font-mono text-sm text-emerald-300">Settings.Validate()</code>, discards deploy errors,
+            has no settings rollback, and can only ever destroy data on remove. Five gaps, one missing module.
+          </p>
+          <p class="text-slate-300 max-w-3xl leading-relaxed mt-4">
+            It needs no new seam and no ADR revisited — <code class="font-mono text-sm text-emerald-300">Namespace.EnableTailscale</code>
+            is already the model, and its docstring already claims the role: <em>"the full enable lifecycle shared by the CLI and TUI."</em>
+            Funnel, deploy, update and remove never got the same treatment.
+          </p>
+          <div class="mt-8 pt-6 border-t border-slate-700 flex flex-wrap gap-x-10 gap-y-2 text-sm">
+            <span class="text-slate-400">Then: <a href="#c2" class="text-emerald-300 hover:underline">02 label codec</a> — a fixed bug waiting to recur on three types</span>
+            <span class="text-slate-400">Then: <a href="#c3" class="text-emerald-300 hover:underline">03 Docker seam</a> — unblocks testing both</span>
+          </div>
+        </div>
+      </section>
+
+      <footer class="pt-8 border-t border-slate-300 text-xs text-slate-500 font-mono">
+        once · main @ 2ecb6b2 · 2026-07-25
+      </footer>
+    </main>
+  </body>
+</html>

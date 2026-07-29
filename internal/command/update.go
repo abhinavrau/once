@@ -54,29 +54,12 @@ func (u *updateCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 		return err
 	}
 
-	if err := ns.Setup(ctx); err != nil {
-		return fmt.Errorf("%w: %w", docker.ErrSetupFailed, err)
-	}
-
-	if settings.Host != app.Settings.Host {
-		if ns.HostInUseByAnother(settings.Host, app.Settings.Name) {
-			return docker.ErrHostnameInUse
-		}
-	}
-
-	warnShadowedServiceName(ctx, ns, settings)
-	if w := docker.PublicDNSWarning(ctx, settings.Exposure, settings.Host); w != "" {
-		printWarnings([]string{w})
-	}
-
-	oldSettings := app.Settings
-	app.Settings = settings
-
-	return runWithProgress("Updating "+currentHost, func(progress docker.DeployProgressCallback) error {
-		if err := app.Deploy(ctx, progress); err != nil {
-			app.Settings = oldSettings
-			return fmt.Errorf("%w: %w", docker.ErrDeployFailed, err)
-		}
-		return nil
+	var warnings []string
+	err = runWithProgress("Updating "+currentHost, func(progress docker.DeployProgressCallback) error {
+		var applyErr error
+		warnings, applyErr = ns.ApplySettings(ctx, app, settings, progress)
+		return applyErr
 	})
+	printWarnings(warnings)
+	return hintTailscaleEnable(err)
 }

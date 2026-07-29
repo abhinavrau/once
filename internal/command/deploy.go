@@ -59,5 +59,5 @@ func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 		return deployErr
 	})
 	printWarnings(warnings)
-	return err
+	return hintTailscaleEnable(err)
 }

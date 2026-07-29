@@ -55,11 +55,13 @@ type Settings struct {
 	sectionType          SettingsSectionType
 	progress             Progress
 	err                  error
+	warnings             []string
 	actionSuccessMessage string
 }
 
 type settingsDeployFinishedMsg struct {
-	err error
+	warnings []string
+	err      error
 }
 
 type settingsActionFinishedMsg struct {
@@ -155,9 +157,8 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, nil
 		}
 		if m.state == settingsStateForm {
-			if m.err != nil {
-				m.err = nil
-			}
+			m.err = nil
+			m.warnings = nil
 			if key.Matches(msg, settingsKeys.Back) {
 				return m, m.navigateToDashboard()
 			}
@@ -178,6 +179,17 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		})
 
 	case settingsDeployFinishedMsg:
+		if msg.err != nil {
+			m.state = settingsStateForm
+			m.err = msg.err
+			return m, nil
+		}
+		// Warnings keep the form open so the user actually sees them.
+		if len(msg.warnings) > 0 {
+			m.state = settingsStateForm
+			m.warnings = msg.warnings
+			return m, nil
+		}
 		return m, func() tea.Msg { return NavigateToAppMsg{App: m.app} }
 
 	case settingsActionFinishedMsg:
@@ -209,6 +221,8 @@ func (m Settings) View() string {
 		var statusLine string
 		if m.err != nil {
 			statusLine = lipgloss.NewStyle().Foreground(Colors.Error).Width(m.width).Align(lipgloss.Center).Render(docker.ErrorMessage(m.err))
+		} else if len(m.warnings) > 0 {
+			statusLine = lipgloss.NewStyle().Foreground(Colors.Warning).Width(m.width).Align(lipgloss.Center).Render(strings.Join(m.warnings, "\n"))
 		} else if line := m.section.StatusLine(); line != "" {
 			statusLine = lipgloss.NewStyle().Foreground(Colors.Muted).Render(line)
 		}
@@ -246,17 +260,9 @@ func (m Settings) navigateToDashboard() tea.Cmd {
 }
 
 func (m Settings) handleFormSubmit(msg SettingsSectionSubmitMsg) (Component, tea.Cmd) {
-	if msg.Settings.Equal(m.app.Settings) {
-		return m, m.navigateToDashboard()
-	}
-	if m.namespace.HostInUseByAnother(msg.Settings.Host, m.app.Settings.Name) {
-		m.err = docker.ErrHostnameInUse
-		return m, nil
-	}
 	m.state = settingsStateDeploying
-	m.app.Settings = msg.Settings
 	m.progress = NewProgress(m.width, Colors.Border)
-	return m, tea.Batch(m.progress.Init(), m.runDeploy())
+	return m, tea.Batch(m.progress.Init(), m.runApplySettings(msg.Settings))
 }
 
 func (m Settings) handleActionResult(msg settingsActionFinishedMsg) (Component, tea.Cmd) {
@@ -287,10 +293,11 @@ func (m Settings) renderActionComplete() string {
 	return lipgloss.JoinVertical(lipgloss.Left, statusLine, buttonView)
 }
 
-func (m Settings) runDeploy() tea.Cmd {
+func (m Settings) runApplySettings(settings docker.ApplicationSettings) tea.Cmd {
+	ns, app := m.namespace, m.app
 	return func() tea.Msg {
-		err := m.app.Deploy(context.Background(), nil)
-		return settingsDeployFinishedMsg{err: err}
+		warnings, err := ns.ApplySettings(context.Background(), app, settings, nil)
+		return settingsDeployFinishedMsg{warnings: warnings, err: err}
 	}
 }
 

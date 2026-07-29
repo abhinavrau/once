@@ -310,13 +310,13 @@ func withLegacyTSDProxyWarning(fn NamespaceRunE) func(*cobra.Command, []string) 
 	})
 }
 
-// warnShadowedServiceName surfaces the hostname-shadowing warning for a
-// tailnet-exposed app's service name - the collision guard against existing
-// tailnet machines.
-func warnShadowedServiceName(ctx context.Context, ns *docker.Namespace, settings docker.ApplicationSettings) {
-	if settings.Exposure == docker.ExposureTailnet {
-		printWarnings(ns.Tailscale().ShadowWarnings(ctx, []string{settings.Host}))
+// hintTailscaleEnable points a CLI user at the fix when a deploy is refused
+// because Tailscale is not enabled.
+func hintTailscaleEnable(err error) error {
+	if errors.Is(err, docker.ErrTailscaleNotEnabled) {
+		return fmt.Errorf("%w; run `once tailscale enable` first", err)
 	}
+	return err
 }
 
 func printWarnings(warnings []string) {

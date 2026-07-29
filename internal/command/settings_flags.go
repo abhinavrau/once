@@ -168,10 +168,6 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 	}
 	s.Host = host
 
-	if err := s.Validate(); err != nil {
-		return s, err
-	}
-
 	return s, nil
 }
 
