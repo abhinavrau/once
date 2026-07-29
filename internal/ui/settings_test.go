@@ -71,18 +71,20 @@ func TestSettings_DeployFinishedNavigatesToApp(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestSettings_DeployFinishedWithErrorStillNavigates(t *testing.T) {
-	// Current behavior: deploy errors are not surfaced to the user;
-	// the handler always navigates to the app screen.
+func TestSettings_DeployFinishedWithErrorSurfacesErrorAndRestoresSettings(t *testing.T) {
 	s := testSettings()
-	s.state = settingsStateDeploying
+	original := s.app.Settings
 
-	_, cmd := updateSettings(s, settingsDeployFinishedMsg{err: assert.AnError})
-	require.NotNil(t, cmd)
+	changed := original
+	changed.Host = "new.example.com"
+	s, _ = updateSettings(s, SettingsSectionSubmitMsg{Settings: changed})
+	require.Equal(t, settingsStateDeploying, s.state)
 
-	msg := cmd()
-	_, ok := msg.(NavigateToAppMsg)
-	assert.True(t, ok)
+	s, cmd := updateSettings(s, settingsDeployFinishedMsg{err: assert.AnError})
+	assert.Nil(t, cmd)
+	assert.Equal(t, settingsStateForm, s.state)
+	assert.Equal(t, assert.AnError, s.err)
+	assert.Equal(t, original, s.app.Settings)
 }
 
 func TestSettings_ActionFinishedWithError(t *testing.T) {

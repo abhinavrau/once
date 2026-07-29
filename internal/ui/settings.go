@@ -56,6 +56,7 @@ type Settings struct {
 	progress             Progress
 	err                  error
 	actionSuccessMessage string
+	previousSettings     docker.ApplicationSettings
 }
 
 type settingsDeployFinishedMsg struct {
@@ -178,6 +179,12 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		})
 
 	case settingsDeployFinishedMsg:
+		if msg.err != nil {
+			m.app.Settings = m.previousSettings
+			m.state = settingsStateForm
+			m.err = msg.err
+			return m, nil
+		}
 		return m, func() tea.Msg { return NavigateToAppMsg{App: m.app} }
 
 	case settingsActionFinishedMsg:
@@ -254,6 +261,7 @@ func (m Settings) handleFormSubmit(msg SettingsSectionSubmitMsg) (Component, tea
 		return m, nil
 	}
 	m.state = settingsStateDeploying
+	m.previousSettings = m.app.Settings
 	m.app.Settings = msg.Settings
 	m.progress = NewProgress(m.width, Colors.Border)
 	return m, tea.Batch(m.progress.Init(), m.runDeploy())

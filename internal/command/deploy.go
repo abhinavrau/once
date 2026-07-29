@@ -79,7 +79,7 @@ func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 			if cleanupErr := app.Destroy(context.Background(), true); cleanupErr != nil {
 				slog.Error("Failed to clean up after deploy failure", "app", name, "error", cleanupErr)
 			}
-			return fmt.Errorf("%w: %w", docker.ErrDeployFailed, err)
+			return fmt.Errorf("%w: %w", docker.ErrDeployFailed, hintTailscaleEnable(err))
 		}
 
 		if err := app.VerifyHTTPOrRemove(ctx); err != nil {

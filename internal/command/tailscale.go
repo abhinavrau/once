@@ -319,6 +319,15 @@ func warnShadowedServiceName(ctx context.Context, ns *docker.Namespace, settings
 	}
 }
 
+// hintTailscaleEnable points a CLI user at the fix when a deploy is refused
+// because Tailscale is not enabled.
+func hintTailscaleEnable(err error) error {
+	if errors.Is(err, docker.ErrTailscaleNotEnabled) {
+		return fmt.Errorf("%w; run `once tailscale enable` first", err)
+	}
+	return err
+}
+
 func printTailscaleWarnings(warnings []string) {
 	for _, w := range warnings {
 		fmt.Println("Warning:", w)

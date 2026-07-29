@@ -32,7 +32,7 @@ var (
 		description: "Failed to download the application image. Check that the image name is correct and try again.",
 	}
 	ErrDeployFailed          = errors.New("deploy failed")
-	ErrTailscaleNotEnabled   = errors.New("tailnet exposure requires Tailscale; run `once tailscale enable` first")
+	ErrTailscaleNotEnabled   = errors.New("tailnet exposure requires Tailscale, which is not enabled")
 	ErrFunnelRequiresTailnet = errors.New("funnel requires tailnet exposure; switch the app with `once update <host> --expose tailnet` first")
 	ErrVerificationFailed    = &describedError{
 		msg:         "verification failed",
