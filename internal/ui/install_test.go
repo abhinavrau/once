@@ -85,6 +85,18 @@ func TestInstall_SuccessNavigatesToApp(t *testing.T) {
 	assert.Equal(t, app, navMsg.App)
 }
 
+func TestInstall_SuccessViewBeforeNavigateDoesNotPanic(t *testing.T) {
+	m := newTestInstall()
+	m, _ = updateInstall(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = updateInstall(m, InstallFormSubmitMsg{ImageRef: "ghcr.io/basecamp/once-campfire:latest", Hostname: "app.example.com", Exposure: docker.ExposurePublic})
+
+	// A render can land between the done message and the navigate command;
+	// the activity view must survive it.
+	m, cmd := updateInstall(m, InstallActivityDoneMsg{App: &docker.Application{}})
+	require.NotNil(t, cmd)
+	assert.NotPanics(t, func() { m.View() })
+}
+
 func TestInstall_FailureReturnsToHostname(t *testing.T) {
 	ns := newTestNamespace()
 	m := NewInstall(ns, "")

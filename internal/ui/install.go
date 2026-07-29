@@ -264,15 +264,17 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, nil
 
 	case InstallActivityDoneMsg:
-		m.activity = nil
 		m.installedApp = msg.App
 		// Warnings keep the user on the install screen so they are actually
 		// seen before navigating away.
 		if len(msg.Warnings) > 0 {
+			m.activity = nil
 			m.warnings = msg.Warnings
 			m.state = installStateWarnings
 			return m, nil
 		}
+		// Stay on the activity view until the navigate command lands; the
+		// state is still installStateActivity, so View and Update need it.
 		return m, m.navigateToInstalledApp()
 	}
 
