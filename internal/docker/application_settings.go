@@ -71,6 +71,16 @@ type ApplicationSettings struct {
 	extra map[string]json.RawMessage
 }
 
+// DefaultApplicationSettings is the single source of settings defaults: both
+// the CLI deploy flags and the TUI install path start from it, so a field's
+// default value is written here and nowhere else.
+func DefaultApplicationSettings() ApplicationSettings {
+	return ApplicationSettings{
+		Exposure:   ExposureLocal,
+		AutoUpdate: true,
+	}
+}
+
 func UnmarshalApplicationSettings(s string) (ApplicationSettings, error) {
 	var settings ApplicationSettings
 	err := json.Unmarshal([]byte(s), &settings)

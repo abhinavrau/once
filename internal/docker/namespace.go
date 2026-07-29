@@ -219,6 +219,49 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 	return err
 }
 
+// Deploy is the full deploy lifecycle shared by the CLI and TUI: validate the
+// settings, reject a host already in use, set up the namespace, assign the
+// app's unique name, run the warn-only checks, deploy with progress, destroy
+// the part-built application if the deploy fails, and verify it answers over
+// HTTP. The returned warnings never block the deploy and may accompany an
+// error; each frontend renders them its own way.
+func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, progress DeployProgressCallback) (*Application, []string, error) {
+	if err := settings.Validate(); err != nil {
+		return nil, nil, err
+	}
+	if n.HostInUse(settings.Host) {
+		return nil, nil, ErrHostnameInUse
+	}
+	if err := n.Setup(ctx); err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", ErrSetupFailed, err)
+	}
+
+	name, err := n.UniqueName(NameFromImageRef(settings.Image))
+	if err != nil {
+		return nil, nil, fmt.Errorf("generating app name: %w", err)
+	}
+	settings.Name = name
+
+	app := NewApplication(n, settings)
+	warnings := n.deployWarnings(ctx, settings)
+
+	if err := app.Deploy(ctx, progress); err != nil {
+		if cleanupErr := app.Destroy(context.Background(), true); cleanupErr != nil {
+			slog.Error("Failed to clean up after deploy failure", "app", name, "error", cleanupErr)
+		}
+		return nil, warnings, fmt.Errorf("%w: %w", ErrDeployFailed, err)
+	}
+
+	if progress != nil {
+		progress(DeployProgress{Stage: DeployStageWaiting, Status: "verifying"})
+	}
+	if err := app.VerifyHTTPOrRemove(ctx); err != nil {
+		return nil, warnings, err
+	}
+
+	return app, warnings, nil
+}
+
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
 // validate the exposed app names, the host-mode pre-flight (when the
 // effective mode is host), and the credentials, bring up the network,
@@ -283,6 +326,39 @@ func (n *Namespace) DisableTailscale(ctx context.Context) error {
 		return fmt.Errorf("disabling Tailscale: %w", err)
 	}
 	return nil
+}
+
+// EnableFunnel is the full Funnel-enable lifecycle shared by the CLI and TUI:
+// validate the requested duration, confirm Tailscale is enabled (live, at
+// submit time) and the background daemon is running (Funnel teardown at expiry
+// runs there - without it the app would stay public indefinitely), enable the
+// Funnel on the app with its expiry, then wait for the local tailscaled to
+// confirm a Funnel is actually serving before reporting success. Returns the
+// public URL and the expiry time. A disabled Tailscale reads as
+// ErrTailscaleNotEnabled so each frontend can word the fix for its interface.
+func (n *Namespace) EnableFunnel(ctx context.Context, app *Application, duration time.Duration) (string, time.Time, error) {
+	if err := ValidateFunnelDuration(duration); err != nil {
+		return "", time.Time{}, err
+	}
+	enabled, err := n.tailscale.Enabled(ctx)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("checking Tailscale: %w", err)
+	}
+	if !enabled {
+		return "", time.Time{}, ErrTailscaleNotEnabled
+	}
+	if err := requireBackgroundDaemon(n.name); err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Now().Add(duration)
+	if err := app.EnableFunnel(ctx, expiresAt); err != nil {
+		return "", time.Time{}, fmt.Errorf("enabling Funnel: %w", err)
+	}
+	url, err := n.tailscale.WaitForFunnelActive(ctx, app)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return url, expiresAt, nil
 }
 
 // Teardown is best effort: every removal is attempted even when an earlier one
@@ -413,6 +489,19 @@ func (n *Namespace) containerAppName(containerName string) string {
 }
 
 // Private
+
+// deployWarnings collects the warn-only pre-deploy checks: a tailnet service
+// name shadowed by an existing tailnet machine, and the public DNS preflight.
+func (n *Namespace) deployWarnings(ctx context.Context, settings ApplicationSettings) []string {
+	var warnings []string
+	if settings.Exposure == ExposureTailnet {
+		warnings = append(warnings, n.tailscale.ShadowWarnings(ctx, []string{settings.Host})...)
+	}
+	if w := PublicDNSWarning(ctx, settings.Exposure, settings.Host); w != "" {
+		warnings = append(warnings, w)
+	}
+	return warnings
+}
 
 // expectedTailscaleServices lists the services that should exist on the
 // tailnet after enable: one per running tailnet-exposed application (under

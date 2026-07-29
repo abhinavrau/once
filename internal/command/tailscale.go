@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/basecamp/once/internal/docker"
-	"github.com/basecamp/once/internal/service"
 )
 
 type tailscaleCommand struct {
@@ -113,7 +112,7 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 		warnings, err = ns.EnableTailscale(ctx, settings, progress)
 		return err
 	})
-	printTailscaleWarnings(warnings)
+	printWarnings(warnings)
 	if errors.Is(err, docker.ErrTagNotInPolicy) {
 		printPolicySnippet(t.tag)
 	}
@@ -236,40 +235,14 @@ func (t *tailscaleCommand) statusReport(ctx context.Context, ns *docker.Namespac
 }
 
 func (t *tailscaleCommand) funnelEnable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	if err := docker.ValidateFunnelDuration(t.duration); err != nil {
-		return err
-	}
-
-	enabled, err := ns.Tailscale().Enabled(ctx)
-	if err != nil {
-		return fmt.Errorf("checking Tailscale: %w", err)
-	}
-	if !enabled {
-		return fmt.Errorf("run `once tailscale enable` first; Tailscale is not enabled")
-	}
-
-	// Daemon required: without it, the automatic teardown at expiry could never
-	// run and the app would stay public indefinitely.
-	if err := requireBackgroundDaemon(ns.Name()); err != nil {
-		return err
-	}
-
 	app := ns.ApplicationByNameOrHost(args[0])
 	if app == nil {
 		return fmt.Errorf("no application named %q", args[0])
 	}
 
-	expiresAt := time.Now().Add(t.duration)
-	if err := app.EnableFunnel(ctx, expiresAt); err != nil {
-		return fmt.Errorf("enabling Funnel: %w", err)
-	}
-
-	// Surface activation failures: Funnel needs the tailnet ACL's funnel node
-	// attribute, which Once can't manage. Only report it active once the local
-	// tailscaled confirms a Funnel proxying to this app's container.
-	url, err := ns.Tailscale().WaitForFunnelActive(ctx, app)
+	url, expiresAt, err := ns.EnableFunnel(ctx, app, t.duration)
 	if err != nil {
-		return err
+		return hintTailscaleEnable(err)
 	}
 
 	fmt.Printf("Funnel enabled for %s until %s\n", app.Settings.Name, expiresAt.Format(time.RFC3339))
@@ -304,22 +277,22 @@ func (t *tailscaleCommand) funnelDisable(ctx context.Context, ns *docker.Namespa
 func withLegacyTSDProxyWarning(fn NamespaceRunE) func(*cobra.Command, []string) error {
 	return WithNamespace(func(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 		if w := ns.Tailscale().LegacyTSDProxyWarning(ctx); w != "" {
-			printTailscaleWarnings([]string{w})
+			printWarnings([]string{w})
 		}
 		return fn(ctx, ns, cmd, args)
 	})
 }
 
-// warnShadowedServiceName surfaces the hostname-shadowing warning for a
-// tailnet-exposed app's service name - the collision guard against existing
-// tailnet machines.
-func warnShadowedServiceName(ctx context.Context, ns *docker.Namespace, settings docker.ApplicationSettings) {
-	if settings.Exposure == docker.ExposureTailnet {
-		printTailscaleWarnings(ns.Tailscale().ShadowWarnings(ctx, []string{settings.Host}))
+// hintTailscaleEnable points a CLI user at the fix when a deploy or Funnel
+// enable is refused because Tailscale is not enabled.
+func hintTailscaleEnable(err error) error {
+	if errors.Is(err, docker.ErrTailscaleNotEnabled) {
+		return fmt.Errorf("%w; run `once tailscale enable` first", err)
 	}
+	return err
 }
 
-func printTailscaleWarnings(warnings []string) {
+func printWarnings(warnings []string) {
 	for _, w := range warnings {
 		fmt.Println("Warning:", w)
 	}
@@ -331,16 +304,4 @@ func printPolicySnippet(tag string) {
 	fmt.Println()
 	fmt.Println(docker.PolicySnippet(tag))
 	fmt.Println()
-}
-
-func requireBackgroundDaemon(namespace string) error {
-	svc, err := service.New()
-	if err != nil {
-		return err
-	}
-	name := namespace + backgroundServiceSuffix
-	if !svc.IsInstalled(name) || !svc.IsRunning(name) {
-		return fmt.Errorf("the background service is not running; run `once background install` before enabling a Funnel so it can be torn down automatically on expiry")
-	}
-	return nil
 }

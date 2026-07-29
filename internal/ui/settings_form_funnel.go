@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,7 +10,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/basecamp/once/internal/docker"
-	"github.com/basecamp/once/internal/service"
 )
 
 const (
@@ -17,16 +17,14 @@ const (
 	funnelDurationField
 )
 
-// backgroundServiceSuffix mirrors the command package's daemon naming. Funnel
-// teardown on expiry runs in that daemon, so enabling a Funnel without it would
-// leave the app public indefinitely.
-const backgroundServiceSuffix = "-background"
-
 type SettingsFormFunnel struct {
 	settingsFormBase
 }
 
-func NewSettingsFormFunnel(app *docker.Application, ts *docker.Tailscale, namespace string, tailscaleEnabled bool) SettingsFormFunnel {
+// NewSettingsFormFunnel builds the Funnel form. tailscaleEnabled only drives
+// the status line rendered at build time; the submit path checks live inside
+// Namespace.EnableFunnel.
+func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailscaleEnabled bool) SettingsFormFunnel {
 	enableField := NewCheckboxField("Expose publicly via Funnel", app.Settings.FunnelEnabled())
 	durationField := NewTextField("10m")
 	durationField.SetValue(durationFromExpiry(app.Settings.FunnelExpiresAt, time.Now()))
@@ -48,7 +46,7 @@ func NewSettingsFormFunnel(app *docker.Application, ts *docker.Tailscale, namesp
 		}
 	case app.Settings.FunnelEnabled():
 		expiresAt := app.Settings.FunnelExpiresAt
-		funnelURL := funnelURLForApp(ts, app)
+		funnelURL := funnelURLForApp(ns.Tailscale(), app)
 		m.statusLine = func() string {
 			status := funnelStatusText(expiresAt, time.Now())
 			if funnelURL != "" {
@@ -63,7 +61,7 @@ func NewSettingsFormFunnel(app *docker.Application, ts *docker.Tailscale, namesp
 		duration := f.TextField(funnelDurationField).Value()
 		return func() tea.Msg {
 			return settingsRunActionMsg{action: func() (string, error) {
-				return applyFunnel(app, ts, namespace, tailscaleEnabled, enable, duration)
+				return applyFunnel(ns, app, enable, duration)
 			}}
 		}
 	})
@@ -82,7 +80,7 @@ func (m SettingsFormFunnel) Update(msg tea.Msg) (SettingsSection, tea.Cmd) {
 
 // Helpers
 
-func applyFunnel(app *docker.Application, ts *docker.Tailscale, namespace string, tailscaleEnabled, enable bool, durationStr string) (string, error) {
+func applyFunnel(ns *docker.Namespace, app *docker.Application, enable bool, durationStr string) (string, error) {
 	ctx := context.Background()
 
 	if !enable {
@@ -95,32 +93,24 @@ func applyFunnel(app *docker.Application, ts *docker.Tailscale, namespace string
 		return "Funnel disabled", nil
 	}
 
-	if !tailscaleEnabled {
-		return "", fmt.Errorf("enable Tailscale first (press t on the dashboard) before opening a Funnel")
-	}
-
 	duration, err := time.ParseDuration(strings.TrimSpace(durationStr))
 	if err != nil {
 		return "", fmt.Errorf("invalid duration %q (e.g. 10m, 2h)", durationStr)
 	}
-	if err := docker.ValidateFunnelDuration(duration); err != nil {
-		return "", err
-	}
-	// Daemon required: without it the automatic teardown at expiry could never
-	// run and the app would stay public indefinitely.
-	if err := requireBackgroundDaemon(namespace); err != nil {
-		return "", err
-	}
-	if err := app.EnableFunnel(ctx, time.Now().Add(duration)); err != nil {
-		return "", err
-	}
-	// Surface activation failures (e.g. a tailnet ACL missing the funnel
-	// attribute) rather than reporting the Funnel active when it isn't.
-	url, err := ts.WaitForFunnelActive(ctx, app)
+	url, _, err := ns.EnableFunnel(ctx, app, duration)
 	if err != nil {
-		return "", err
+		return "", funnelUserError(err)
 	}
 	return "Funnel enabled at " + url, nil
+}
+
+// funnelUserError swaps the engine's Tailscale-not-enabled sentinel for
+// wording a TUI user can act on.
+func funnelUserError(err error) error {
+	if errors.Is(err, docker.ErrTailscaleNotEnabled) {
+		return errors.New("enable Tailscale first (press t on the dashboard) before opening a Funnel")
+	}
+	return err
 }
 
 // funnelURLForApp returns the app's public Funnel URL from stored settings, or
@@ -131,18 +121,6 @@ func funnelURLForApp(ts *docker.Tailscale, app *docker.Application) string {
 		return ""
 	}
 	return settings.FunnelURL(app.Settings.ActiveFunnelPort())
-}
-
-func requireBackgroundDaemon(namespace string) error {
-	svc, err := service.New()
-	if err != nil {
-		return err
-	}
-	name := namespace + backgroundServiceSuffix
-	if !svc.IsInstalled(name) || !svc.IsRunning(name) {
-		return fmt.Errorf("the background service is not running; run `once background install` before enabling a Funnel so it can be torn down automatically on expiry")
-	}
-	return nil
 }
 
 func durationFromExpiry(expiresAt *time.Time, now time.Time) string {

@@ -96,11 +96,12 @@ func TestApplyChanges(t *testing.T) {
 		assert.ErrorContains(t, err, "must be in KEY=VALUE format")
 	})
 
-	t.Run("empty image", func(t *testing.T) {
+	t.Run("empty image is left for ApplySettings to reject", func(t *testing.T) {
 		cmd, f := newCmd()
 
-		_, err := f.applyChanges(cmd, existing, "")
-		assert.ErrorIs(t, err, docker.ErrImageRequired)
+		result, err := f.applyChanges(cmd, existing, "")
+		require.NoError(t, err)
+		assert.ErrorIs(t, result.Validate(), docker.ErrImageRequired)
 	})
 
 	t.Run("enable auto-backup with existing path", func(t *testing.T) {
@@ -115,7 +116,7 @@ func TestApplyChanges(t *testing.T) {
 		assert.True(t, result.Backup.AutoBackup)
 	})
 
-	t.Run("enable auto-backup without path", func(t *testing.T) {
+	t.Run("auto-backup without path is left for ApplySettings to reject", func(t *testing.T) {
 		noPath := existing
 		noPath.Backup.Path = ""
 		noPath.Backup.AutoBackup = false
@@ -123,16 +124,9 @@ func TestApplyChanges(t *testing.T) {
 		cmd, f := newCmd()
 		require.NoError(t, cmd.Flags().Set("auto-backup", "true"))
 
-		_, err := f.applyChanges(cmd, noPath, noPath.Image)
-		assert.ErrorIs(t, err, docker.ErrAutoBackupWithoutPath)
-	})
-
-	t.Run("clear backup path with auto-backup enabled", func(t *testing.T) {
-		cmd, f := newCmd()
-		require.NoError(t, cmd.Flags().Set("backup-path", ""))
-
-		_, err := f.applyChanges(cmd, existing, existing.Image)
-		assert.ErrorIs(t, err, docker.ErrAutoBackupWithoutPath)
+		result, err := f.applyChanges(cmd, noPath, noPath.Image)
+		require.NoError(t, err)
+		assert.ErrorIs(t, result.Validate(), docker.ErrAutoBackupWithoutPath)
 	})
 
 	t.Run("set both auto-backup and path", func(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/basecamp/once/internal/docker"
 	"github.com/basecamp/once/internal/service"
 )
 
@@ -40,7 +41,7 @@ func (b *backgroundUninstallCommand) run(cmd *cobra.Command, args []string) erro
 		return err
 	}
 
-	serviceName := namespace + backgroundServiceSuffix
+	serviceName := docker.BackgroundServiceName(namespace)
 
 	if !svc.IsInstalled(serviceName) {
 		fmt.Printf("Service %s is not installed\n", svc.ServiceName(serviceName))

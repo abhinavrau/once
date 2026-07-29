@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en" data-theme="luxury">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docktail go/no-go — Once</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :where(.grid, .flex) > * { min-width: 0; }
+  :where(p, h1, h2, h3, h4, li, dd, td, th, .badge, .label) { overflow-wrap: anywhere; }
+  :where(img, svg, video, canvas, iframe) { max-width: 100%; height: auto; }
+  .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+</style>
+</head>
+<body class="bg-base-100 text-base-content">
+<main class="mx-auto max-w-6xl p-4 lg:p-8 space-y-10">
+
+  <!-- ============ HEADER ============ -->
+  <header class="space-y-3">
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="badge badge-primary badge-soft">wayfinder</span>
+      <span class="badge badge-ghost">.scratch/docktail-migration</span>
+      <span class="badge badge-success badge-soft">research: 5/5 resolved</span>
+    </div>
+    <h1 class="text-3xl md:text-4xl font-bold leading-normal pb-1 overflow-visible">Replace TSDProxy with docktail?</h1>
+    <p class="text-lg opacity-80 max-w-3xl">
+      The go/no-go decision for swapping Once's tailscale integration from a tsdproxy container
+      (per-app virtual tailnet devices via embedded tsnet) to
+      <a class="link" href="https://github.com/marvinvr/docktail">docktail</a>
+      (native Tailscale Services driven through a real tailscaled).
+      All five research tickets are in; this page is the evidence and the decision surface.
+    </p>
+  </header>
+
+  <!-- ============ VERDICT AT A GLANCE ============ -->
+  <section class="stats stats-vertical lg:stats-horizontal shadow w-full">
+    <div class="stat">
+      <div class="stat-title">Hard go/no-go bar</div>
+      <div class="stat-value text-success text-2xl">Cleared</div>
+      <div class="stat-desc">Services is GA on the free Personal plan, no cap enforced</div>
+    </div>
+    <div class="stat">
+      <div class="stat-title">Sidecar privileges</div>
+      <div class="stat-value text-success text-2xl">None needed</div>
+      <div class="stat-desc">Userspace mode works — no TUN, no NET_ADMIN</div>
+    </div>
+    <div class="stat">
+      <div class="stat-title">Main risk</div>
+      <div class="stat-value text-success text-2xl">Mitigated</div>
+      <div class="stat-desc">Policy API can apply the ACL sections (diff + confirm); GitOps caveat</div>
+    </div>
+    <div class="stat">
+      <div class="stat-title">Test seam</div>
+      <div class="stat-value text-error text-2xl">Headscale dies</div>
+      <div class="stat-desc">Fake CLI/socket + stubbed cloud API instead</div>
+    </div>
+  </section>
+
+  <!-- ============ ARCHITECTURE BEFORE / AFTER ============ -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold">What actually changes</h2>
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="card card-border bg-base-200">
+        <div class="card-body">
+          <h3 class="card-title text-base">Today — TSDProxy</h3>
+          <pre class="mermaid">
+flowchart TD
+    subgraph host["Docker host (no tailscale install)"]
+        tsd["once-tsdproxy<br/>(embedded tsnet, userspace)"]
+        app1["once-app-writebook"]
+        app2["once-app-campfire"]
+        admin["once-admin (nginx)"]
+    end
+    tsd -- "watches labels via docker.sock" --> app1
+    tsd -- " " --> app2
+    tsd -- " " --> admin
+    tsd == "one virtual tailnet DEVICE per app<br/>(ephemeral, eats device slots)" ==> tailnet["Tailnet"]
+    cli["once CLI/TUI"] -- "GET 127.0.0.1:8484<br/>/api/v1/proxies" --> tsd
+          </pre>
+        </div>
+      </div>
+      <div class="card card-border bg-base-200">
+        <div class="card-body">
+          <h3 class="card-title text-base">Proposed — docktail</h3>
+          <pre class="mermaid">
+flowchart TD
+    subgraph host["Docker host"]
+        dt["once-docktail<br/>(reconciler, shells out to tailscale CLI)"]
+        ts["tailscaled<br/>(host install OR unprivileged<br/>userspace sidecar)"]
+        app1["once-app-writebook"]
+        app2["once-app-campfire"]
+        admin["once-admin (nginx)"]
+    end
+    dt -- "watches labels via docker.sock" --> app1
+    dt -- " " --> app2
+    dt -- " " --> admin
+    dt -- "/var/run/tailscale socket" --> ts
+    ts == "ONE device advertising<br/>native Tailscale SERVICES<br/>(svc:writebook, svc:campfire, ...)" ==> tailnet["Tailnet"]
+    cli["once CLI/TUI"] -- "tailscale status --json<br/>(MagicDNS suffix, computed URLs)" --> ts
+          </pre>
+        </div>
+      </div>
+    </div>
+    <div role="alert" class="alert alert-soft">
+      <span>
+        <strong>Key relief from research:</strong> the sidecar needs <em>zero</em> extra privileges
+        (userspace mode, plain bridge network) — Once's "no host deps, no privileged containers" principle
+        survives in both topologies. And URL discovery gets <em>simpler</em>: FQDNs are deterministic
+        (<code>https://{app}.{tailnet-suffix}</code>), computed from one value read off the local daemon at enable time.
+      </span>
+    </div>
+  </section>
+
+  <!-- ============ EVIDENCE ============ -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold">The evidence — five research tickets</h2>
+    <div class="grid gap-4 md:grid-cols-2">
+
+      <div class="card card-border bg-base-200">
+        <div class="card-body gap-2">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="card-title text-base">Free Personal plan</h3>
+            <span class="badge badge-success">pass — hard bar cleared</span>
+          </div>
+          <p class="text-sm opacity-85">Tailscale Services is <strong>GA since Jan 2026 on all plans</strong> including free Personal.
+          No service-count cap published or enforced. Residual risk: plan-based limits are announced as future work,
+          with a "legacy exception" promised for existing usage.</p>
+          <p class="text-xs opacity-60">issues/01-research-services-free-plan.md</p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-200">
+        <div class="card-body gap-2">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="card-title text-base">Unprivileged sidecar</h3>
+            <span class="badge badge-success">pass</span>
+          </div>
+          <p class="text-sm opacity-85">A <code>tailscale/tailscale</code> container in userspace mode
+          (<strong>no TUN, no NET_ADMIN, no host networking</strong>) on the shared app bridge network can advertise
+          Services and serve Funnel. Docktail's documented sidecar compose is over-privileged and can be trimmed.
+          Needs tailscale v1.86+.</p>
+          <p class="text-xs opacity-60">issues/02-research-userspace-sidecar.md</p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-200">
+        <div class="card-body gap-2">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="card-title text-base">Headscale test seam</h3>
+            <span class="badge badge-error">lost</span>
+          </div>
+          <p class="text-sm opacity-85">Headscale supports <strong>neither Services nor serve/Funnel</strong>; the gap is
+          tracked (issue #2845, milestone v0.34.0) but current release is v0.29.2 with no PRs — years away at best.
+          Testing means faking the tailscale CLI/socket and stubbing the cloud API, byte-compatible with docktail's real calls.</p>
+          <p class="text-sm opacity-85"><strong>Follow-up (ticket 09):</strong> Services is separable from the cert machinery
+          <em>in principle</em> (only the HTTPS flavor needs certs), but headscale has zero Services surface and its strict
+          policy parser <em>rejects</em> <code>svc:</code> / <code>autoApprovers.services</code> outright — fake-seams is locked in.
+          Silver lining: headscale <em>does</em> expose <code>GET/PUT /api/v1/policy</code> (bearer key, DB mode) accepting the
+          same HuJSON for the shared sections, so ACL automation stays testable on the seam minus Services vocabulary.</p>
+          <p class="text-xs opacity-60">issues/03-research-headscale-services.md · issues/09-research-headscale-partial-support.md</p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-200">
+        <div class="card-body gap-2">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="card-title text-base">URL discovery</h3>
+            <span class="badge badge-success">simpler than today</span>
+          </div>
+          <p class="text-sm opacity-85">Service FQDNs are deterministic. Read
+          <code>.CurrentTailnet.MagicDNSSuffix</code> from the local tailscaled once at enable, persist it, compute
+          <code>https://{app}.{suffix}</code>. Replaces the tsdproxy REST API <em>and</em> the old issue-15 probe.
+          Advertised-vs-approved status: <code>tailscale serve status --json</code> locally, cloud
+          <code>GET .../services/{svc}/devices</code> as the authoritative approval check.</p>
+          <p class="text-xs opacity-60">issues/04-research-url-discovery.md</p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-200 md:col-span-2">
+        <div class="card-body gap-2">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="card-title text-base">Tailnet-side prerequisites</h3>
+            <span class="badge badge-warning">the real cost</span>
+          </div>
+          <p class="text-sm opacity-85">Setup burden roughly triples vs tsdproxy — see the risk section below.
+          Once <em>can</em> probe OAuth scopes and tags, detect pending approvals and funnel-attr failures; it
+          <em>cannot</em> edit the user's ACL policy.</p>
+          <p class="text-xs opacity-60">issues/05-research-tailnet-prereqs.md</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ RISK DEEP-DIVE ============ -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold">The one real risk: tailnet setup burden</h2>
+    <div class="overflow-x-auto rounded-box border border-base-content/10 bg-base-200">
+      <table class="table">
+        <thead>
+          <tr><th></th><th>TSDProxy today</th><th>Docktail</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="font-semibold">OAuth scopes</td>
+            <td>1 (<code>auth_keys</code>)</td>
+            <td>3 (services write, keys, device read)</td>
+          </tr>
+          <tr>
+            <td class="font-semibold">ACL sections to edit</td>
+            <td>1 — a <code>tagOwners</code> line</td>
+            <td>up to 4 — <code>tagOwners</code> ×2, <code>autoApprovers.services</code>, <code>svc:</code> grants, funnel <code>nodeAttr</code></td>
+          </tr>
+          <tr>
+            <td class="font-semibold">Works with default allow-all policy</td>
+            <td class="text-success">yes</td>
+            <td class="text-error">no — Services are unreachable without an explicit <code>svc:</code> grant</td>
+          </tr>
+          <tr>
+            <td class="font-semibold">Once can validate programmatically</td>
+            <td>tags, registration rejections</td>
+            <td>scopes, tags, pending approvals, funnel-attr failures — but <em>not</em> grants/autoApprovers before the fact</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div role="alert" class="alert alert-success alert-soft">
+      <span><strong>Resolved by ticket 08 — Once <em>can</em> fix it via API.</strong> The earlier claim that ACL
+      edits were manual-only was wrong. <code>GET/POST /api/v2/tailnet/{t}/acl</code> round-trips HuJSON with comments
+      preserved; ETag <code>If-Match</code> prevents clobbering concurrent edits; and Tailscale's own
+      <code>hujson</code> AST library patches just the four sections, leaving hand-edited policy byte-identical.</span>
+    </div>
+    <div class="card card-border bg-base-200">
+      <div class="card-body gap-2">
+        <h3 class="card-title text-base">How <code>once tailscale enable</code> would apply the policy (ticket 08's sketch)</h3>
+        <ol class="list-decimal ms-5 text-sm space-y-1 opacity-90">
+          <li>Offer: "Once needs 4 policy sections. Apply them via the Tailscale API? [y/N]" — <strong>No</strong> prints the copy-paste snippet.</li>
+          <li><strong>Yes</strong> prompts for a separate one-shot <code>policy_file</code>-scoped OAuth credential — never added to the stored runtime client (that scope can rewrite the entire tailnet policy).</li>
+          <li><code>GET /acl</code>, patch only <code>tagOwners</code> / <code>autoApprovers.services</code> / <code>grants</code> / <code>nodeAttrs</code> via hujson, idempotently.</li>
+          <li>Show a unified diff + a GitOps warning (GitOps-managed tailnets silently overwrite API writes and this is undetectable — those users should commit the snippet instead), then confirm.</li>
+          <li><code>POST /acl/validate</code> dry-run, then <code>POST /acl</code> with <code>If-Match</code>; 412 → refetch and retry; any failure degrades to printing the snippet.</li>
+        </ol>
+        <p class="text-xs opacity-60">issues/08-research-acl-api-write.md</p>
+      </div>
+    </div>
+
+    <div class="card card-border bg-base-200">
+      <div class="card-body gap-3">
+        <h3 class="card-title text-base">Your follow-ups: burden, OAuth provisioning, security</h3>
+
+        <div>
+          <p class="text-sm font-semibold">1. What's the user's burden now?</p>
+          <p class="text-sm opacity-85">One-time, at enable: create OAuth credentials in the admin console, paste them
+          into Once, and answer <strong>one y/N</strong> on the ACL diff. No hand-editing of policy sections, no ongoing
+          burden. Before api-write the flow was "create credentials <em>and</em> correctly hand-edit 4 ACL sections";
+          now the ACL half is a confirmation prompt.</p>
+        </div>
+
+        <div>
+          <p class="text-sm font-semibold">2. Can the API create the OAuth clients too?</p>
+          <p class="text-sm opacity-85"><strong>Yes — since May 2025</strong> (tailscale/tailscale#9632 closed:
+          <code>POST /api/v2/tailnet/{t}/keys</code> creates OAuth clients; Terraform has a
+          <code>tailscale_oauth_client</code> resource). The creating credential needs the <code>oauth_keys</code> scope.
+          So Once could ask for <em>one</em> bootstrap credential and mint the runtime client + one-shot policy client
+          itself — shrinking the console step to a single client creation. Zero console steps is impossible:
+          the first credential always has to come from somewhere (chicken-and-egg).</p>
+        </div>
+
+        <div>
+          <p class="text-sm font-semibold">3. Security implications</p>
+          <ul class="list-disc ms-5 text-sm space-y-1 opacity-90">
+            <li><code>policy_file</code> scope can rewrite the <em>entire</em> tailnet policy — a leak means lockout or
+            tailnet-wide access grants. Mitigations already in the sketch: one-shot use, never stored, 1-hour token
+            expiry, diff + confirm, <code>If-Match</code>.</li>
+            <li><code>oauth_keys</code> scope is effectively <strong>admin-equivalent</strong>: it can mint further
+            credentials. If Once auto-provisions clients, that bootstrap credential is the crown jewels — same
+            treatment: use once during enable, never persist, suggest revoking it after.</li>
+            <li>Only the minimal-scope runtime client (auth keys + services + device read) is ever stored on the server.
+            Setup-time powers never live on disk.</li>
+            <li>Open detail for the spec: whether an API-created client's scopes must be a subset of its creator's
+            (attenuation) — determines if one bootstrap credential can safely mint both clients.</li>
+          </ul>
+        </div>
+        <p class="text-xs opacity-60">Recorded as a comment on issues/08-research-acl-api-write.md</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TRADEOFFS ============ -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold">Weighing it</h2>
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="card card-border bg-base-200">
+        <div class="card-body gap-2">
+          <h3 class="card-title text-success text-base">For docktail</h3>
+          <ul class="list-disc ms-5 text-sm space-y-1 opacity-90">
+            <li>One tailnet device instead of one per app — no device-slot consumption, clean admin console</li>
+            <li>Native Services is the first-party primitive; tsdproxy's virtual-device emulation is a community workaround</li>
+            <li>No per-app node state volume, no ephemeral-node lifecycle quirks, no name-collision workarounds</li>
+            <li>URL discovery becomes pure computation — deletes the REST-API lookup and the loopback port exception</li>
+            <li>Sidecar stays fully unprivileged; the ADR's security posture holds</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card card-border bg-base-200">
+        <div class="card-body gap-2">
+          <h3 class="card-title text-error text-base">Against docktail</h3>
+          <ul class="list-disc ms-5 text-sm space-y-1 opacity-90">
+            <li>Tailnet setup burden ~3×: 3 OAuth scopes, up to 4 ACL sections, manual admin-console edits</li>
+            <li>Default allow-all policy silently excludes Services — guaranteed onboarding friction</li>
+            <li>Headscale integration-test seam dies; real control-plane coverage drops to fakes</li>
+            <li>Requires a real tailscaled (host install or sidecar) — one more container in the sidecar case</li>
+            <li>Rewrite of ~2,200 lines of integration surface + clean break for existing installs</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DECISION ============ -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold">Your call</h2>
+
+    <div role="alert" class="alert alert-info alert-soft">
+      <span><strong>Round 2:</strong> your "not yet" round is complete — tickets 08 and 09 above answered both
+      follow-ups. The ACL burden is automatable with a safe, diff-confirmed API write, and the fake-seams test
+      strategy is confirmed locked-in (with ACL automation still testable against headscale). The decision is open again.</span>
+    </div>
+
+    <form data-lavish-question="go-no-go" class="card card-border bg-base-200"
+      onsubmit="event.preventDefault();
+        const fd = new FormData(event.currentTarget);
+        const choice = fd.get('decision');
+        if (!choice) return;
+        const rationale = (fd.get('rationale') || '').toString().trim();
+        window.lavish.queuePrompt(
+          'Go/no-go decision: ' + choice + (rationale ? '. Rationale: ' + rationale : ''),
+          { tag: 'choice', text: 'Decision: ' + choice, element: event.currentTarget,
+            data: { question: 'go-no-go', answer: choice, rationale: rationale },
+            queueKey: 'go-no-go' });">
+      <div class="card-body gap-4">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend text-base">Decision on ticket 06 — go/no-go</legend>
+          <label class="flex items-start gap-3 p-3 rounded-box hover:bg-base-300 cursor-pointer">
+            <input type="radio" name="decision" value="GO" class="radio radio-success mt-1">
+            <span><strong>Go.</strong> The hard bar is cleared and the sidecar is unprivileged; the ACL burden is
+            a docs/validation problem, not an architecture problem. Proceed to the spec.</span>
+          </label>
+          <label class="flex items-start gap-3 p-3 rounded-box hover:bg-base-300 cursor-pointer">
+            <input type="radio" name="decision" value="NO-GO" class="radio radio-error mt-1">
+            <span><strong>No-go.</strong> The onboarding friction (manual ACL edits on every fresh tailnet) and the
+            loss of real integration coverage outweigh the wins. Stay on tsdproxy.</span>
+          </label>
+          <label class="flex items-start gap-3 p-3 rounded-box hover:bg-base-300 cursor-pointer">
+            <input type="radio" name="decision" value="MORE-EVIDENCE" class="radio radio-warning mt-1">
+            <span><strong>Not yet.</strong> Something above needs a prototype or more research first — say what in
+            the rationale box.</span>
+          </label>
+        </fieldset>
+        <label class="fieldset">
+          <span class="fieldset-legend text-sm">Rationale / conditions (optional)</span>
+          <textarea name="rationale" class="textarea w-full" rows="2"
+            placeholder="e.g. Go, but funnel support is out of scope for v1"></textarea>
+        </label>
+        <div class="card-actions justify-end">
+          <button type="submit" class="btn btn-primary">Queue this decision</button>
+        </div>
+      </div>
+    </form>
+
+    <div class="card card-border bg-base-200">
+      <div class="card-body gap-2">
+        <div class="flex items-center justify-between gap-2">
+          <h3 class="card-title text-base">ACL setup UX — decided</h3>
+          <span class="badge badge-primary">api-write</span>
+        </div>
+        <p class="text-sm opacity-85">You chose <strong>api-write</strong>: Once offers to patch the tailnet policy
+        itself, with a one-shot scoped credential, a diff, and explicit confirmation — falling back to printing the
+        snippet on decline or any failure. Ticket 08 validated this as safe under those conditions; it's recorded on
+        the map and feeds the spec (ticket 07). Annotate this card if you want to revisit.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ NEXT ============ -->
+  <section class="space-y-3">
+    <h2 class="text-2xl font-bold">What happens next</h2>
+    <ul class="steps steps-vertical lg:steps-horizontal w-full">
+      <li class="step step-primary">Research (5/5 done)</li>
+      <li class="step step-primary">Go/no-go — you are here</li>
+      <li class="step">Graduate remaining fog (funnel mapping, admin exposure, enable-flow UX)</li>
+      <li class="step">Assemble PRD (ticket 07)</li>
+      <li class="step">Hand off to implementation</li>
+    </ul>
+    <p class="text-sm opacity-70">On go: I record the decision on ticket 06, update the map, and the spec ticket
+    unblocks. On no-go: the map closes with the reasoning preserved, and ticket 07 is ruled out of scope.
+    Annotate anything on this page to discuss it first.</p>
+  </section>
+
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const paint = document.createElement("canvas").getContext("2d");
+  function toRgba(color) {
+    paint.clearRect(0, 0, 1, 1);
+    paint.fillStyle = "#000";
+    paint.fillStyle = color;
+    paint.fillRect(0, 0, 1, 1);
+    return paint.getImageData(0, 0, 1, 1).data;
+  }
+  function compositeRgba(foreground, background) {
+    const fa = foreground[3] / 255, ba = background[3] / 255;
+    const a = fa + ba * (1 - fa);
+    if (a === 0) return [0, 0, 0, 0];
+    return [
+      (foreground[0] * fa + background[0] * ba * (1 - fa)) / a,
+      (foreground[1] * fa + background[1] * ba * (1 - fa)) / a,
+      (foreground[2] * fa + background[2] * ba * (1 - fa)) / a,
+      a * 255,
+    ];
+  }
+  function pageIsDark() {
+    const root = document.documentElement;
+    const rootBg = toRgba(getComputedStyle(root).backgroundColor);
+    const bodyBg = document.body ? toRgba(getComputedStyle(document.body).backgroundColor) : [0, 0, 0, 0];
+    const [r, g, b, a] = compositeRgba(bodyBg, rootBg);
+    if (a > 0) return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
+    const scheme = getComputedStyle(root).colorScheme;
+    if (scheme.includes("dark") && !scheme.includes("light")) return true;
+    if (scheme.includes("light") && !scheme.includes("dark")) return false;
+    return darkQuery.matches;
+  }
+
+  const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.textContent }));
+  let applied;
+  let rendering = false;
+  let queued = false;
+  function queueRender() {
+    queued = true;
+    if (rendering) return;
+    void render();
+  }
+  async function render() {
+    rendering = true;
+    try {
+      while (queued) {
+        queued = false;
+        const theme = pageIsDark() ? "dark" : "default";
+        if (theme === applied) continue;
+        mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
+        for (const { el, src } of diagrams) {
+          el.removeAttribute("data-processed");
+          el.textContent = src;
+        }
+        try {
+          await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+        } catch (error) {
+          console.error("Mermaid diagram render failed:", error);
+          return;
+        }
+        applied = theme;
+      }
+    } finally {
+      rendering = false;
+      if (queued) queueRender();
+    }
+  }
+  if (document.readyState === "complete") queueRender();
+  else window.addEventListener("load", queueRender, { once: true });
+  const themeObserver = new MutationObserver(queueRender);
+  for (const el of [document.documentElement, document.body]) {
+    if (!el) continue;
+    themeObserver.observe(el, { attributes: true, attributeFilter: ["data-theme", "class", "style"] });
+  }
+  document.addEventListener("change", queueRender, true);
+  document.addEventListener("transitionend", ({ propertyName }) => {
+    if (propertyName === "background-color") queueRender();
+  }, true);
+  darkQuery.addEventListener("change", queueRender);
+</script>
+</body>
+</html>

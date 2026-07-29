@@ -103,13 +103,28 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.send(keyMsg("s"))
 	d.waitForView("running", 30*time.Second)
 
-	// -- Remove via actions menu --
+	// The app name carries a unique suffix, so capture it before removing to
+	// find the volume afterwards.
+	require.Len(t, ns.Applications(), 1)
+	appName := ns.Applications()[0].Settings.Name
+
+	// -- Remove via actions menu: keep-data is the default choice --
 	d.send(keyMsg("a"))
 	d.send(keyMsg("r"))
-	d.waitForView("Remove application and data?", 10*time.Second)
+	d.waitForView("Remove application? Its data will be kept.", 10*time.Second)
+
+	// Toggling to delete-data renames the destruction, and back again.
+	d.send(keyMsg("right"))
+	d.waitForView("Remove application and delete its data?", 5*time.Second)
+	d.send(keyMsg("left"))
+	d.waitForView("Remove application? Its data will be kept.", 5*time.Second)
+
+	// Confirm with the keep-data default: the app goes away, the volume stays.
 	d.send(keyMsg("tab"))
 	d.send(keyMsg("enter"))
 	d.waitForView("There are no applications installed", 30*time.Second)
+	_, err = docker.FindVolume(ctx, ns, appName)
+	assert.NoError(t, err, "keep-data remove should leave the app volume in place")
 }
 
 // TestUITailscaleFormEnablesViaControlSeam drives the dashboard's global
