@@ -37,13 +37,52 @@ seconds, not by timeout.
 **Blocked by:** 01 - Key-addressed Form fields, 02 - Form submit rejection
 message.
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] No integration driver navigates a form by counting tabs; fields are
+- [x] No integration driver navigates a form by counting tabs; fields are
       reached by click target key
-- [ ] The driver fails fast with the field key and reason when any form
+- [x] The driver fails fast with the field key and reason when any form
       rejects a submit, demonstrated by a deliberate rejection during
       development (not left in the suite)
-- [ ] Both UI integration tests pass under the suite's 10-minute budget
-- [ ] The AGENTS.md tab-order hazard note is replaced with the click-by-key
+- [x] Both UI integration tests pass under the suite's 10-minute budget
+- [x] The AGENTS.md tab-order hazard note is replaced with the click-by-key
       driver guidance; the neighboring testing notes are untouched
+
+## Comments
+
+**2026-07-30** - branch `form-fields-by-key-03-drivers-click-by-key`
+
+The worktree branched from a main that predated tickets 01 and 02, so it was
+fast-forwarded to `b50add6` before any work; the diff carries only this
+ticket's changes.
+
+`appDriver` gained `click`, `clickField`, `fillField`, and `selectRadioOption`.
+`click` sends a `ui.MouseEvent` with a named target straight at `App.Update`,
+which enters the update chain exactly where a resolved production click does:
+App hands it to the current screen, the screen to any open overlay, and the
+form resolves `field:<key>`. `selectRadioOption` clicks a radio until the view
+shows the wanted option selected, so the driver names the option instead of
+counting cycles. Every `tab`/`shift+tab` is gone from `integration/`; the
+remove flow's confirmation now uses its existing `confirm` target too. The
+lifecycle waits are unchanged.
+
+`processMsg` fails the test on `ui.FormSubmitRejectedMsg`, reporting the field
+key and reason. It runs on the test goroutine, so `t.Fatalf` is safe, and
+because it only assumes the message arrives (never when), the unordered
+`tea.Batch` from ticket 02 is not a problem.
+
+Deliberate rejection, run during development and reverted: dropping the image
+form's `fillField` call fails in 1.6s with `form rejected the submit on field
+"image": Image is required`, against the 3-minute `waitUntil` timeout it
+replaces. Both UI tests pass in 24s together (10.5s + 13.3s).
+
+Review finding worth recording: a click on an unrecognized target is a silent
+no-op (`Form.handleClick` falls through), so a renamed field key does not
+reject - the driver keeps typing into whatever was focused. The AGENTS.md note
+says so and asks that a key and its driver be renamed together. Making `click`
+assert the target exists would need a new exported accessor on
+`internal/mouse`'s tracker that only tests would use; that is worth its own
+ticket, not a scope stretch here.
+
+`make test` green, `make lint` clean, `go test ./integration -run TestUI`
+green. Full integration suite not run (coordinator owns it post-merge).

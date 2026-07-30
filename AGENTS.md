@@ -69,11 +69,14 @@ make lint        # Run golangci-lint
   masking the real culprit. When this happens, read the goroutine dump for the
   goroutine stuck in the test body (e.g. `appDriver.waitUntil`), not the alarm or
   the background `scraper.go` stats-stream goroutines that always appear.
-- TUI forms are integration-tested in `integration/ui_test.go` by driving fields
-  in tab order. Adding, removing, or reordering a form field silently breaks those
-  drivers: a form that rejects submit (e.g. a new required field left empty) stays
-  open, so the test hangs in `waitUntil` until timeout rather than failing fast.
-  When you change a form's fields, update its integration driver in the same change.
+- TUI forms are integration-tested in `integration/ui_test.go` by clicking named
+  targets - `field:<key>` for a field, `submit`/`action`/`cancel` for the buttons -
+  so adding, removing, or reordering a field does not break the drivers. Renaming
+  a key still does, and quietly: an unrecognized target is a no-op click, so the
+  driver goes on typing into whatever was focused. Rename a key and its driver
+  together. The driver's message pump fails the test the moment a form emits
+  `ui.FormSubmitRejectedMsg`, naming the field key and reason, so a rejected submit
+  is an immediate assertion rather than a `waitUntil` timeout.
 - Integration tests pull images from Docker Hub even when they are cached locally
   (`ImagePull` always contacts the registry). If tests hang or fail with
   "failed to fetch anonymous token", "context deadline exceeded" on
