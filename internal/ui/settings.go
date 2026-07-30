@@ -45,10 +45,6 @@ const (
 	settingsStateActionComplete
 )
 
-// settingsProgressBuffer keeps the pulling goroutine from stalling on the
-// frequent per-layer updates between two render frames.
-const settingsProgressBuffer = 16
-
 type Settings struct {
 	namespace            *docker.Namespace
 	app                  *docker.Application
@@ -58,7 +54,7 @@ type Settings struct {
 	section              SettingsSection
 	sectionType          SettingsSectionType
 	progress             Progress
-	progressChan         chan docker.DeployProgress
+	stream               *progressStream
 	err                  error
 	warnings             []string
 	actionSuccessMessage string
@@ -72,10 +68,6 @@ type settingsDeployFinishedMsg struct {
 type settingsActionFinishedMsg struct {
 	err     error
 	message string
-}
-
-type settingsProgressMsg struct {
-	progress docker.DeployProgress
 }
 
 // settingsAction is a long-running settings operation. Actions that report no
@@ -143,7 +135,7 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if m.state == settingsStateForm {
 			m.section, _ = m.section.Update(msg)
 		}
-		if m.state == settingsStateDeploying || m.state == settingsStateRunningAction {
+		if m.running() {
 			cmds = append(cmds, m.progress.Init())
 		}
 
@@ -177,12 +169,16 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 			}
 		}
 
+	// A run owns this model until it ends, so only an idle form may start one
+	// or be left: a second run would orphan the first one's stream, and
+	// navigating away mid-run would discard the drain loop and the handler for
+	// the run's result.
 	case SettingsSectionCancelMsg:
+		if m.state != settingsStateForm {
+			return m, nil
+		}
 		return m, m.navigateToDashboard()
 
-	// A run owns the progress channel until it ends, so only an idle form may
-	// start one: starting a second run would orphan the first one's channel and
-	// block its goroutine once the buffer filled.
 	case SettingsSectionSubmitMsg:
 		if m.state != settingsStateForm {
 			return m, nil
@@ -195,7 +191,7 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 		m.state = settingsStateRunningAction
 		m = m.startProgress()
-		return m, tea.Batch(m.progress.Init(), m.runAction(msg.action), m.waitForProgress())
+		return m, tea.Batch(m.progress.Init(), m.runAction(msg.action), m.stream.Wait())
 
 	case settingsDeployFinishedMsg:
 		if msg.err != nil {
@@ -214,14 +210,14 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case settingsActionFinishedMsg:
 		return m.handleActionResult(msg)
 
-	case settingsProgressMsg:
-		if m.state == settingsStateDeploying || m.state == settingsStateRunningAction {
+	case progressUpdateMsg:
+		if m.running() {
 			m.progress = m.progress.SetPercent(progressBarPercent(msg.progress))
-			cmds = append(cmds, m.waitForProgress())
+			cmds = append(cmds, m.stream.Wait())
 		}
 
 	case ProgressTickMsg:
-		if m.state == settingsStateDeploying || m.state == settingsStateRunningAction {
+		if m.running() {
 			var cmd tea.Cmd
 			m.progress, cmd = m.progress.Update(msg)
 			cmds = append(cmds, cmd)
@@ -280,6 +276,11 @@ func (m Settings) View() string {
 
 // Private
 
+// running reports whether a task owns the model's progress stream.
+func (m Settings) running() bool {
+	return m.state == settingsStateDeploying || m.state == settingsStateRunningAction
+}
+
 func (m Settings) navigateToDashboard() tea.Cmd {
 	return func() tea.Msg { return NavigateToDashboardMsg{AppName: m.app.Settings.Name} }
 }
@@ -287,7 +288,7 @@ func (m Settings) navigateToDashboard() tea.Cmd {
 func (m Settings) handleFormSubmit(msg SettingsSectionSubmitMsg) (Component, tea.Cmd) {
 	m.state = settingsStateDeploying
 	m = m.startProgress()
-	return m, tea.Batch(m.progress.Init(), m.runApplySettings(msg.Settings), m.waitForProgress())
+	return m, tea.Batch(m.progress.Init(), m.runApplySettings(msg.Settings), m.stream.Wait())
 }
 
 func (m Settings) handleActionResult(msg settingsActionFinishedMsg) (Component, tea.Cmd) {
@@ -318,64 +319,30 @@ func (m Settings) renderActionComplete() string {
 	return lipgloss.JoinVertical(lipgloss.Left, statusLine, buttonView)
 }
 
-// startProgress resets the bar and opens a fresh channel for the run that is
-// about to start, so a previous run's closed channel is never reused.
+// startProgress resets the bar and opens a fresh stream for the run that is
+// about to start, so a previous run's finished stream is never reused.
 func (m Settings) startProgress() Settings {
 	m.progress = NewProgress(m.width, Colors.Border)
-	m.progressChan = make(chan docker.DeployProgress, settingsProgressBuffer)
+	m.stream = newProgressStream()
 	return m
-}
-
-// waitForProgress drains one update from the run's channel. The run closes the
-// channel when it ends, which stops the loop.
-func (m Settings) waitForProgress() tea.Cmd {
-	updates := m.progressChan
-	return func() tea.Msg {
-		progress, ok := <-updates
-		if !ok {
-			return nil
-		}
-		return settingsProgressMsg{progress: progress}
-	}
 }
 
 func (m Settings) runApplySettings(settings docker.ApplicationSettings) tea.Cmd {
 	ns, app := m.namespace, m.app
-	return m.reporting(func(progress docker.DeployProgressCallback) tea.Msg {
-		warnings, err := ns.ApplySettings(context.Background(), app, settings, progress)
+	return m.stream.Run(func(ctx context.Context, progress docker.DeployProgressCallback) tea.Msg {
+		warnings, err := ns.ApplySettings(ctx, app, settings, progress)
 		return settingsDeployFinishedMsg{warnings: warnings, err: err}
 	})
 }
 
 func (m Settings) runAction(action settingsAction) tea.Cmd {
-	return m.reporting(func(progress docker.DeployProgressCallback) tea.Msg {
+	return m.stream.Run(func(_ context.Context, progress docker.DeployProgressCallback) tea.Msg {
 		message, err := action(progress)
 		return settingsActionFinishedMsg{err: err, message: message}
 	})
 }
 
-// reporting runs a task with the callback the docker layer reports through,
-// closing the channel afterwards so the wait command stops. A report blocks
-// until the wait command drains it, which it keeps doing until the task ends.
-func (m Settings) reporting(task func(docker.DeployProgressCallback) tea.Msg) tea.Cmd {
-	updates := m.progressChan
-	return func() tea.Msg {
-		defer close(updates)
-		return task(func(p docker.DeployProgress) { updates <- p })
-	}
-}
-
 // Helpers
-
-// progressBarPercent maps a deploy stage onto the progress bar: only a
-// download has a meaningful percentage, so every other stage falls back to the
-// indeterminate animation.
-func progressBarPercent(p docker.DeployProgress) int {
-	if p.Stage == docker.DeployStageDownloading {
-		return p.Percentage
-	}
-	return -1
-}
 
 func formatOperationStatus(label string, result *docker.OperationResult) string {
 	if result == nil {

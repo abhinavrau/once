@@ -48,7 +48,7 @@ func (p Progress) View() string {
 
 	style := lipgloss.NewStyle().Foreground(p.color)
 
-	if p.percent >= 0 && p.percent < 100 {
+	if p.percent >= 0 {
 		return style.Render(string(p.renderBar()))
 	}
 
@@ -84,11 +84,11 @@ func (p Progress) renderBar() []rune {
 	for i := range bar {
 		switch {
 		case i < fullChars:
-			bar[i] = '⣿' // U+28FF — all 8 dots
+			bar[i] = '⣿' // U+28FF - all 8 dots
 		case i == fullChars && halfChar:
-			bar[i] = '⡇' // U+2847 — left column only
+			bar[i] = '⡇' // U+2847 - left column only
 		default:
-			bar[i] = ' '
+			bar[i] = '⣀' // U+28C0 - bottom row, the unfilled track
 		}
 	}
 	return bar

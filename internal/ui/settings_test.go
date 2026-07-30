@@ -166,27 +166,20 @@ func TestSettings_ViewShowsProgressWhileDeploying(t *testing.T) {
 	assert.NotEmpty(t, view)
 }
 
-func TestProgressBarPercent_DownloadStageDrivesThePercent(t *testing.T) {
-	assert.Equal(t, 42, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}))
-}
-
-func TestProgressBarPercent_NonDownloadStagesAreIndeterminate(t *testing.T) {
-	const indeterminate = -1
-	assert.Equal(t, indeterminate, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageStarting}))
-	assert.Equal(t, indeterminate, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageWaiting, Status: "verifying"}))
-	assert.Equal(t, indeterminate, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageFinished}))
-}
-
 func TestSettings_ProgressMsgMovesBarWhileDeploying(t *testing.T) {
-	s := testSettings()
-	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
-	s.state = settingsStateDeploying
+	s := deployingSettings()
 
-	s, cmd := updateSettings(s, settingsProgressMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
+	s, cmd := updateSettings(s, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
 	assert.Equal(t, 42, s.progress.percent)
 	require.NotNil(t, cmd, "expected the wait command to be re-armed")
 
-	s, _ = updateSettings(s, settingsProgressMsg{progress: docker.DeployProgress{Stage: docker.DeployStageStarting}})
+	s.stream.report(docker.DeployProgress{Stage: docker.DeployStageStarting, Percentage: 7})
+	assert.Equal(t,
+		progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageStarting, Percentage: 7}},
+		runWithin(t, cmd),
+	)
+
+	s, _ = updateSettings(s, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageStarting}})
 	assert.Equal(t, -1, s.progress.percent)
 }
 
@@ -194,7 +187,7 @@ func TestSettings_ProgressMsgIgnoredOnForm(t *testing.T) {
 	s := testSettings()
 	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	s, _ = updateSettings(s, settingsProgressMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
+	s, _ = updateSettings(s, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
 	assert.Equal(t, -1, s.progress.percent)
 }
 
@@ -211,7 +204,7 @@ func TestSettings_ActionReportsProgressThroughItsCallback(t *testing.T) {
 	require.Equal(t, settingsStateRunningAction, s.state)
 
 	msgs := runBatch(t, cmd)
-	assert.Contains(t, msgs, settingsProgressMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
+	assert.Contains(t, msgs, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
 	assert.Contains(t, msgs, settingsActionFinishedMsg{message: "Update complete"})
 }
 
@@ -238,14 +231,49 @@ func TestSettings_IgnoresASecondRunWhileOneIsInFlight(t *testing.T) {
 	s := testSettings()
 	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
 	s.state = settingsStateRunningAction
-	inFlight := make(chan docker.DeployProgress)
-	s.progressChan = inFlight
+	inFlight := newProgressStream()
+	s.stream = inFlight
 
 	s, cmd := updateSettings(s, settingsRunActionMsg{action: func(docker.DeployProgressCallback) (string, error) {
 		return "", nil
 	}})
 	assert.Nil(t, cmd)
-	assert.Equal(t, inFlight, s.progressChan)
+	assert.Same(t, inFlight, s.stream)
+}
+
+// A cancel landing mid-run used to discard this model, taking the drain loop
+// and the handler for the run's result with it.
+func TestSettings_CancelIsIgnoredWhileARunIsInFlight(t *testing.T) {
+	for _, state := range []settingsState{settingsStateDeploying, settingsStateRunningAction} {
+		s := deployingSettings()
+		s.state = state
+
+		s, cmd := updateSettings(s, SettingsSectionCancelMsg{})
+		assert.Nil(t, cmd)
+		assert.Equal(t, state, s.state)
+	}
+}
+
+// The cancel guard exists so the run's completion still has a handler: a
+// discarded model would drop this message, stranding the app with the old
+// container removed and the new one never started.
+func TestSettings_DeployCompletionSurvivesACancel(t *testing.T) {
+	s := deployingSettings()
+
+	s, _ = updateSettings(s, SettingsSectionCancelMsg{})
+	require.Equal(t, settingsStateDeploying, s.state)
+
+	_, cmd := updateSettings(s, settingsDeployFinishedMsg{})
+	require.NotNil(t, cmd)
+	assert.Equal(t, NavigateToAppMsg{App: s.app}, cmd())
+}
+
+func TestSettings_CancelLeavesAnIdleForm(t *testing.T) {
+	s := testSettings()
+
+	_, cmd := updateSettings(s, SettingsSectionCancelMsg{})
+	require.NotNil(t, cmd)
+	assert.Equal(t, NavigateToDashboardMsg{AppName: s.app.Settings.Name}, cmd())
 }
 
 // Helpers
@@ -262,6 +290,14 @@ func testSettings() Settings {
 	}
 
 	return NewSettings(ns, app, SettingsSectionApplication)
+}
+
+// deployingSettings returns a sized model mid-deploy, with the live stream a
+// real run would have opened.
+func deployingSettings() Settings {
+	s, _ := updateSettings(testSettings(), tea.WindowSizeMsg{Width: 80, Height: 24})
+	s.state = settingsStateDeploying
+	return s.startProgress()
 }
 
 func updateSettings(s Settings, msg tea.Msg) (Settings, tea.Cmd) {
