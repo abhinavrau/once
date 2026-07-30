@@ -32,6 +32,16 @@ type apiRequest struct {
 	path   string
 }
 
+// String renders the request the way an unexpected-call failure names it:
+// "METHOD /path", or just the method when there is no path, as with
+// Authenticate.
+func (r apiRequest) String() string {
+	if r.path == "" {
+		return r.method
+	}
+	return r.method + " " + r.path
+}
+
 // fakeAPICall is one call a flow made through the tailscaleAPI seam. It keeps
 // the payload bytes, so the assertions that Once's requests stay
 // byte-compatible with docktail's need no HTTP server to observe them.
@@ -90,14 +100,8 @@ func newFakeTailscaleAPI(t fakeAPIReporter) *fakeTailscaleAPI {
 }
 
 func (f *fakeTailscaleAPI) Call(ctx context.Context, method, path string, payload []byte) (int, []byte, error) {
-	request := apiRequest{method, path}
-	f.calls = append(f.calls, fakeAPICall{apiRequest: request, payload: string(payload)})
-
-	reply, ok := f.replies[request]
-	if !ok {
-		f.t.Helper()
-		err := fmt.Errorf("unexpected Tailscale API call %s %s", method, path)
-		f.t.Errorf("%s", err)
+	reply, err := f.record(apiRequest{method, path}, string(payload))
+	if err != nil {
 		return 0, nil, err
 	}
 	if reply.err != nil {
@@ -107,20 +111,31 @@ func (f *fakeTailscaleAPI) Call(ctx context.Context, method, path string, payloa
 }
 
 func (f *fakeTailscaleAPI) Authenticate(ctx context.Context) error {
-	request := apiRequest{authenticateMethod, ""}
-	f.calls = append(f.calls, fakeAPICall{apiRequest: request})
-
-	reply, ok := f.replies[request]
-	if !ok {
-		f.t.Helper()
-		err := fmt.Errorf("unexpected Tailscale API call %s", authenticateMethod)
-		f.t.Errorf("%s", err)
+	reply, err := f.record(apiRequest{authenticateMethod, ""}, "")
+	if err != nil {
 		return err
 	}
 	return reply.err
 }
 
 // Private
+
+// record appends request to the call log with payload, and returns the
+// canned reply for it - the bookkeeping every operation the seam offers
+// shares, so a call fails the same way whether it carries a method and path
+// or, like Authenticate, neither.
+func (f *fakeTailscaleAPI) record(request apiRequest, payload string) (fakeAPIReply, error) {
+	f.calls = append(f.calls, fakeAPICall{apiRequest: request, payload: payload})
+
+	reply, ok := f.replies[request]
+	if !ok {
+		f.t.Helper()
+		err := fmt.Errorf("unexpected Tailscale API call %s", request)
+		f.t.Errorf("%s", err)
+		return fakeAPIReply{}, err
+	}
+	return reply, nil
+}
 
 // reply cans the status and body this request answers with, for as many times
 // as the flow asks.

@@ -16,13 +16,56 @@ business) must survive unchanged.
 
 **Blocked by:** None - can start immediately (tickets 03 and 04 are done).
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] The seam offers a token-only credential operation; status's up-front
+- [x] The seam offers a token-only credential operation; status's up-front
       check uses it and no longer issues the devices read
-- [ ] Rejected credentials still abort before per-service output with the
+- [x] Rejected credentials still abort before per-service output with the
       same wording; 429/5xx still do not
-- [ ] The fake adapter cans, records, and error-injects the new operation
+- [x] The fake adapter cans, records, and error-injects the new operation
       like any other
-- [ ] Control-seam behavior unchanged (still zero cloud calls)
-- [ ] `make test` and `make lint` green
+- [x] Control-seam behavior unchanged (still zero cloud calls)
+- [x] `make test` and `make lint` green
+
+## Comments
+
+**2026-07-30** - branch `tailscale-api-adapter-05-token-only-authenticate-seam`
+
+Added `Authenticate(ctx) error` to `tailscaleAPI`. The production adapter
+exchanges the OAuth token and discards it; `checkOAuthCredentials` in
+`tailscale_status.go` calls this instead of `Call(GET, /tailnet/-/devices)`,
+so status no longer touches tailnet data at all before the per-service loop.
+
+The boundary needed two sentinels, not one, once the check stopped reading a
+status code off a devices response: `ErrOAuthCredentialsRejected` (400/401/403
+from the token endpoint, unchanged wording from `tokenExchangeError`) and a
+new `ErrOAuthTokenEndpointUnavailable` (429/5xx, "not rejected, try again").
+`checkOAuthCredentials` swallows only the latter and forwards everything else
+- rejection or anything unproven (a network failure reaching the token
+endpoint, an unparseable response) - as fatal, forwarded verbatim rather than
+reworded. A first draft swallowed anything that wasn't a rejection, which
+silently dropped network failures too; code review caught it, second draft
+narrows the tolerance to just the named "not rejected" sentinel.
+
+Accepted regression, flagged by review and left as-is because it's what a
+token-only check can no longer do by construction: the old devices-read stand-in
+could return 403 for a client missing the devices scope, and
+`checkOAuthCredentials` named that specifically ("the OAuth client is missing
+the devices scope..."). A token exchange can't observe a per-endpoint scope,
+so that case is gone from the up-front check - a client with valid but
+under-scoped credentials no longer aborts before any service is reported, and
+if nothing is advertised the failure never surfaces (the same shape of bug
+ticket 04 fixed for revoked credentials, now reopened for this one narrower
+cause). This is the tradeoff the ticket's "cannot fail for tailnet-shaped
+reasons" describes, not an oversight - worth a follow-up if it turns out to
+bite in practice.
+
+The fake reuses `Call`'s `apiRequest{method, path}` bookkeeping for
+`Authenticate` under a sentinel method and empty path, so it is canned,
+recorded, and error-injected through the same `reply`/`fail`/`requested` calls
+- "like any other" per the ticket, not a bespoke mechanism. `Call` and
+`Authenticate` share a `record` helper now (code review flagged the
+duplication in the first draft).
+
+ADR-0011 updated: the seam description said "a one-method interface", now
+describes both `Call` and `Authenticate`.

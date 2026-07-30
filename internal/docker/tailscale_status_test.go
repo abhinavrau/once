@@ -135,7 +135,7 @@ func TestServiceStatusesRejectedCredentialsForwardsAuthenticateErrorVerbatim(t *
 // would have worked into a hard failure blamed on the operator's credentials.
 func TestServiceStatusesToleratesUnwellTailnetInCredentialCheck(t *testing.T) {
 	api := newFakeTailscaleAPI(t)
-	api.fail(authenticateMethod, "", errors.New("Tailscale rate-limited the OAuth token request (429 Too Many Requests); the credentials were not rejected - wait a minute and try again"))
+	api.fail(authenticateMethod, "", fmt.Errorf("stub: %w", ErrOAuthTokenEndpointUnavailable))
 	api.reply(http.MethodGet, serviceDevicesPath("whoami"),
 		http.StatusOK, `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`)
 	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
@@ -144,6 +144,22 @@ func TestServiceStatusesToleratesUnwellTailnetInCredentialCheck(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, statuses, 1)
 	assert.Equal(t, "approved", statuses[0].State)
+}
+
+// TestServiceStatusesUnprovenCredentialCheckAbortsToo pins the other side of
+// the boundary: only ErrOAuthTokenEndpointUnavailable is tolerated, so a
+// failure that says nothing at all - a network error reaching the token
+// endpoint, say - must still abort rather than being silently treated as an
+// unwell-but-forgivable tailnet.
+func TestServiceStatusesUnprovenCredentialCheckAbortsToo(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	unreachable := errors.New("contacting the Tailscale API: connection refused")
+	api.fail(authenticateMethod, "", unreachable)
+	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+
+	_, err := serviceStatusesAgainst(api, daemon, "whoami")
+	require.ErrorIs(t, err, unreachable)
+	assert.Empty(t, api.paths(http.MethodGet), "an unproven credential check must abort before any per-service call")
 }
 
 func TestServiceStatusesControlSeamSkipsCloudAPI(t *testing.T) {

@@ -74,16 +74,16 @@ func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleA
 // need, and cannot fail for tailnet-shaped reasons. Without a call of its own,
 // a revoked credential would only be noticed wherever the per-service cloud
 // check happens to run - never, when nothing is advertised, and mid-listing
-// when only some services are. Only a rejected credential is fatal here, and
-// its error is forwarded unchanged: a token endpoint that is merely
-// rate-limited or broken never judged the credentials, so it stays the
-// per-service checks' business to report, as it was before this check
-// existed.
+// when only some services are. Everything but a token endpoint that is merely
+// rate-limited or broken is fatal here, forwarded unchanged: that one case
+// never judged the credentials, so it stays the per-service checks' business
+// to report, as it was before this check existed.
 func checkOAuthCredentials(ctx context.Context, api tailscaleAPI) error {
-	if err := api.Authenticate(ctx); err != nil && errors.Is(err, ErrOAuthCredentialsRejected) {
-		return err
+	err := api.Authenticate(ctx)
+	if err == nil || errors.Is(err, ErrOAuthTokenEndpointUnavailable) {
+		return nil
 	}
-	return nil
+	return err
 }
 
 // renderServiceState turns the two verification sources into one display

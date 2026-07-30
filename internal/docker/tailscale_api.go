@@ -43,6 +43,15 @@ const (
 // them. Authenticate's callers use it to tell the two apart.
 var ErrOAuthCredentialsRejected = errors.New("Tailscale rejected the OAuth credentials")
 
+// ErrOAuthTokenEndpointUnavailable marks a token exchange failure that says
+// nothing about whether the credentials are good - the token endpoint was
+// rate-limited or broken, not judging them. Authenticate's callers use it to
+// tell this apart from ErrOAuthCredentialsRejected, the one other failure
+// with a settled meaning; anything else (a network failure reaching the
+// endpoint at all, an unparseable response) carries neither and is treated
+// as unproven rather than merely inconvenient.
+var ErrOAuthTokenEndpointUnavailable = errors.New("the Tailscale OAuth token endpoint is unavailable")
+
 // tailscaleAPI is Once's seam to the Tailscale SaaS control-plane HTTP API
 // (ADR-0011): one authenticated call, whose implementation owns the base URL,
 // the OAuth exchange, the bearer header, and the bounded response read. Paths,
@@ -59,8 +68,11 @@ type tailscaleAPI interface {
 	// without issuing any request that touches tailnet data - so a credential
 	// check has nothing tailnet-shaped to fail on. A nil result means the
 	// credentials are good; ErrOAuthCredentialsRejected marks a rejection of
-	// the credentials themselves, and any other error says nothing about
-	// whether they are good.
+	// the credentials themselves, and ErrOAuthTokenEndpointUnavailable marks a
+	// failure that says nothing about whether they are good. Any other error
+	// (a network failure, an unparseable response) is unproven rather than
+	// merely inconvenient, and callers that only tolerate the unavailable case
+	// should treat it like a rejection.
 	Authenticate(ctx context.Context) error
 }
 
@@ -192,9 +204,9 @@ func (a *httpTailscaleAPI) accessToken(ctx context.Context) (string, error) {
 func tokenExchangeError(resp *http.Response) error {
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return fmt.Errorf("Tailscale rate-limited the OAuth token request (%s); the credentials were not rejected - wait a minute and try again", resp.Status)
+		return fmt.Errorf("%w: Tailscale rate-limited the OAuth token request (%s); the credentials were not rejected - wait a minute and try again", ErrOAuthTokenEndpointUnavailable, resp.Status)
 	case resp.StatusCode >= http.StatusInternalServerError:
-		return fmt.Errorf("the OAuth token request failed with a server error (%s); the credentials were not rejected - try again shortly", resp.Status)
+		return fmt.Errorf("%w: the OAuth token request failed with a server error (%s); the credentials were not rejected - try again shortly", ErrOAuthTokenEndpointUnavailable, resp.Status)
 	case resp.StatusCode == http.StatusBadRequest, resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 		return fmt.Errorf("%w (%s); check the client ID and secret are correct and not revoked", ErrOAuthCredentialsRejected, resp.Status)
 	default:
