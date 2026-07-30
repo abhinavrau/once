@@ -40,7 +40,7 @@ holds because decode leaves the carry nil when no unknown fields exist.
 
 **Blocked by:** 01.
 
-**Status:** in-review
+**Status:** done
 
 - [x] `ProxySettings`, `ApplicationVolumeSettings`, and `TailscaleSettings`
       embed `labelExtra`; their fronts delegate to the codec
@@ -98,3 +98,5 @@ for each of the three types, the Tailscale case also proving `apiKey` still goes
 while `futureFlag` stays, plus one case pinning that shedding every unknown
 field leaves a nil carry. `make test` and `PATH` -fixed `make lint` green;
 integration suite not run (coordinator runs it post-merge).
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-3-tickets at 1e6037f. go vet, make test, make lint, and the full integration suite (498s) green on the merged tree. Done.

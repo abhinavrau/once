@@ -15,7 +15,7 @@ introduced when the exposure form was converted.
 **Blocked by:** None - can start immediately (ticket 02, the rejection
 message, is done).
 
-**Status:** in-review
+**Status:** done
 
 - [x] Submitting an invalid or empty duration keeps the form open with an
       inline error on the duration field and emits the rejection message with
@@ -73,3 +73,5 @@ errors this file constructs itself (now `err.Error()`).
 
 `make test` green, `PATH="$HOME/go/bin:$PATH" make lint` clean. Integration
 suite not run.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-3-tickets at ae25c20 (fast-forward). go vet, make test, make lint, and the full integration suite (498s) green on the merged tree. Done.

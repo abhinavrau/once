@@ -37,7 +37,7 @@ seconds, not by timeout.
 **Blocked by:** 01 - Key-addressed Form fields, 02 - Form submit rejection
 message.
 
-**Status:** in-review
+**Status:** done
 
 - [x] No integration driver navigates a form by counting tabs; fields are
       reached by click target key
@@ -86,3 +86,5 @@ ticket, not a scope stretch here.
 
 `make test` green, `make lint` clean, `go test ./integration -run TestUI`
 green. Full integration suite not run (coordinator owns it post-merge).
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-3-tickets at b3c6a92. go vet, make test, make lint, and the full integration suite (498s) green on the merged tree. Done.

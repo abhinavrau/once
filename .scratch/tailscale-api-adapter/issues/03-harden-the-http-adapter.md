@@ -27,7 +27,7 @@ Three defects in the HTTP adapter, found by post-merge review:
 
 **Blocked by:** None - can start immediately (tickets 01 and 02 are done).
 
-**Status:** in-review
+**Status:** done
 
 - [x] A SaaS endpoint that accepts the connection but never responds fails the
       enable within a bounded time, unit-tested against the fake or a stalled
@@ -90,3 +90,5 @@ UI, or integration file touched.
 Token-exchange multiplicity stays as recorded above. `make test` and
 `PATH="$HOME/go/bin:$PATH" make lint` green (bare `make lint` cannot find
 golangci-lint); integration suite not run, per the ticket's scope.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-3-tickets at 9e439a6. go vet, make test, make lint, and the full integration suite (498s) green on the merged tree. Done.

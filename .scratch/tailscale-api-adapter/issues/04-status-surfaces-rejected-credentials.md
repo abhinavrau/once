@@ -18,7 +18,7 @@ it is (settled in the mode-daemon feature).
 
 **Blocked by:** None - can start immediately.
 
-**Status:** in-review
+**Status:** done
 
 - [x] With revoked credentials, status reports the credential error before any
       per-service output and exits non-zero, unit-tested through the fake
@@ -57,3 +57,5 @@ Healthy output is unchanged; the extra call shows up only in the call-order
 assertion, which now also pins the check as running first. Also moved this
 test file's helpers under a `// Helpers` section - commit 091a683's
 convention sweep had missed it.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-3-tickets at fdb5466. go vet, make test, make lint, and the full integration suite (498s) green on the merged tree. Done.

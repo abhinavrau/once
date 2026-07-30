@@ -27,7 +27,7 @@ Post-merge review found three related defects:
 
 **Blocked by:** None - can start immediately (ticket 01 is done).
 
-**Status:** in-review
+**Status:** done
 
 - [x] A cancel arriving while a Settings deploy is running neither wedges the
       deploy goroutine nor loses the deploy's completion, covered by a unit
@@ -84,3 +84,5 @@ instructions. Reviewed with `code-review` against main; findings fixed in
 Not fixed, out of scope: `ctrl+c` in `internal/ui/app.go` still quits the
 process mid-deploy, which can leave an app half-applied. Same failure class
 as this ticket, different trigger - worth its own ticket.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-3-tickets at dbf57c2. go vet, make test, make lint, and the full integration suite (498s) green on the merged tree. Done.
