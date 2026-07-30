@@ -25,11 +25,13 @@ var appKeys = struct {
 	Quit: WithHelp(NewKeyBinding("ctrl+c"), "ctrl+c", "quit"),
 }
 
-// quitNoticeDuration is how long the "busy, quit refused" notice stays on
-// screen before it clears itself.
-const quitNoticeDuration = 2 * time.Second
+const (
+	// quitNoticeDuration is how long the "busy, quit refused" notice stays on
+	// screen before it clears itself.
+	quitNoticeDuration = 2 * time.Second
 
-const quitNoticeText = "Busy - finishing current action; quit when done."
+	quitNoticeText = "Busy - finishing current action; quit when done."
+)
 
 type (
 	namespaceChangedMsg    struct{}
