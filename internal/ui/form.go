@@ -440,12 +440,7 @@ func (f Form) Error() string {
 // Private
 
 func (f Form) field(key string) FormField {
-	for _, item := range f.items {
-		if item.Key == key {
-			return item.Field
-		}
-	}
-	panic(fmt.Sprintf("form has no field with key %q", key))
+	return f.items[f.indexOf(key)].Field
 }
 
 func (f Form) indexOf(key string) int {
