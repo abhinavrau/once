@@ -34,20 +34,53 @@ that on `labelExtra`.
 round-trip tests pin the label decode behavior this codec move must not
 change - the review sequenced candidate 02 downstream of that seam).
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] `internal/docker/label.go` owns `labelKey`, `labelExtra`, `decodeLabel`,
+- [x] `internal/docker/label.go` owns `labelKey`, `labelExtra`, `decodeLabel`,
       `encodeLabel`, and `unknownFields`
-- [ ] A settings type that does not embed `labelExtra` cannot be passed to the
+- [x] A settings type that does not embed `labelExtra` cannot be passed to the
       codec (compile-time, via the generic constraint)
-- [ ] `ApplicationSettings` embeds `labelExtra`; its bespoke extra field,
+- [x] `ApplicationSettings` embeds `labelExtra`; its bespoke extra field,
       capture, and merge code are deleted
-- [ ] `UnmarshalApplicationSettings` and `ApplicationSettings.Marshal` keep
+- [x] `UnmarshalApplicationSettings` and `ApplicationSettings.Marshal` keep
       their signatures and delegate; backfill and denylist live in the front
-- [ ] `unknownFields` skips unexported fields when computing claimed keys, with
+- [x] `unknownFields` skips unexported fields when computing claimed keys, with
       a test showing an unknown JSON field named `extra` survives the round-trip
-- [ ] Encoding a value with no unknown fields produces the same bytes as plain
+- [x] Encoding a value with no unknown fields produces the same bytes as plain
       `json.Marshal`, with a test pinning it
-- [ ] New unit tests in `label_test.go` cover unknown-field round-trip,
+- [x] New unit tests in `label_test.go` cover unknown-field round-trip,
       removed-field shed, and collision precedence through the exported fronts
-- [ ] All existing unit tests pass unmodified; `make test` and `make lint` green
+- [x] All existing unit tests pass unmodified; `make test` and `make lint` green
+
+## Comments
+
+### 2026-07-30 - branch `once-label-module-01-label-codec-module`
+
+`internal/docker/label.go` now owns the whole `once` round-trip: `labelKey`
+(moved out of proxy.go), the unexported `labelExtra` carry with its
+getter/setter, generic `decodeLabel`/`encodeLabel` constrained on
+`labelCarrier[T] interface { *T; ... }`, and `unknownFields`. A settings type
+that forgets the embed cannot reach the codec: `*X does not satisfy
+labelCarrier[X] (missing method setUnknownLabelFields)`.
+
+`ApplicationSettings` embeds the carry; the bespoke `extra` field, the capture
+in `UnmarshalApplicationSettings`, and the merge in `Marshal` are gone. Both
+exported names keep their signatures as thin fronts that bind the per-type
+specifics - `removedSettingsFields` and the Exposure-from-Host backfill - so
+the codec knows no type names. `unknownFields` gained the correctness fix: it
+skips unexported fields, so a genuinely unknown label field named `extra` or
+`labelExtra` is preserved instead of silently shed.
+
+Only `ApplicationSettings` moves here; proxy, volume, and Tailscale settings
+are ticket 02. Behavior otherwise unchanged - `TestMarshalPreservesUnknownFields`,
+`TestUnmarshalIgnoresRemovedTailscaleExcluded`, and
+`TestExposureBackfilledFromHostOnUnmarshal` pass unmodified, and no existing
+test file is touched. New `label_test.go` covers the carry-named-field
+round-trip, byte-identical output when there is nothing to merge, removed-field
+shed, and modelled-value precedence, all through the exported fronts.
+
+Review notes: the struct-wins branch in `encodeLabel` is unreachable through the
+fronts (decode never captures a key the struct claims), kept as-is because the
+ticket requires the merge semantics "as today"; its doc comment now says so.
+The `labelExtra` doc no longer claims every settings type embeds it - true only
+after ticket 02. `make test` and `make lint` green; integration suite not run.

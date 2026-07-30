@@ -10,8 +10,8 @@ const labelKey = "once"
 
 // labelExtra carries the `once` label fields a newer version of Once wrote that
 // this binary does not model, so rewriting the label preserves them instead of
-// destroying them (as older binaries once did to "exposure"). Every settings
-// type embeds it; decodeLabel fills it and encodeLabel drains it.
+// destroying them (as older binaries once did to "exposure"). A settings type
+// embeds it to reach the codec: decodeLabel fills it, encodeLabel drains it.
 //
 // Equality checks on settings types deliberately ignore the carry. An older
 // binary cannot edit fields it does not model, and a settings change that
@@ -59,7 +59,8 @@ func decodeLabel[T any, PT labelCarrier[T]](label string, removed ...string) (T,
 
 // encodeLabel marshals a settings value for the `once` label, merging back the
 // unknown fields it carries. A field the struct models wins over a carried one
-// of the same name, so this binary's value is what gets written.
+// of the same name, so this binary's value is what gets written - defensively,
+// since decode never captures a key the struct claims in the first place.
 func encodeLabel[T any, PT labelCarrier[T]](settings T) string {
 	b, _ := json.Marshal(settings)
 
