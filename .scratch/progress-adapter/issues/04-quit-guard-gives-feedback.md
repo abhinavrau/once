@@ -16,7 +16,7 @@ An idle quit stays instant and silent as today.
 
 **Blocked by:** None - can start immediately (ticket 03 is done).
 
-**Status:** in-review
+**Status:** done
 
 - [x] A quit pressed while the current screen is busy produces visible
       feedback or a deferred exit, unit-tested at the `App.Update` seam
@@ -61,3 +61,5 @@ related top-level `const` declarations into one `const (...)` block) was
 applied. Scope stayed to `internal/ui/app.go` and its test file; did not
 touch `internal/ui/component.go`, `internal/docker/`, `integration/`, or
 `AGENTS.md`. Integration suite not run per instructions.
+
+- 2026-07-30 (coordinator): fast-forwarded to main at e0d80f0. go vet, make test, make lint green. Full integration suite: first run had one unidentified failure (output lost to a tail pipe; UI tests passed in that run), full rerun green 36/36 in 469s - consistent with the known registry-flake signature. Done.
