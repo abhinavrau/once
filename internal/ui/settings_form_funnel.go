@@ -17,8 +17,8 @@ type SettingsFormFunnel struct {
 }
 
 // NewSettingsFormFunnel builds the Funnel form. tailscaleEnabled only drives
-// the status line rendered at build time; the submit path checks live inside
-// Namespace.EnableFunnel.
+// the status line rendered at build time; whether Tailscale is live is checked
+// inside Namespace.EnableFunnel.
 func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailscaleEnabled bool) SettingsFormFunnel {
 	enableField := NewCheckboxField("Expose publicly via Funnel", app.Settings.FunnelEnabled())
 	durationField := NewTextField("10m")
@@ -54,9 +54,10 @@ func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailsc
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		enable := f.CheckboxField("enable").Checked()
 		duration, err := parseFunnelDuration(f.TextField("duration").Value())
-		// Only an enable spends the duration, so a disable is never held back by it.
+		// Only an enable spends the duration, which is why the field isn't
+		// Required: a disable must go through whatever the field holds.
 		if enable && err != nil {
-			f.SetError("duration", docker.ErrorMessage(err))
+			f.SetError("duration", err.Error())
 			return nil
 		}
 		return func() tea.Msg {
@@ -119,9 +120,8 @@ func funnelURLForApp(ts *docker.Tailscale, app *docker.Application) string {
 	return settings.FunnelURL(app.Settings.ActiveFunnelPort())
 }
 
-// parseFunnelDuration applies the bounds the Funnel spine applies, so a value
-// that spine would reject is caught at the form instead of after the action
-// has started running.
+// parseFunnelDuration applies the same bounds the Funnel spine applies, so a
+// value that spine would reject never leaves the form.
 func parseFunnelDuration(value string) (time.Duration, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
