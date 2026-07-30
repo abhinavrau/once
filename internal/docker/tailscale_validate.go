@@ -22,8 +22,6 @@ import (
 var ErrTagNotInPolicy = errors.New("define the tag in your tailnet policy (Access Controls -> tagOwners) first")
 
 const (
-	tailscaleAPIBaseURL = "https://api.tailscale.com/api/v2"
-
 	// probeServiceName is the throwaway Service definition created and deleted by
 	// the enable-time probe. probeServiceComment marks it as Once's, so a leftover
 	// from an interrupted probe is recognized and reused instead of blocking enable.
