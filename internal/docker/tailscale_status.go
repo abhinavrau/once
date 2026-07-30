@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"time"
 )
@@ -22,7 +23,10 @@ type ServiceStatus struct {
 // ServiceStatuses reports each named service's current state: advertised
 // according to the local daemon's serve status, and approved according to the
 // Tailscale cloud API. On the headscale control seam only advertisement is
-// checked - the cloud endpoints are Tailscale SaaS only.
+// checked - the cloud endpoints are Tailscale SaaS only. On the SaaS path the
+// credentials are proven once before any service is reported, so a revoked
+// credential fails the whole command instead of being mistaken for services
+// that are merely unadvertised.
 func (t *Tailscale) ServiceStatuses(ctx context.Context, names []string) ([]ServiceStatus, error) {
 	settings, err := t.LoadSettings(ctx)
 	if err != nil {
@@ -40,6 +44,11 @@ func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleA
 	}
 
 	cloudChecked := !controlSeamActive()
+	if cloudChecked {
+		if err := checkAPICredentials(ctx, api); err != nil {
+			return nil, err
+		}
+	}
 
 	statuses := make([]ServiceStatus, 0, len(names))
 	for _, name := range names {
@@ -57,6 +66,24 @@ func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleA
 		})
 	}
 	return statuses, nil
+}
+
+// checkAPICredentials proves the OAuth credentials before any service state is
+// reported. The adapter exchanges them lazily on its first call (ADR-0011), so
+// without this read a revoked credential is only noticed where the per-service
+// cloud check happens to run: never, when nothing is advertised - leaving every
+// service blamed on the docktail container - and mid-listing when only some
+// services are. The devices list is the tailnet read validateHostInTailnet
+// already uses, and needs no scope beyond the one the per-service checks need.
+func checkAPICredentials(ctx context.Context, api tailscaleAPI) error {
+	status, body, err := api.Call(ctx, http.MethodGet, "/tailnet/-/devices", nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("checking the Tailscale credentials against the tailnet (HTTP %d): %s", status, errorMessage(body))
+	}
+	return nil
 }
 
 // renderServiceState turns the two verification sources into one display
