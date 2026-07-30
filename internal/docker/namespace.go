@@ -263,8 +263,9 @@ func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, pr
 }
 
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
-// validate the exposed app names, the host-mode pre-flight (when the
-// effective mode is host), and the credentials, bring up the network,
+// validate the exposed app names, resolve the mode once and stamp it into the
+// settings the topology is built from, run the host-mode pre-flight (when the
+// resolved mode is host) and the credential probe, bring up the network,
 // boot the Docktail topology with the given credentials, boot once-admin so
 // it is exposed as a Service too, then verify every expected service is
 // advertised and approved before reporting success. The returned warnings
@@ -285,12 +286,14 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 	settings.Tag = settings.normalizeTag()
-	mode, err := n.tailscale.effectiveMode(ctx, settings.Mode)
+	mode, fresh, err := n.tailscale.resolveMode(ctx, settings.Mode)
 	if err != nil {
 		return nil, err
 	}
+	notice := hostModeNotice(settings.Mode, fresh)
+	settings.Mode = mode
 	if mode == TailscaleModeHost {
-		if err := validateHostModePreflight(ctx, tailscaleAPIBaseURL, NewHostTailscaleDaemon(), settings); err != nil {
+		if err := validateHostModePreflight(ctx, tailscaleAPIBaseURL, n.tailscale.daemonFor(mode), settings); err != nil {
 			return nil, err
 		}
 	}
@@ -300,8 +303,7 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	if err := n.EnsureNetwork(ctx); err != nil {
 		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
-	notice, err := n.tailscale.Enable(ctx, settings)
-	if err != nil {
+	if err := n.tailscale.Enable(ctx, settings); err != nil {
 		return nil, fmt.Errorf("enabling Tailscale: %w", err)
 	}
 	if err := n.admin.Boot(ctx); err != nil {
