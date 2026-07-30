@@ -31,7 +31,7 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 		return nil
 	}
 
-	settings, err := t.LoadSettings(ctx)
+	settings, daemon, err := t.session(ctx)
 	if err != nil {
 		return err
 	}
@@ -41,7 +41,7 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 			progress(DeployProgress{Stage: DeployStageWaiting, Status: line})
 		}
 	}
-	if err := waitForAdvertised(ctx, t.daemonFor(settings.Mode), expected, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
+	if err := waitForAdvertised(ctx, daemon, expected, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
 		return err
 	}
 	return waitForApproved(ctx, newTailscaleAPI(settings), settings, expected, serviceVerifyTimeout, serviceVerifyPoll, announce)

@@ -343,7 +343,7 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 		return t.domainSuffix, nil
 	}
 
-	settings, err := t.LoadSettings(ctx)
+	settings, daemon, err := t.session(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -352,7 +352,7 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 		return settings.DomainSuffix, nil
 	}
 
-	suffix, err := t.daemonFor(settings.Mode).MagicDNSSuffix(ctx)
+	suffix, err := daemon.MagicDNSSuffix(ctx)
 	if err != nil || suffix == "" {
 		return "", err
 	}
@@ -375,7 +375,7 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 // Once can't manage - surfacing activation failure prevents reporting a
 // Funnel active when it isn't.
 func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (string, error) {
-	settings, err := t.LoadSettings(ctx)
+	settings, daemon, err := t.session(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -383,7 +383,7 @@ func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (
 	if err != nil {
 		return "", err
 	}
-	hostPort, err := waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
+	hostPort, err := waitForFunnelBackend(ctx, daemon, backend, funnelActivationTimeout, funnelActivationPoll)
 	if err != nil {
 		return "", err
 	}
@@ -493,6 +493,19 @@ func (t *Tailscale) daemonFor(mode string) TailscaleDaemon {
 		return NewHostTailscaleDaemon()
 	}
 	return NewSidecarTailscaleDaemon(t.namespace.client, t.sidecarName())
+}
+
+// session binds every read path's stored settings to the daemon they imply:
+// the single door (ADR-0010) that replaces a hand-written LoadSettings plus
+// daemonFor pair at each read path's start. It never resolves a requested
+// mode (that is resolveMode's, at enable time) - read paths bind from the
+// stored mode as-is.
+func (t *Tailscale) session(ctx context.Context) (TailscaleSettings, TailscaleDaemon, error) {
+	settings, err := t.LoadSettings(ctx)
+	if err != nil {
+		return TailscaleSettings{}, nil, err
+	}
+	return settings, t.daemonFor(settings.Mode), nil
 }
 
 // ensureRunning starts the topology's containers if stopped and loads the
