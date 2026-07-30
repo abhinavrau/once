@@ -216,11 +216,10 @@ type Tailscale struct {
 	namespace    *Namespace
 	Settings     *TailscaleSettings
 	domainSuffix string // in-memory cache so a learned suffix survives a failed persist
-	// awaitLogin is the post-boot sidecar login wait. It is a hook because the
-	// wait runs the tailscale CLI over a hijacked docker exec connection, which
-	// the boot dispatch's client seam cannot fake (ADR-0009); nil means the real
-	// wait, and only tests override it. The wait's own logic is covered through
-	// waitForSidecarLogin with fake probes.
+	// awaitLogin is a hook for the post-boot sidecar login wait, which runs the
+	// tailscale CLI over a hijacked docker exec connection and so is unfakeable
+	// at the boot dispatch's client seam (ADR-0009). Nil means the real wait;
+	// only tests override it.
 	awaitLogin func(context.Context) error
 }
 
@@ -518,10 +517,21 @@ func (t *Tailscale) ensureRunning(ctx context.Context, info container.InspectRes
 // concrete *client.Client satisfies it structurally, so production passes it
 // unchanged.
 type sidecarBootClient interface {
+	containerRemover
+	imagePuller
 	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
-	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
 	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
 	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+}
+
+// containerRemover and imagePuller keep the shared remove and pull helpers down
+// to the one method each of them calls, so callers outside the boot dispatch
+// don't inherit the whole seam.
+type containerRemover interface {
+	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+}
+
+type imagePuller interface {
 	ImagePull(ctx context.Context, ref string, options image.PullOptions) (io.ReadCloser, error)
 }
 
@@ -535,12 +545,13 @@ type sidecarBootClient interface {
 // the real problem, rather than much later in the service verify. A sidecar
 // found already crash-looping is rebuilt with a freshly minted key.
 func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings) error {
-	return t.bootSidecarWith(ctx, t.namespace.client, settings)
+	return t.bootSidecarWithClient(ctx, t.namespace.client, settings)
 }
 
-// bootSidecarWith is bootSidecar's dispatch, taking the engine seam so tests
-// drive every branch - crash-looping, stopped, running, missing - with a fake.
-func (t *Tailscale) bootSidecarWith(ctx context.Context, c sidecarBootClient, settings TailscaleSettings) error {
+// bootSidecarWithClient is bootSidecar's dispatch, reaching the engine by
+// parameter rather than through the namespace, so tests drive every branch -
+// crash-looping, stopped, running, missing - with a fake.
+func (t *Tailscale) bootSidecarWithClient(ctx context.Context, c sidecarBootClient, settings TailscaleSettings) error {
 	info, err := c.ContainerInspect(ctx, t.sidecarName())
 	switch {
 	case err == nil && sidecarWedged(info.State):
@@ -737,7 +748,7 @@ func (t *Tailscale) removeVolume(ctx context.Context, name string) error {
 // Helpers
 
 // pullImageRef pulls an image and drains its progress stream.
-func pullImageRef(ctx context.Context, c sidecarBootClient, ref string) error {
+func pullImageRef(ctx context.Context, c imagePuller, ref string) error {
 	reader, err := c.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("pulling %s: %w", ref, err)
@@ -749,7 +760,7 @@ func pullImageRef(ctx context.Context, c sidecarBootClient, ref string) error {
 
 // forceRemoveContainer removes a container by name, tolerating one that is
 // already gone.
-func forceRemoveContainer(ctx context.Context, c sidecarBootClient, name string) error {
+func forceRemoveContainer(ctx context.Context, c containerRemover, name string) error {
 	if err := c.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}); err != nil {
 		if !errdefs.IsNotFound(err) {
 			return fmt.Errorf("removing %s: %w", name, err)

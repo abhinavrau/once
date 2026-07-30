@@ -22,17 +22,20 @@ import (
 type fakeSidecarBootClient struct {
 	state      *container.State
 	inspectErr error
+	removeErr  error
 	startErr   error
 
-	calls   []string
-	pulled  []string
-	removed []string
-	started []string
-	created *container.Config
+	calls     []string
+	inspected []string
+	pulled    []string
+	removed   []string
+	started   []string
+	created   *container.Config
 }
 
 func (f *fakeSidecarBootClient) ContainerInspect(ctx context.Context, name string) (container.InspectResponse, error) {
 	f.calls = append(f.calls, "inspect")
+	f.inspected = append(f.inspected, name)
 	if f.inspectErr != nil {
 		return container.InspectResponse{}, f.inspectErr
 	}
@@ -48,7 +51,7 @@ func (f *fakeSidecarBootClient) ContainerInspect(ctx context.Context, name strin
 func (f *fakeSidecarBootClient) ContainerRemove(ctx context.Context, name string, options container.RemoveOptions) error {
 	f.calls = append(f.calls, "remove")
 	f.removed = append(f.removed, name)
-	return nil
+	return f.removeErr
 }
 
 func (f *fakeSidecarBootClient) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, name string) (container.CreateResponse, error) {
@@ -83,7 +86,7 @@ func bootSidecarDispatch(t *testing.T, client *fakeSidecarBootClient) (bool, err
 		loginWaited = true
 		return nil
 	}
-	err := ts.bootSidecarWith(t.Context(), client, TailscaleSettings{Mode: TailscaleModeSidecar})
+	err := ts.bootSidecarWithClient(t.Context(), client, TailscaleSettings{Mode: TailscaleModeSidecar})
 	return loginWaited, err
 }
 
@@ -96,9 +99,26 @@ func TestBootSidecarRebuildsCrashLoopingContainer(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"inspect", "remove", "pull", "create", "start"}, client.calls)
+	assert.Equal(t, []string{"once-tailscale"}, client.inspected)
 	assert.Equal(t, []string{"once-tailscale"}, client.removed)
 	assert.Equal(t, []string{"new-sidecar"}, client.started)
 	assert.True(t, loginWaited)
+	// The rebuilt container carries a re-supplied key, not the dead one.
+	require.NotNil(t, client.created)
+	assert.Contains(t, client.created.Env, "TS_AUTHKEY=key-abc")
+}
+
+func TestBootSidecarAbortsRebuildWhenRemoveFails(t *testing.T) {
+	client := &fakeSidecarBootClient{
+		state:     &container.State{Restarting: true},
+		removeErr: errors.New("container is marked for removal"),
+	}
+
+	loginWaited, err := bootSidecarDispatch(t, client)
+
+	assert.ErrorContains(t, err, "removing once-tailscale")
+	assert.Equal(t, []string{"inspect", "remove"}, client.calls)
+	assert.False(t, loginWaited)
 }
 
 func TestBootSidecarRebuildsContainerExitedNonzero(t *testing.T) {
@@ -140,6 +160,7 @@ func TestBootSidecarCreatesMissingContainer(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"inspect", "pull", "create", "start"}, client.calls)
+	assert.Equal(t, []string{"once-tailscale"}, client.inspected)
 	assert.Equal(t, []string{tailscaleSidecarImage}, client.pulled)
 	assert.Empty(t, client.removed)
 	assert.True(t, loginWaited)
