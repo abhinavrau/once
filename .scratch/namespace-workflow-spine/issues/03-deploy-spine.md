@@ -40,7 +40,7 @@ without Docker, following the pattern already used for `EnableTailscale`.
 
 **Blocked by:** 02 - One source of Application settings defaults.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Namespace exposes one Deploy entry point returning the Application, any warnings, and an error
 - [ ] The CLI deploy command and the TUI install path both call it and contain no lifecycle ordering of their own
@@ -52,3 +52,7 @@ without Docker, following the pattern already used for `EnableTailscale`.
 - [ ] Download progress still reaches the CLI progress display and the TUI install screen
 - [ ] Precondition ordering is unit-tested without a Docker daemon
 - [ ] Integration tests pass, with CLI warning-ordering assertions updated
+
+## Comments
+
+2026-07-29 (coordinator): implemented and merged to main in commit e7b2d55 (branch namespace-workflow-spine-tickets, merged before the candidate 02-07 review round). Status set to done to match.

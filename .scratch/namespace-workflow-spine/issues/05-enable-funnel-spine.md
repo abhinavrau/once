@@ -38,7 +38,7 @@ frontend-specific, and a spine for it would be a pass-through.
 
 **Blocked by:** 01 - TUI surfaces settings-deploy failures honestly.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Namespace exposes one Enable Funnel entry point returning the public URL, the expiry, and an error
 - [ ] The CLI funnel enable command and the TUI Funnel form both call it and contain no ordering of their own
@@ -51,3 +51,7 @@ frontend-specific, and a spine for it would be a pass-through.
 - [ ] Funnel disable behaviour is unchanged on all three of its callers, including expiry teardown
 - [ ] Precondition ordering is unit-tested without a Docker daemon: an invalid duration is rejected before the daemon and Tailscale checks
 - [ ] Integration tests pass
+
+## Comments
+
+2026-07-29 (coordinator): implemented and merged to main in commit 4aa94ba (branch namespace-workflow-spine-tickets, merged before the candidate 02-07 review round). Status set to done to match.
