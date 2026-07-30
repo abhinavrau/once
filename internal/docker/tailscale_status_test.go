@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -97,8 +96,7 @@ func TestServiceStatusesRejectedCredentialsWithNothingAdvertised(t *testing.T) {
 	daemon := &FakeTailscaleDaemon{ServeJSON: `{}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "once-admin", "whoami")
-	require.Error(t, err, "revoked credentials must not read as services that are merely unadvertised")
-	assert.Contains(t, err.Error(), "rejected the OAuth credentials")
+	require.ErrorIs(t, err, errRevokedCredentials, "revoked credentials must not read as merely unadvertised services")
 	assert.Nil(t, statuses)
 }
 
@@ -107,21 +105,41 @@ func TestServiceStatusesRejectedCredentialsReportedBeforeAnyService(t *testing.T
 	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	_, err := serviceStatusesAgainst(api, daemon, "once-admin", "whoami")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rejected the OAuth credentials")
+	require.ErrorIs(t, err, errRevokedCredentials)
 	assert.Equal(t, []string{tsDevicesPath}, api.paths(http.MethodGet),
 		"the credential failure must surface before the per-service listing, not mid-list")
 }
 
-func TestServiceStatusesSurfacesCredentialCheckRejection(t *testing.T) {
-	api := newFakeTailscaleAPI(t)
-	api.reply(http.MethodGet, tsDevicesPath, http.StatusForbidden, `{"message":"insufficient scope"}`)
+func TestServiceStatusesUnauthorizedCredentialCheck(t *testing.T) {
+	_, err := serviceStatusesAgainst(credentialCheckStatus(t, http.StatusUnauthorized),
+		&FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}, "whoami")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rejected the OAuth credentials")
+	assert.Contains(t, err.Error(), "not revoked")
+}
+
+func TestServiceStatusesForbiddenCredentialCheckNamesTheMissingScope(t *testing.T) {
+	_, err := serviceStatusesAgainst(credentialCheckStatus(t, http.StatusForbidden),
+		&FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}, "whoami")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "devices scope")
+	assert.Contains(t, err.Error(), "no access")
+}
+
+// TestServiceStatusesToleratesUnwellTailnetInCredentialCheck pins the boundary
+// of the check: it answers "are these credentials still good", so a tailnet
+// that is merely rate-limited or down must not turn a listing that would have
+// worked into a hard failure blamed on the operator's credentials.
+func TestServiceStatusesToleratesUnwellTailnetInCredentialCheck(t *testing.T) {
+	api := credentialCheckStatus(t, http.StatusTooManyRequests)
+	api.reply(http.MethodGet, serviceDevicesPath("whoami"),
+		http.StatusOK, `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`)
 	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
-	_, err := serviceStatusesAgainst(api, daemon, "whoami")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "403")
-	assert.Contains(t, err.Error(), "insufficient scope")
+	statuses, err := serviceStatusesAgainst(api, daemon, "whoami")
+	require.NoError(t, err)
+	require.Len(t, statuses, 1)
+	assert.Equal(t, "approved", statuses[0].State)
 }
 
 func TestServiceStatusesControlSeamSkipsCloudAPI(t *testing.T) {
@@ -165,12 +183,25 @@ func statusAPI(t *testing.T, hosts map[string]string) *fakeTailscaleAPI {
 	return api
 }
 
+// errRevokedCredentials stands in for the rejection the adapter reports out of
+// its lazy token exchange, so these tests assert the failure reaches the caller
+// without pinning the adapter's wording.
+var errRevokedCredentials = errors.New("Tailscale rejected the OAuth credentials")
+
 // rejectingAPI is a tailnet whose OAuth credentials have been revoked: the
-// adapter reports the rejection from its lazy token exchange, so every call
-// fails the way the first one does.
+// adapter fails the token exchange, so the flow's first call never lands.
 func rejectingAPI(t *testing.T) *fakeTailscaleAPI {
 	t.Helper()
 	api := newFakeTailscaleAPI(t)
-	api.fail(http.MethodGet, tsDevicesPath, fmt.Errorf("Tailscale rejected the OAuth credentials (401 Unauthorized); check the client ID and secret are correct and not revoked"))
+	api.fail(http.MethodGet, tsDevicesPath, errRevokedCredentials)
+	return api
+}
+
+// credentialCheckStatus answers the up-front credential check with one status
+// and a message body, as the API refuses a request it did accept a token for.
+func credentialCheckStatus(t *testing.T, status int) *fakeTailscaleAPI {
+	t.Helper()
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, tsDevicesPath, status, `{"message":"no access"}`)
 	return api
 }

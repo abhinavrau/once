@@ -25,8 +25,8 @@ type ServiceStatus struct {
 // Tailscale cloud API. On the headscale control seam only advertisement is
 // checked - the cloud endpoints are Tailscale SaaS only. On the SaaS path the
 // credentials are proven once before any service is reported, so a revoked
-// credential fails the whole command instead of being mistaken for services
-// that are merely unadvertised.
+// credential fails the command instead of being mistaken for unadvertised
+// services.
 func (t *Tailscale) ServiceStatuses(ctx context.Context, names []string) ([]ServiceStatus, error) {
 	settings, err := t.LoadSettings(ctx)
 	if err != nil {
@@ -45,7 +45,7 @@ func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleA
 
 	cloudChecked := !controlSeamActive()
 	if cloudChecked {
-		if err := checkAPICredentials(ctx, api); err != nil {
+		if err := checkOAuthCredentials(ctx, api); err != nil {
 			return nil, err
 		}
 	}
@@ -68,20 +68,23 @@ func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleA
 	return statuses, nil
 }
 
-// checkAPICredentials proves the OAuth credentials before any service state is
-// reported. The adapter exchanges them lazily on its first call (ADR-0011), so
-// without this read a revoked credential is only noticed where the per-service
-// cloud check happens to run: never, when nothing is advertised - leaving every
-// service blamed on the docktail container - and mid-listing when only some
-// services are. The devices list is the tailnet read validateHostInTailnet
-// already uses, and needs no scope beyond the one the per-service checks need.
-func checkAPICredentials(ctx context.Context, api tailscaleAPI) error {
+// checkOAuthCredentials proves the OAuth credentials before any service state
+// is reported. The adapter exchanges them lazily on its first call (ADR-0011),
+// so without a call of its own a revoked credential is only noticed wherever
+// the per-service cloud check happens to run - never, when nothing is
+// advertised, and mid-listing when only some services are. Only a rejected
+// credential is fatal here: a tailnet that is merely unwell stays the
+// per-service checks' business to report, as it was before this check existed.
+func checkOAuthCredentials(ctx context.Context, api tailscaleAPI) error {
 	status, body, err := api.Call(ctx, http.MethodGet, "/tailnet/-/devices", nil)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("checking the Tailscale credentials against the tailnet (HTTP %d): %s", status, errorMessage(body))
+	switch status {
+	case http.StatusUnauthorized:
+		return fmt.Errorf("Tailscale rejected the OAuth credentials (HTTP %d): %s; check the client ID and secret are correct and not revoked", status, errorMessage(body))
+	case http.StatusForbidden:
+		return fmt.Errorf("the OAuth client is missing the devices scope (Devices -> Core), needed to read which hosts advertise each Service (HTTP %d): %s", status, errorMessage(body))
 	}
 	return nil
 }
