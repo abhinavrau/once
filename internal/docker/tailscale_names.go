@@ -28,11 +28,11 @@ func ValidateTailscaleServiceName(name string) error {
 // (or Tailscale not enabled) yields no warnings rather than failing the
 // enable or deploy that asked.
 func (t *Tailscale) ShadowWarnings(ctx context.Context, names []string) []string {
-	settings, err := t.LoadSettings(ctx)
+	_, daemon, err := t.session(ctx)
 	if err != nil {
 		return nil
 	}
-	return shadowWarnings(ctx, t.daemonFor(settings.Mode), names)
+	return shadowWarnings(ctx, daemon, names)
 }
 
 // Helpers

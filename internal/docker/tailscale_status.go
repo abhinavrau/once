@@ -28,11 +28,11 @@ type ServiceStatus struct {
 // credential fails the command instead of being mistaken for unadvertised
 // services.
 func (t *Tailscale) ServiceStatuses(ctx context.Context, names []string) ([]ServiceStatus, error) {
-	settings, err := t.LoadSettings(ctx)
+	settings, daemon, err := t.session(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return serviceStatuses(ctx, t.daemonFor(settings.Mode), newTailscaleAPI(settings), settings, names)
+	return serviceStatuses(ctx, daemon, newTailscaleAPI(settings), settings, names)
 }
 
 // Helpers
