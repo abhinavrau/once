@@ -80,7 +80,7 @@ func RestoreNamespace(ctx context.Context, name string) (*Namespace, error) {
 		return nil, err
 	}
 
-	if err := ns.restoreState(ctx); err != nil {
+	if err := ns.restoreState(ctx, ns.client); err != nil {
 		return nil, err
 	}
 
@@ -379,7 +379,7 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 
 func (n *Namespace) Refresh(ctx context.Context) error {
 	n.applications = nil
-	return n.restoreState(ctx)
+	return n.restoreState(ctx, n.client)
 }
 
 // RollApplications recreates every running app container (zero-downtime) so they
@@ -536,8 +536,15 @@ type appCandidate struct {
 	created int64
 }
 
-func (n *Namespace) restoreState(ctx context.Context) error {
-	containers, err := n.client.ContainerList(ctx, container.ListOptions{All: true})
+// restoreClient is the engine surface the restore path reads: the namespace's
+// containers, and the start time of each running app container.
+type restoreClient interface {
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+}
+
+func (n *Namespace) restoreState(ctx context.Context, client restoreClient) error {
+	containers, err := client.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return err
 	}
@@ -574,7 +581,7 @@ func (n *Namespace) restoreState(ctx context.Context) error {
 					app := NewApplication(n, settings)
 					app.Running = c.State == "running"
 					if app.Running {
-						info, err := n.client.ContainerInspect(ctx, c.ID)
+						info, err := client.ContainerInspect(ctx, c.ID)
 						if err == nil && info.State != nil {
 							if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
 								app.RunningSince = t
