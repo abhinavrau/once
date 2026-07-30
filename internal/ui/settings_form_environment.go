@@ -24,10 +24,10 @@ func NewSettingsFormEnvironment(settings docker.ApplicationSettings) SettingsFor
 	var items []FormItem
 
 	keys := slices.Sorted(maps.Keys(settings.EnvVars))
-	for _, k := range keys {
-		items = append(items, newEnvKeyItem(k), newEnvValueItem(settings.EnvVars[k]))
+	for row, k := range keys {
+		items = append(items, newEnvKeyItem(row, k), newEnvValueItem(row, settings.EnvVars[k]))
 	}
-	items = append(items, newEnvKeyItem(""), newEnvValueItem(""))
+	items = append(items, newEnvKeyItem(len(keys), ""), newEnvValueItem(len(keys), ""))
 
 	m := SettingsFormEnvironment{
 		settingsFormBase: settingsFormBase{
@@ -38,24 +38,24 @@ func NewSettingsFormEnvironment(settings docker.ApplicationSettings) SettingsFor
 	}
 
 	m.form.OnRebuild(func(f *Form) {
-		lastKeyIdx := f.ItemCount() - 2
-		if lastKeyIdx >= 0 && f.TextField(lastKeyIdx).Value() != "" {
-			f.AppendItems(newEnvKeyItem(""), newEnvValueItem(""))
+		lastRow := f.ItemCount()/2 - 1
+		if lastRow >= 0 && f.TextField(envKeyFieldKey(lastRow)).Value() != "" {
+			f.AppendItems(newEnvKeyItem(lastRow+1, ""), newEnvValueItem(lastRow+1, ""))
 		}
 	})
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		s := settings
 		s.EnvVars = nil
-		for i := 0; i < f.ItemCount(); i += 2 {
-			k := f.TextField(i).Value()
+		for row := range f.ItemCount() / 2 {
+			k := f.TextField(envKeyFieldKey(row)).Value()
 			if k == "" {
 				continue
 			}
 			if s.EnvVars == nil {
 				s.EnvVars = make(map[string]string)
 			}
-			s.EnvVars[k] = f.TextField(i + 1).Value()
+			s.EnvVars[k] = f.TextField(envValueFieldKey(row)).Value()
 		}
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})
@@ -99,12 +99,9 @@ func (m SettingsFormEnvironment) columnWidths() (int, int) {
 
 func (m SettingsFormEnvironment) setFieldWidths() {
 	keyWidth, valueWidth := m.columnWidths()
-	for i := range m.form.ItemCount() {
-		if i%2 == 0 {
-			m.form.TextField(i).SetWidth(max(keyWidth-4, 1))
-		} else {
-			m.form.TextField(i).SetWidth(max(valueWidth-4, 1))
-		}
+	for row := range m.rowCount() {
+		m.form.TextField(envKeyFieldKey(row)).SetWidth(max(keyWidth-4, 1))
+		m.form.TextField(envValueFieldKey(row)).SetWidth(max(valueWidth-4, 1))
 	}
 }
 
@@ -169,15 +166,14 @@ func (m SettingsFormEnvironment) renderContent() string {
 	}
 
 	focused := m.form.Focused()
-	for i := m.scroll; i < end; i++ {
-		keyIdx := i * 2
-		valIdx := i*2 + 1
+	for row := m.scroll; row < end; row++ {
+		keyField, valueField := envKeyFieldKey(row), envValueFieldKey(row)
 
-		keyStyle := Styles.Focus(Styles.Input, focused == keyIdx).Width(keyWidth)
-		valueStyle := Styles.Focus(Styles.Input, focused == valIdx).Width(valueWidth)
+		keyStyle := Styles.Focus(Styles.Input, focused == row*2).Width(keyWidth)
+		valueStyle := Styles.Focus(Styles.Input, focused == row*2+1).Width(valueWidth)
 
-		keyView := mouse.Mark(fieldTarget(keyIdx), keyStyle.Render(m.form.TextField(keyIdx).View()))
-		valueView := mouse.Mark(fieldTarget(valIdx), valueStyle.Render(m.form.TextField(valIdx).View()))
+		keyView := mouse.Mark(fieldTarget(keyField), keyStyle.Render(m.form.TextField(keyField).View()))
+		valueView := mouse.Mark(fieldTarget(valueField), valueStyle.Render(m.form.TextField(valueField).View()))
 
 		rowView := lipgloss.JoinHorizontal(lipgloss.Top, keyView, " ", valueView)
 		parts = append(parts, rowView, "")
@@ -204,16 +200,24 @@ func (m SettingsFormEnvironment) renderContent() string {
 
 // Helpers
 
-func newEnvKeyItem(value string) FormItem {
+func newEnvKeyItem(row int, value string) FormItem {
 	f := NewTextField("KEY")
 	f.SetValue(value)
 	f.SetCharLimit(256)
-	return FormItem{Field: f}
+	return FormItem{Key: envKeyFieldKey(row), Field: f}
 }
 
-func newEnvValueItem(value string) FormItem {
+func newEnvValueItem(row int, value string) FormItem {
 	f := NewTextField("value")
 	f.SetValue(value)
 	f.SetCharLimit(1024)
-	return FormItem{Field: f}
+	return FormItem{Key: envValueFieldKey(row), Field: f}
+}
+
+func envKeyFieldKey(row int) string {
+	return fmt.Sprintf("key-%d", row)
+}
+
+func envValueFieldKey(row int) string {
+	return fmt.Sprintf("value-%d", row)
 }

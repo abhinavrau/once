@@ -8,11 +8,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	exposureRadioField = iota
-	exposureHostField
-)
-
 type SettingsFormExposure struct {
 	settingsFormBase
 }
@@ -38,8 +33,8 @@ func NewSettingsFormExposure(settings docker.ApplicationSettings, tailscaleEnabl
 		settingsFormBase: settingsFormBase{
 			title: "Exposure",
 			form: NewForm("Save",
-				FormItem{Label: "Exposure", Field: radio},
-				FormItem{Label: "Host", Field: hostField, Required: true},
+				FormItem{Key: "exposure", Label: "Exposure", Field: radio},
+				FormItem{Key: "host", Label: "Host", Field: hostField, Required: true},
 			),
 		},
 	}
@@ -51,14 +46,14 @@ func NewSettingsFormExposure(settings docker.ApplicationSettings, tailscaleEnabl
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
-		exposure := exposureAt(f.RadioField(exposureRadioField).Selected())
+		exposure := exposureAt(f.RadioField("exposure").Selected())
 		if exposure == docker.ExposureTailnet && !tailscaleEnabled {
-			f.SetError(exposureRadioField, "Tailscale is not enabled; enable it from the dashboard (press t) first")
+			f.SetError("exposure", "Tailscale is not enabled; enable it from the dashboard (press t) first")
 			return nil
 		}
-		host, err := docker.ResolveHost(exposure, strings.TrimSpace(f.TextField(exposureHostField).Value()), appName)
+		host, err := docker.ResolveHost(exposure, strings.TrimSpace(f.TextField("host").Value()), appName)
 		if err != nil {
-			f.SetError(exposureHostField, docker.ErrorMessage(err))
+			f.SetError("host", docker.ErrorMessage(err))
 			return nil
 		}
 		s := settings

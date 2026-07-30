@@ -12,11 +12,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	funnelEnableField = iota
-	funnelDurationField
-)
-
 type SettingsFormFunnel struct {
 	settingsFormBase
 }
@@ -33,8 +28,8 @@ func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailsc
 		settingsFormBase: settingsFormBase{
 			title: "Tailscale Funnel",
 			form: NewForm("Save",
-				FormItem{Label: "Funnel", Field: enableField},
-				FormItem{Label: "Duration (max 24h)", Field: durationField},
+				FormItem{Key: "enable", Label: "Funnel", Field: enableField},
+				FormItem{Key: "duration", Label: "Duration (max 24h)", Field: durationField},
 			),
 		},
 	}
@@ -57,8 +52,8 @@ func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailsc
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
-		enable := f.CheckboxField(funnelEnableField).Checked()
-		duration := f.TextField(funnelDurationField).Value()
+		enable := f.CheckboxField("enable").Checked()
+		duration := f.TextField("duration").Value()
 		return func() tea.Msg {
 			return settingsRunActionMsg{action: func() (string, error) {
 				return applyFunnel(ns, app, enable, duration)

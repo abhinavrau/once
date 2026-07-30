@@ -6,11 +6,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	appImageField = iota
-	appTLSField
-)
-
 type SettingsFormApplication struct {
 	settingsFormBase
 }
@@ -31,16 +26,16 @@ func NewSettingsFormApplication(settings docker.ApplicationSettings) SettingsFor
 		settingsFormBase: settingsFormBase{
 			title: "Application",
 			form: NewForm("Done",
-				FormItem{Label: "Image", Field: imageField, Required: true},
-				FormItem{Label: "TLS", Field: tlsField},
+				FormItem{Key: "image", Label: "Image", Field: imageField, Required: true},
+				FormItem{Key: "tls", Label: "TLS", Field: tlsField},
 			),
 		},
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		s := settings
-		s.Image = f.TextField(appImageField).Value()
-		s.DisableTLS = !f.CheckboxField(appTLSField).Checked()
+		s.Image = f.TextField("image").Value()
+		s.DisableTLS = !f.CheckboxField("tls").Checked()
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})
 	m.form.OnCancel(func(f *Form) tea.Cmd {

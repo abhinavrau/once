@@ -8,11 +8,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	backupsPathField = iota
-	backupsAutoBackupField
-)
-
 type SettingsFormBackups struct {
 	settingsFormBase
 }
@@ -27,8 +22,8 @@ func NewSettingsFormBackups(app *docker.Application, lastResult *docker.Operatio
 		settingsFormBase: settingsFormBase{
 			title: "Backups",
 			form: NewForm("Done",
-				FormItem{Label: "Backup location", Field: pathField},
-				FormItem{Label: "Backups", Field: autoBackupField},
+				FormItem{Key: "path", Label: "Backup location", Field: pathField},
+				FormItem{Key: "auto-backup", Label: "Backups", Field: autoBackupField},
 			),
 		},
 	}
@@ -44,8 +39,8 @@ func NewSettingsFormBackups(app *docker.Application, lastResult *docker.Operatio
 	})
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		s := app.Settings
-		s.Backup.Path = f.TextField(backupsPathField).Value()
-		s.Backup.AutoBackup = f.CheckboxField(backupsAutoBackupField).Checked()
+		s.Backup.Path = f.TextField("path").Value()
+		s.Backup.AutoBackup = f.CheckboxField("auto-backup").Checked()
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})
 	m.form.OnCancel(func(f *Form) tea.Cmd {

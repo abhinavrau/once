@@ -13,8 +13,8 @@ import (
 func TestSettingsFormExposure_InitialState(t *testing.T) {
 	form := newExposureForm(t, docker.ExposureLocal, "chat.localhost", true)
 
-	assert.Equal(t, exposureIndex(docker.ExposureLocal), form.form.RadioField(exposureRadioField).Selected())
-	assert.Equal(t, "chat.localhost", form.form.TextField(exposureHostField).Value())
+	assert.Equal(t, exposureIndex(docker.ExposureLocal), form.form.RadioField("exposure").Selected())
+	assert.Equal(t, "chat.localhost", form.form.TextField("host").Value())
 }
 
 func TestSettingsFormExposure_SwitchSuggestsDerivedHost(t *testing.T) {
@@ -22,14 +22,14 @@ func TestSettingsFormExposure_SwitchSuggestsDerivedHost(t *testing.T) {
 
 	// The radio has initial focus; right moves local → tailnet.
 	exposurePressKey(&form, "right")
-	assert.Equal(t, "once-campfire", form.form.TextField(exposureHostField).Value())
+	assert.Equal(t, "once-campfire", form.form.TextField("host").Value())
 
 	exposurePressKey(&form, "right")
-	assert.Equal(t, "", form.form.TextField(exposureHostField).Value(), "public has no derived default")
+	assert.Equal(t, "", form.form.TextField("host").Value(), "public has no derived default")
 
 	// Cycling back to the app's stored exposure restores its stored host.
 	exposurePressKey(&form, "right")
-	assert.Equal(t, "chat.localhost", form.form.TextField(exposureHostField).Value())
+	assert.Equal(t, "chat.localhost", form.form.TextField("host").Value())
 }
 
 func TestSettingsFormExposure_SubmitSwitchesExposure(t *testing.T) {
@@ -49,7 +49,7 @@ func TestSettingsFormExposure_SubmitSwitchesExposure(t *testing.T) {
 func TestSettingsFormExposure_SubmitResolvesBareLocalHost(t *testing.T) {
 	form := newExposureForm(t, docker.ExposureLocal, "chat.localhost", true)
 
-	form.form.TextField(exposureHostField).SetValue("blog")
+	form.form.TextField("host").SetValue("blog")
 	exposurePressKey(&form, "tab")
 	exposurePressKey(&form, "tab")
 	msg := exposureSubmit(t, &form)
@@ -64,7 +64,7 @@ func TestSettingsFormExposure_PublicRequiresFQDN(t *testing.T) {
 
 	exposurePressKey(&form, "right") // → tailnet
 	exposurePressKey(&form, "right") // → public, host emptied
-	form.form.TextField(exposureHostField).SetValue("chat")
+	form.form.TextField("host").SetValue("chat")
 	exposurePressKey(&form, "tab")
 	exposurePressKey(&form, "tab")
 
