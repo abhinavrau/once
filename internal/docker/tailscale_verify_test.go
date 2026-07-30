@@ -126,7 +126,7 @@ func TestWaitForApprovedPendingApprovalFailsFast(t *testing.T) {
 	assert.Contains(t, err.Error(), "pending approval")
 	assert.Contains(t, err.Error(), "autoApprovers.services")
 	assert.Contains(t, err.Error(), "tag:once")
-	assert.Len(t, api.calls, 1, "pending approval must fail immediately, not poll until timeout")
+	assert.Equal(t, 1, api.callCount(), "pending approval must fail immediately, not poll until timeout")
 }
 
 func TestWaitForApprovedServiceNeverAppears(t *testing.T) {
@@ -135,7 +135,7 @@ func TestWaitForApprovedServiceNeverAppears(t *testing.T) {
 	err := waitForApprovedAgainst(api, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "never appeared in the tailnet: whoami")
-	assert.Greater(t, len(api.calls), 1, "an unknown service is polled until the deadline")
+	assert.Greater(t, api.callCount(), 1, "an unknown service is polled until the deadline")
 }
 
 func TestWaitForApprovedMissingServiceDefinitionPollsThenFails(t *testing.T) {
@@ -146,7 +146,7 @@ func TestWaitForApprovedMissingServiceDefinitionPollsThenFails(t *testing.T) {
 	err := waitForApprovedAgainst(api, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "never appeared in the tailnet: whoami")
-	assert.Greater(t, len(api.calls), 1, "a missing definition is polled until the deadline")
+	assert.Greater(t, api.callCount(), 1, "a missing definition is polled until the deadline")
 }
 
 func TestWaitForApprovedSurfacesAPIErrors(t *testing.T) {
@@ -166,7 +166,7 @@ func TestWaitForApprovedSurfacesTransportErrors(t *testing.T) {
 
 	err := waitForApprovedAgainst(api, nil, "whoami")
 	require.ErrorIs(t, err, unreachable)
-	assert.Len(t, api.calls, 1, "a transport failure must abort the wait, not poll until the deadline")
+	assert.Equal(t, 1, api.callCount(), "a transport failure must abort the wait, not poll until the deadline")
 }
 
 func TestVerifyServicesSkipsControlSeam(t *testing.T) {

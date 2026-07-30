@@ -104,7 +104,7 @@ func TestServiceStatusesControlSeamSkipsCloudAPI(t *testing.T) {
 	require.Len(t, statuses, 2)
 	assert.Equal(t, "advertised", statuses[0].State)
 	assert.Contains(t, statuses[1].State, "not advertised")
-	assert.Empty(t, api.calls, "the headscale control seam must not touch the cloud API")
+	assert.Zero(t, api.callCount(), "the headscale control seam must not touch the cloud API")
 }
 
 func TestServiceStatusesSurfacesDaemonError(t *testing.T) {

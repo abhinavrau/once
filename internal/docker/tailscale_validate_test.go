@@ -14,10 +14,13 @@ import (
 // production constants: they must match what Docktail sends, including the "-"
 // tailnet segment, so a change to either side has to be made deliberately here.
 const (
-	tsKeysPath      = "/tailnet/-/keys"
-	probeKeyPath    = "/tailnet/-/keys/k123"
-	probeSvcPath    = "/tailnet/-/services/svc:once-probe"
-	probeDevsPath   = "/tailnet/-/services/svc:once-probe/devices"
+	tsKeysPath    = "/tailnet/-/keys"
+	probeKeyPath  = "/tailnet/-/keys/k123"
+	probeSvcPath  = "/tailnet/-/services/svc:once-probe"
+	probeDevsPath = "/tailnet/-/services/svc:once-probe/devices"
+)
+
+const (
 	notPermittedMsg = `{"message":"calling actor does not have enough permissions"}`
 
 	// sidecarKeyPayload is the auth-key request Once sends for tag:once:
@@ -42,7 +45,7 @@ func probeAPI(t *testing.T) *fakeTailscaleAPI {
 	return api
 }
 
-func validateAgainst(api *fakeTailscaleAPI, tag string) error {
+func validateAgainst(api tailscaleAPI, tag string) error {
 	return validateOAuthCredentials(context.Background(), api,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: tag})
 }
@@ -87,7 +90,7 @@ func TestValidateOAuthCredentialsRejectsBadCredentials(t *testing.T) {
 
 	err := validateAgainst(api, "tag:once")
 	require.ErrorIs(t, err, rejected)
-	assert.Len(t, api.calls, 1, "a failed first call must abort the probe, not mint or probe further")
+	assert.Equal(t, 1, api.callCount(), "a failed first call must abort the probe, not mint or probe further")
 }
 
 func TestValidateOAuthCredentialsMissingAuthKeysScope(t *testing.T) {
