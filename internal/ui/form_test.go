@@ -313,10 +313,14 @@ func TestForm_ValidationOnClickSubmit(t *testing.T) {
 		return nil
 	})
 
-	formClickSubmit(&form)
+	cmd := formClickSubmit(&form)
 
 	assert.False(t, submitted)
 	assert.True(t, form.HasError())
+
+	rejected, ok := findFormRejection(cmd)
+	require.True(t, ok, "expected a FormSubmitRejectedMsg")
+	assert.Equal(t, FormSubmitRejectedMsg{Key: "name", Reason: "Name is required"}, rejected)
 }
 
 func TestForm_ValidationFocusesFirstError(t *testing.T) {
@@ -341,13 +345,12 @@ func TestForm_ValidationFailureEmitsRejection(t *testing.T) {
 	form.OnSubmit(func(f *Form) tea.Cmd { return nil })
 
 	formFocusSubmit(&form)
-	var cmd tea.Cmd
-	form, cmd = form.Update(keyPressMsg("enter"))
+	cmd := formPressEnter(&form)
 
 	rejected, ok := findFormRejection(cmd)
 	require.True(t, ok, "expected a FormSubmitRejectedMsg")
 	assert.Equal(t, FormSubmitRejectedMsg{Key: "name", Reason: "Name is required"}, rejected)
-	assert.Equal(t, "Name is required", form.Error(), "renders the error inline")
+	assert.Equal(t, "Name is required", form.Error())
 	assert.Equal(t, 0, form.Focused(), "refocuses the errored field")
 }
 
@@ -361,13 +364,12 @@ func TestForm_CallbackErrorEmitsRejection(t *testing.T) {
 	})
 
 	formFocusSubmit(&form)
-	var cmd tea.Cmd
-	form, cmd = form.Update(keyPressMsg("enter"))
+	cmd := formPressEnter(&form)
 
 	rejected, ok := findFormRejection(cmd)
 	require.True(t, ok, "expected a FormSubmitRejectedMsg")
 	assert.Equal(t, FormSubmitRejectedMsg{Key: "name", Reason: "that name is taken"}, rejected)
-	assert.Equal(t, "that name is taken", form.Error(), "renders the error inline")
+	assert.Equal(t, "that name is taken", form.Error())
 }
 
 func TestForm_SuccessfulSubmitEmitsNoRejection(t *testing.T) {
@@ -380,8 +382,7 @@ func TestForm_SuccessfulSubmitEmitsNoRejection(t *testing.T) {
 
 	formTypeText(&form, "hello")
 	formFocusSubmit(&form)
-	var cmd tea.Cmd
-	form, cmd = form.Update(keyPressMsg("enter"))
+	cmd := formPressEnter(&form)
 
 	assert.False(t, form.HasError())
 	_, ok := findFormRejection(cmd)
@@ -525,8 +526,10 @@ func formPressShiftTab(form *Form) {
 	*form = updateForm(*form, keyPressMsg("shift+tab"))
 }
 
-func formPressEnter(form *Form) {
-	*form = updateForm(*form, keyPressMsg("enter"))
+func formPressEnter(form *Form) tea.Cmd {
+	var cmd tea.Cmd
+	*form, cmd = form.Update(keyPressMsg("enter"))
+	return cmd
 }
 
 func formTypeText(form *Form, text string) {
@@ -541,8 +544,10 @@ func formFocusSubmit(form *Form) {
 	}
 }
 
-func formClickSubmit(form *Form) {
-	*form = updateForm(*form, MouseEvent{IsClick: true, Target: "submit"})
+func formClickSubmit(form *Form) tea.Cmd {
+	var cmd tea.Cmd
+	*form, cmd = form.Update(MouseEvent{IsClick: true, Target: "submit"})
+	return cmd
 }
 
 // findFormRejection runs cmd, descending into batches, and returns the first

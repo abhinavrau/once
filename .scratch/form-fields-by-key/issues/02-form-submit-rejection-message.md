@@ -29,13 +29,43 @@ exists for observers - the integration driver picks it up in the next ticket.
 **Blocked by:** 01 - Key-addressed Form fields (the message carries the field
 key).
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Submitting with a required field empty emits the rejection message with
+- [x] Submitting with a required field empty emits the rejection message with
       that field's key and the rendered reason, covered by a unit test
-- [ ] A submit callback that sets a form error causes the rejection message to
+- [x] A submit callback that sets a form error causes the rejection message to
       be emitted, covered by a unit test driving the exposure form's
       tailnet-without-Tailscale path
-- [ ] A successful submit emits no rejection message
-- [ ] Inline error rendering and refocus behavior are unchanged
-- [ ] Unit and integration tests pass
+- [x] A successful submit emits no rejection message
+- [x] Inline error rendering and refocus behavior are unchanged
+- [x] Unit and integration tests pass
+
+## Comments
+
+**2026-07-30** - branch `form-fields-by-key-02-form-submit-rejection-message`
+
+`FormSubmitRejectedMsg{Key, Reason}` added to `internal/ui/form.go`.
+`submitIfValid` now funnels both rejection paths through one emission point:
+`validate` clears the error up front, so an error still set after either the
+required-field check or the `OnSubmit` callback means the submit did not go
+through, and the rejection command is batched with whatever command that path
+produced. Refocus, inline rendering, and `View()` are untouched, and no
+production code consumes the message.
+
+Both submit entry points (`handleEnter` and a click on the `submit` target)
+already funnelled into `submitIfValid`, so both are covered. No callback in the
+codebase sets a form error asynchronously, so there is no path that bypasses
+the emission.
+
+Unit tests: rejection on required-field failure (key, reason, inline error,
+refocus), rejection on the click-submit path since that is what ticket 03's
+driver will use, rejection when a callback sets an error, and no rejection on a
+successful submit. The exposure form's tests now assert the rejection on both
+its tailnet-without-Tailscale and host-resolution paths instead of asserting a
+nil command.
+
+Review notes: `tea.Batch` does not order its commands, so ticket 03's driver
+must not depend on the rejection arriving before the callback's own command.
+
+`make test` green, `make lint` clean. Integration suite not run (wave 3 owns
+the drivers).
