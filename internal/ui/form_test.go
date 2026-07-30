@@ -5,6 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestForm_FocusCycling(t *testing.T) {
@@ -333,6 +334,60 @@ func TestForm_ValidationFocusesFirstError(t *testing.T) {
 	assert.Equal(t, "Second is required", form.Error())
 }
 
+func TestForm_ValidationFailureEmitsRejection(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name"), Required: true},
+	)
+	form.OnSubmit(func(f *Form) tea.Cmd { return nil })
+
+	formFocusSubmit(&form)
+	var cmd tea.Cmd
+	form, cmd = form.Update(keyPressMsg("enter"))
+
+	rejected, ok := findFormRejection(cmd)
+	require.True(t, ok, "expected a FormSubmitRejectedMsg")
+	assert.Equal(t, FormSubmitRejectedMsg{Key: "name", Reason: "Name is required"}, rejected)
+	assert.Equal(t, "Name is required", form.Error(), "renders the error inline")
+	assert.Equal(t, 0, form.Focused(), "refocuses the errored field")
+}
+
+func TestForm_CallbackErrorEmitsRejection(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name")},
+	)
+	form.OnSubmit(func(f *Form) tea.Cmd {
+		f.SetError("name", "that name is taken")
+		return nil
+	})
+
+	formFocusSubmit(&form)
+	var cmd tea.Cmd
+	form, cmd = form.Update(keyPressMsg("enter"))
+
+	rejected, ok := findFormRejection(cmd)
+	require.True(t, ok, "expected a FormSubmitRejectedMsg")
+	assert.Equal(t, FormSubmitRejectedMsg{Key: "name", Reason: "that name is taken"}, rejected)
+	assert.Equal(t, "that name is taken", form.Error(), "renders the error inline")
+}
+
+func TestForm_SuccessfulSubmitEmitsNoRejection(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name"), Required: true},
+	)
+	form.OnSubmit(func(f *Form) tea.Cmd {
+		return func() tea.Msg { return FormSubmitMsg{} }
+	})
+
+	formTypeText(&form, "hello")
+	formFocusSubmit(&form)
+	var cmd tea.Cmd
+	form, cmd = form.Update(keyPressMsg("enter"))
+
+	assert.False(t, form.HasError())
+	_, ok := findFormRejection(cmd)
+	assert.False(t, ok, "a successful submit emits no rejection")
+}
+
 func TestFormOnRebuild_CalledOnKeyPress(t *testing.T) {
 	form := NewForm("Done",
 		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
@@ -488,4 +543,25 @@ func formFocusSubmit(form *Form) {
 
 func formClickSubmit(form *Form) {
 	*form = updateForm(*form, MouseEvent{IsClick: true, Target: "submit"})
+}
+
+// findFormRejection runs cmd, descending into batches, and returns the first
+// rejection message it produces.
+func findFormRejection(cmd tea.Cmd) (FormSubmitRejectedMsg, bool) {
+	if cmd == nil {
+		return FormSubmitRejectedMsg{}, false
+	}
+
+	switch msg := cmd().(type) {
+	case FormSubmitRejectedMsg:
+		return msg, true
+	case tea.BatchMsg:
+		for _, batched := range msg {
+			if rejected, ok := findFormRejection(batched); ok {
+				return rejected, true
+			}
+		}
+	}
+
+	return FormSubmitRejectedMsg{}, false
 }

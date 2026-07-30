@@ -249,6 +249,15 @@ type FormSubmitMsg struct{}
 type FormCancelMsg struct{}
 type FormActionMsg struct{ Msg tea.Msg }
 
+// FormSubmitRejectedMsg reports a submit attempt that did not go through,
+// naming the errored field and the reason the form renders inline. It has no
+// production consumer; it exists so observers can see a rejection instead of
+// waiting for an overlay that never closes.
+type FormSubmitRejectedMsg struct {
+	Key    string
+	Reason string
+}
+
 type Form struct {
 	items        []FormItem
 	submitLabel  string
@@ -532,12 +541,26 @@ func (f Form) submitIfValid() (Form, tea.Cmd) {
 	var valid bool
 	f, valid = f.validate()
 	if !valid {
-		return f.focusIndex(f.indexOf(f.errorKey))
+		f, cmd := f.focusIndex(f.indexOf(f.errorKey))
+		return f, tea.Batch(f.rejectionCmd(), cmd)
 	}
-	if f.onSubmit != nil {
-		return f, f.onSubmit(&f)
+	if f.onSubmit == nil {
+		return f, nil
 	}
-	return f, nil
+
+	// validate cleared any earlier error, so an error here is one the callback
+	// set to reject the submit.
+	cmd := f.onSubmit(&f)
+	if f.HasError() {
+		return f, tea.Batch(f.rejectionCmd(), cmd)
+	}
+	return f, cmd
+}
+
+// rejectionCmd reports the error currently set on the form.
+func (f Form) rejectionCmd() tea.Cmd {
+	rejected := FormSubmitRejectedMsg{Key: f.errorKey, Reason: f.error}
+	return func() tea.Msg { return rejected }
 }
 
 func (f Form) validate() (Form, bool) {

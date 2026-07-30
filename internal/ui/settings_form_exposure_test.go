@@ -70,8 +70,12 @@ func TestSettingsFormExposure_PublicRequiresFQDN(t *testing.T) {
 
 	result, cmd := form.Update(keyPressMsg("enter"))
 	form = result.(SettingsFormExposure)
-	assert.Nil(t, cmd)
 	assert.True(t, form.form.HasError())
+
+	rejected, ok := findFormRejection(cmd)
+	require.True(t, ok, "expected a FormSubmitRejectedMsg")
+	assert.Equal(t, "host", rejected.Key)
+	assert.Equal(t, form.form.Error(), rejected.Reason)
 }
 
 func TestSettingsFormExposure_TailnetBlockedWithoutTailscale(t *testing.T) {
@@ -85,9 +89,13 @@ func TestSettingsFormExposure_TailnetBlockedWithoutTailscale(t *testing.T) {
 
 	result, cmd := form.Update(keyPressMsg("enter"))
 	form = result.(SettingsFormExposure)
-	assert.Nil(t, cmd)
 	assert.True(t, form.form.HasError())
 	assert.Contains(t, form.form.Error(), "Tailscale")
+
+	rejected, ok := findFormRejection(cmd)
+	require.True(t, ok, "expected a FormSubmitRejectedMsg")
+	assert.Equal(t, "exposure", rejected.Key)
+	assert.Equal(t, form.form.Error(), rejected.Reason)
 }
 
 func TestSettingsFormExposure_Cancel(t *testing.T) {
