@@ -29,7 +29,6 @@ type FormField interface {
 	Focus() tea.Cmd
 	Blur()
 	SetWidth(int)
-	IsFocusable() bool
 }
 
 type valuer interface {
@@ -105,8 +104,6 @@ func (f *TextField) SetWidth(w int) {
 	f.input.SetWidth(w)
 }
 
-func (f *TextField) IsFocusable() bool { return true }
-
 // CheckboxField
 
 type CheckboxField struct {
@@ -158,10 +155,9 @@ func (f *CheckboxField) View() string {
 	return "[ ] " + f.label
 }
 
-func (f *CheckboxField) Focus() tea.Cmd    { return nil }
-func (f *CheckboxField) Blur()             {}
-func (f *CheckboxField) SetWidth(int)      {}
-func (f *CheckboxField) IsFocusable() bool { return true }
+func (f *CheckboxField) Focus() tea.Cmd { return nil }
+func (f *CheckboxField) Blur()          {}
+func (f *CheckboxField) SetWidth(int)   {}
 
 // RadioField
 
@@ -215,10 +211,9 @@ func (f *RadioField) View() string {
 	return strings.Join(parts, "   ")
 }
 
-func (f *RadioField) Focus() tea.Cmd    { return nil }
-func (f *RadioField) Blur()             {}
-func (f *RadioField) SetWidth(int)      {}
-func (f *RadioField) IsFocusable() bool { return true }
+func (f *RadioField) Focus() tea.Cmd { return nil }
+func (f *RadioField) Blur()          {}
+func (f *RadioField) SetWidth(int)   {}
 
 // Private
 
@@ -231,32 +226,6 @@ func (f *RadioField) choose(i int) {
 		f.onChange(i)
 	}
 }
-
-// StaticField
-
-type StaticField struct {
-	value   string
-	styleFn func(string) string
-}
-
-func NewStaticField(value string, styleFn func(string) string) *StaticField {
-	return &StaticField{value: value, styleFn: styleFn}
-}
-
-func (f *StaticField) Value() string {
-	return f.value
-}
-
-func (f *StaticField) SetValue(v string) {
-	f.value = v
-}
-
-func (f *StaticField) Update(tea.Msg) tea.Cmd { return nil }
-func (f *StaticField) View() string           { return f.styleFn(f.value) }
-func (f *StaticField) Focus() tea.Cmd         { return nil }
-func (f *StaticField) Blur()                  {}
-func (f *StaticField) SetWidth(int)           {}
-func (f *StaticField) IsFocusable() bool      { return false }
 
 // FormActionButton
 
@@ -301,12 +270,8 @@ func NewForm(submitLabel string, items ...FormItem) Form {
 		submitLabel: submitLabel,
 	}
 
-	for i, item := range items {
-		if item.Field.IsFocusable() {
-			f.focused = i
-			item.Field.Focus()
-			break
-		}
+	if len(items) > 0 {
+		items[0].Field.Focus()
 	}
 
 	return f
@@ -367,10 +332,6 @@ func (f Form) View() string {
 	errorStyle := lipgloss.NewStyle().Foreground(Colors.Error)
 
 	for i, item := range f.items {
-		if _, isStatic := item.Field.(*StaticField); isStatic {
-			parts = append(parts, item.Field.View())
-			continue
-		}
 		label := Styles.Label.Render(item.Label)
 
 		hasError := f.error != "" && item.Key == f.errorKey
@@ -499,13 +460,13 @@ func (f Form) indexOf(key string) int {
 func (f Form) focusNext() (Form, tea.Cmd) {
 	f.blurCurrent()
 	f.focused = (f.focused + 1) % f.totalCount()
-	return f.focusToNextFocusable()
+	return f, f.focusCurrent()
 }
 
 func (f Form) focusPrev() (Form, tea.Cmd) {
 	f.blurCurrent()
 	f.focused = (f.focused - 1 + f.totalCount()) % f.totalCount()
-	return f.focusToNextFocusable()
+	return f, f.focusCurrent()
 }
 
 func (f Form) blurCurrent() {
@@ -519,24 +480,6 @@ func (f Form) focusCurrent() tea.Cmd {
 		return f.items[f.focused].Field.Focus()
 	}
 	return nil
-}
-
-func (f Form) focusToNextFocusable() (Form, tea.Cmd) {
-	start := f.focused
-	for {
-		if f.focused < len(f.items) {
-			if f.items[f.focused].Field.IsFocusable() {
-				return f, f.focusCurrent()
-			}
-			f.focused = (f.focused + 1) % f.totalCount()
-		} else {
-			return f, nil
-		}
-
-		if f.focused == start {
-			return f, nil
-		}
-	}
 }
 
 func (f Form) handleEnter() (Form, tea.Cmd) {
