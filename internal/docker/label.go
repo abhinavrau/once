@@ -52,6 +52,11 @@ func decodeLabel[T any, PT labelCarrier[T]](label string, removed ...string) (T,
 	for _, field := range removed {
 		delete(unknown, field)
 	}
+	if len(unknown) == 0 {
+		// Nothing to carry reads as nil, never an empty map, so a decoded value
+		// still compares equal to the same settings built by hand.
+		unknown = nil
+	}
 	PT(&settings).setUnknownLabelFields(unknown)
 
 	return settings, nil

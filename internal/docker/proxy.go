@@ -37,17 +37,16 @@ type ProxySettings struct {
 	HTTPPort    int `json:"httpPort"`
 	HTTPSPort   int `json:"httpsPort"`
 	MetricsPort int `json:"metricsPort"`
+
+	labelExtra
 }
 
 func UnmarshalProxySettings(s string) (ProxySettings, error) {
-	var settings ProxySettings
-	err := json.Unmarshal([]byte(s), &settings)
-	return settings, err
+	return decodeLabel[ProxySettings](s)
 }
 
 func (s ProxySettings) Marshal() string {
-	b, _ := json.Marshal(s)
-	return string(b)
+	return encodeLabel(s)
 }
 
 type DeployOptions struct {
