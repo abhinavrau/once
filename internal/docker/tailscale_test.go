@@ -2,6 +2,8 @@ package docker
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -50,6 +52,46 @@ func TestValidateTailscaleMode(t *testing.T) {
 	assert.NoError(t, ValidateTailscaleMode(TailscaleModeHost))
 	assert.NoError(t, ValidateTailscaleMode(TailscaleModeSidecar))
 	assert.ErrorContains(t, ValidateTailscaleMode("both"), `invalid Tailscale mode "both"`)
+}
+
+func TestResolveModeExplicitWinsWithoutDocker(t *testing.T) {
+	// An explicit mode resolves without touching Docker (a nil client would
+	// panic), so the host-mode pre-flight still runs before any Docker work.
+	ts := NewTailscale(&Namespace{name: "test"})
+
+	mode, fresh, err := ts.resolveMode(context.Background(), TailscaleModeHost)
+	require.NoError(t, err)
+	assert.Equal(t, TailscaleModeHost, mode)
+	assert.False(t, fresh)
+}
+
+func TestHostModeNotice(t *testing.T) {
+	plantHostSocket := func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, tailscaledSocketFile), nil, 0o644))
+		t.Setenv("ONCE_TAILSCALED_DIR", dir)
+	}
+
+	t.Run("fresh enable alongside a host tailscaled", func(t *testing.T) {
+		plantHostSocket(t)
+		assert.Contains(t, hostModeNotice("", true), "--mode host")
+	})
+
+	t.Run("no host tailscaled", func(t *testing.T) {
+		t.Setenv("ONCE_TAILSCALED_DIR", t.TempDir())
+		assert.Empty(t, hostModeNotice("", true))
+	})
+
+	t.Run("explicit mode", func(t *testing.T) {
+		plantHostSocket(t)
+		assert.Empty(t, hostModeNotice(TailscaleModeSidecar, true))
+		assert.Empty(t, hostModeNotice(TailscaleModeHost, true))
+	})
+
+	t.Run("re-enable", func(t *testing.T) {
+		plantHostSocket(t)
+		assert.Empty(t, hostModeNotice("", false))
+	})
 }
 
 func TestTailnetURL(t *testing.T) {

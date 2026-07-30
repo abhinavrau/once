@@ -3,7 +3,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/basecamp/once/internal/background"
 	"github.com/basecamp/once/internal/docker"
 	"github.com/basecamp/once/internal/ui"
 )
@@ -153,16 +151,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	useControlSeam(t, ctx, cp)
 	hideHostTailscaled(t)
 
-	// Enable boots once-admin, which bind-mounts the daemon's Unix socket; run the
-	// admin server in-process and wait for the socket so Boot doesn't fail.
-	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
-	adminCtx, stopAdmin := context.WithCancel(ctx)
-	t.Cleanup(stopAdmin)
-	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
-	require.Eventually(t, func() bool {
-		_, err := net.Dial("unix", docker.AdminSocketPath())
-		return err == nil
-	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+	startAdminServer(t, ctx)
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:     "whoami",

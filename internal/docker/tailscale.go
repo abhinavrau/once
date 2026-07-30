@@ -229,49 +229,35 @@ func NewTailscale(ns *Namespace) *Tailscale {
 
 // Enable boots the Docktail topology: once-docktail, plus - in sidecar mode -
 // the once-tailscale sidecar it drives over a shared socket volume (userspace
-// networking, unprivileged). settings.Mode is the requested mode: empty keeps
-// an already-enabled install's stored mode and defaults a fresh enable to the
-// sidecar; host mode is explicit opt-in (ADR-0007). Re-running with the same
-// credentials and mode just ensures everything is running; changed credentials
-// or mode rebuild the topology while the sidecar's state volume (node
-// identity) is kept. The returned notice, when non-empty, tells the user a
-// fresh enable defaulted to the sidecar even though a host tailscaled is
-// present.
-func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) (string, error) {
-	var notice string
+// networking, unprivileged). settings.Mode must already be resolved through
+// resolveMode (Namespace.EnableTailscale does that); Enable does no mode
+// defaulting of its own. Re-running with the same credentials and mode just
+// ensures everything is running; changed credentials or mode rebuild the
+// topology while the sidecar's state volume (node identity) is kept - which is
+// also how a stored label carrying no mode self-heals, since the resolved mode
+// differs from the empty stored one.
+func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) error {
 	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
 	switch {
 	case err == nil:
 		existing, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
-		if settings.Mode == "" {
-			settings.Mode = existing.Mode
-		}
 		if existing.ClientID == settings.ClientID && existing.ClientSecret == settings.ClientSecret && existing.Tag == settings.Tag && existing.Mode == settings.Mode {
-			return "", t.ensureRunning(ctx, info)
+			return t.ensureRunning(ctx, info)
 		}
 		// The sidecar's auth key and advertised tag derive from the credentials,
 		// the suffix may belong to a different tailnet now, and a mode change
 		// moves where tailscaled lives - either way, rebuild the topology from
 		// scratch (keeping the state volume).
 		if err := t.removeTopology(ctx); err != nil {
-			return "", err
+			return err
 		}
 	case !errdefs.IsNotFound(err):
-		return "", fmt.Errorf("inspecting docktail container: %w", err)
-	default:
-		if settings.Mode == "" && hostTailscaledPresent() {
-			notice = "a tailscaled is already running on this host; Once boots its own sidecar by default - re-run with `--mode host` to drive the host daemon instead"
-		}
-	}
-	// Also covers a rebuild whose stored settings carry no mode (corrupt or
-	// legacy label): defaulting here self-heals it to the sidecar.
-	if settings.Mode == "" {
-		settings.Mode = TailscaleModeSidecar
+		return fmt.Errorf("inspecting docktail container: %w", err)
 	}
 
 	if settings.Mode == TailscaleModeSidecar {
 		if err := t.bootSidecar(ctx, settings); err != nil {
-			return "", err
+			return err
 		}
 	}
 
@@ -282,16 +268,16 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) (str
 	}
 
 	if err := t.pullImage(ctx, docktailImage); err != nil {
-		return "", err
+		return err
 	}
 	if err := t.create(ctx, settings); err != nil {
-		return "", err
+		return err
 	}
 	t.Settings = &settings
 
 	// Retrofit running apps so they appear on the tailnet immediately, not just
 	// on their next deploy. once-docktail now exists, so the roll injects labels.
-	return notice, t.namespace.RollApplications(ctx)
+	return t.namespace.RollApplications(ctx)
 }
 
 // Disable removes once-docktail and the Once-managed sidecar, keeping the
@@ -456,29 +442,32 @@ func (t *Tailscale) legacyTSDProxyVolumeName() string {
 	return t.namespace.name + "-tsdproxy-data"
 }
 
-// effectiveMode resolves the mode an Enable with the requested mode would run
-// in, mirroring Enable's own resolution: an explicit mode wins, an empty one
-// keeps an already-enabled install's stored mode (tolerating a corrupt label,
-// which Enable self-heals to the sidecar), and a fresh enable defaults to the
-// sidecar. A real inspect failure is an error, not a silent sidecar default:
-// callers use this to decide whether the host-mode pre-flight must run, and
-// guessing wrong would skip it.
-func (t *Tailscale) effectiveMode(ctx context.Context, requested string) (string, error) {
+// resolveMode is the only implementation of the ADR-0007 mode rule: an
+// explicit mode wins, an empty one keeps an already-enabled install's stored
+// mode, a stored mode that is missing or unrecognized (a corrupt or legacy
+// label) reads as the sidecar, and so does a fresh enable. A real inspect
+// failure is an error, not a silent sidecar default: the resolved mode decides
+// whether the host-mode pre-flight must run, and guessing wrong would skip it.
+//
+// fresh reports that no docktail container exists yet, which feeds the
+// --mode host notice. It is only determined when no mode was requested: an
+// explicit mode needs no inspect, and the notice it would feed never fires.
+func (t *Tailscale) resolveMode(ctx context.Context, requested string) (string, bool, error) {
 	if requested != "" {
-		return requested, nil
+		return requested, false, nil
 	}
 	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
 	if errdefs.IsNotFound(err) {
-		return TailscaleModeSidecar, nil
+		return TailscaleModeSidecar, true, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("inspecting docktail container: %w", err)
+		return "", false, fmt.Errorf("inspecting docktail container: %w", err)
 	}
 	stored, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
-	if stored.Mode != "" {
-		return stored.Mode, nil
+	if stored.Mode != "" && ValidateTailscaleMode(stored.Mode) == nil {
+		return stored.Mode, false, nil
 	}
-	return TailscaleModeSidecar, nil
+	return TailscaleModeSidecar, false, nil
 }
 
 // daemonFor returns the TailscaleDaemon matching where tailscaled runs: the
@@ -820,6 +809,16 @@ func hostTailscaledDir() string {
 func hostTailscaledPresent() bool {
 	info, err := os.Stat(filepath.Join(hostTailscaledDir(), tailscaledSocketFile))
 	return err == nil && !info.IsDir()
+}
+
+// hostModeNotice returns the one-line notice that keeps host mode discoverable
+// (ADR-0007): a fresh enable that took the sidecar default while a host
+// tailscaled is running. An explicit mode or a re-enable never earns it.
+func hostModeNotice(requested string, fresh bool) string {
+	if requested != "" || !fresh || !hostTailscaledPresent() {
+		return ""
+	}
+	return "a tailscaled is already running on this host; Once boots its own sidecar by default - re-run with `--mode host` to drive the host daemon instead"
 }
 
 // waitForFunnelBackend polls the local daemon until a funnel-enabled endpoint
