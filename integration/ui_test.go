@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/mouse"
 	"github.com/basecamp/once/internal/ui"
 )
 
@@ -305,7 +306,15 @@ func (d *appDriver) typeText(text string) {
 // click enters the update chain where a real click does once App has resolved
 // coordinates to a target name: App hands the event to the current screen, the
 // screen to any open overlay, and the component resolves the target itself.
+// It fails the test immediately, naming the target, if nothing on the current
+// screen is registered under that name - otherwise the click would silently
+// no-op and leave the driver typing into whatever was already focused.
 func (d *appDriver) click(target string) {
+	d.t.Helper()
+	view := d.viewContent()
+	if !mouse.Registered(target) {
+		d.t.Fatalf("click target %q is not registered on the current screen\n\nView:\n%s", target, view)
+	}
 	d.send(ui.MouseEvent{Target: target, IsClick: true})
 }
 

@@ -125,6 +125,22 @@ func TestSweep_FrameReset(t *testing.T) {
 	assert.Equal(t, "\x1b[0zsecond\x1b[0z", result)
 }
 
+func TestRegistered_Hit(t *testing.T) {
+	mt := &Tracker{}
+	content := "Hello " + mt.Mark("btn", "World")
+	mt.Sweep(content)
+
+	assert.True(t, mt.Registered("btn"))
+}
+
+func TestRegistered_Miss(t *testing.T) {
+	mt := &Tracker{}
+	content := "Hello " + mt.Mark("btn", "World")
+	mt.Sweep(content)
+
+	assert.False(t, mt.Registered("nope"))
+}
+
 func TestResolve_Hit(t *testing.T) {
 	mt := &Tracker{}
 	content := "Hello " + mt.Mark("btn", "World")

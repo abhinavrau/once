@@ -14,12 +14,32 @@ fail fast when it is not. Then shorten the AGENTS.md caveat accordingly.
 
 **Blocked by:** None - can start immediately (ticket 03 is done).
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] A driver click on an unregistered target fails the test naming the
+- [x] A driver click on an unregistered target fails the test naming the
       target, demonstrated during development with a renamed key (not left in
       the suite)
-- [ ] Clicks on registered targets behave exactly as before
-- [ ] The accessor exposes no more than the existence check the driver needs
-- [ ] The AGENTS.md rename-together caveat is updated to the new reality
-- [ ] `make test` and `make lint` green; both UI integration tests pass
+- [x] Clicks on registered targets behave exactly as before
+- [x] The accessor exposes no more than the existence check the driver needs
+- [x] The AGENTS.md rename-together caveat is updated to the new reality
+- [x] `make test` and `make lint` green; both UI integration tests pass
+
+## Comments
+
+**2026-07-30** - branch `form-fields-by-key-06-driver-click-asserts-target`
+
+Added `Tracker.Registered` (and the package-level `mouse.Registered` wrapping
+the default tracker) as a plain existence check over the most recent Sweep's
+zones - no more than the driver needs. The integration driver's `click`
+helper now views the current screen first (so the tracker reflects it), then
+`t.Fatalf`s naming the target if it isn't registered, before sending the
+`MouseEvent`. Demonstrated the fail-fast path during development by
+temporarily renaming the image form's field key in
+`internal/ui/install_image_form.go` without updating the driver: the install
+test failed in under 2s naming `field:image`, instead of burning the 3-minute
+`waitUntil` timeout; the rename was reverted before committing (no trace in
+the diff). Shortened the AGENTS.md testing-notes caveat to describe the
+assert-before-send behavior instead of "rename a key and its driver
+together". `make test`, `make lint`, and both UI integration tests
+(`TestUIInstallAndManageApp`, `TestUITailscaleFormEnablesViaControlSeam`) are
+green.
