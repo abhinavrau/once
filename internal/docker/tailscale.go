@@ -129,8 +129,9 @@ type TailscaleSettings struct {
 	// Tag is the Tailscale tag (e.g. tag:once) the sidecar advertises and
 	// docktail stamps on the Service definitions it creates. A tagged OAuth
 	// client can only mint keys for tags it owns, so this must be a tag the
-	// client owns in the tailnet ACL. Empty on the headscale control seam, which
-	// uses a pre-minted auth key instead.
+	// client owns in the tailnet ACL. Unused on the headscale control seam, which
+	// registers with a pre-minted auth key instead of minting tagged keys - it is
+	// still stored there, since docktail stamps it on the Services it creates.
 	Tag string `json:"tag,omitempty"`
 	// DomainSuffix is the tailnet's MagicDNS base (e.g. tailnet-name.ts.net),
 	// read from the local tailscaled at enable time. With it stored, app tailnet
@@ -177,13 +178,6 @@ func (s TailscaleSettings) Marshal() string {
 	return string(b)
 }
 
-// TailscaleControlSeamActive reports whether the hidden headscale control seam
-// is configured, so callers can skip Tailscale SaaS-only flows (like the
-// policy API) that do not exist on headscale.
-func TailscaleControlSeamActive() bool {
-	return controlSeamActive()
-}
-
 // Private
 
 // normalizeTag prepends "tag:" to each comma-separated segment that lacks it, so
@@ -204,6 +198,18 @@ func (s TailscaleSettings) normalizeTag() string {
 		segments[i] = seg
 	}
 	return strings.Join(segments, ",")
+}
+
+// suppressUnusedCredentials blanks the OAuth credentials when the hidden
+// control seam is active: that path joins with a pre-minted auth key and runs
+// docktail without the cloud API, so nothing reads them and whatever the user
+// typed must not reach the once label. The tag is deliberately kept - docktail
+// stamps it on the Service definitions it creates on either path.
+func (s TailscaleSettings) suppressUnusedCredentials() TailscaleSettings {
+	if controlSeamActive() {
+		s.ClientID, s.ClientSecret = "", ""
+	}
+	return s
 }
 
 // Tailscale manages the Docktail topology: the once-docktail container that
@@ -561,9 +567,9 @@ func (t *Tailscale) bootSidecarWithClient(ctx context.Context, c sidecarBootClie
 		return fmt.Errorf("inspecting tailscale sidecar: %w", err)
 	}
 
-	authKey, controlURL := os.Getenv(envAuthKey), os.Getenv(envControlURL)
+	authKey, controlURL, seam := controlSeam()
 	var extraArgs string
-	if authKey != "" && controlURL != "" {
+	if seam {
 		extraArgs = "--login-server=" + controlURL
 	} else {
 		if authKey, err = mintSidecarAuthKey(ctx, newTailscaleAPI(settings), settings); err != nil {
@@ -787,10 +793,22 @@ func docktailLabels(appName, network string, enabled bool, funnelPort int) map[s
 	return labels
 }
 
+// controlSeam is the only reader of the hidden headscale control seam's env
+// vars: it returns the pre-minted auth key and control URL the sidecar joins
+// with, and whether the seam is configured at all (both vars set). Everything
+// that behaves differently under the seam goes through here, so promoting the
+// seam to first-class headscale support - or to another VPN provider's control
+// plane - has one door to open (ADR-0010).
+func controlSeam() (authKey, controlURL string, ok bool) {
+	authKey, controlURL = os.Getenv(envAuthKey), os.Getenv(envControlURL)
+	return authKey, controlURL, authKey != "" && controlURL != ""
+}
+
 // controlSeamActive reports whether the hidden headscale control seam is
 // configured, replacing OAuth credential minting and the Tailscale SaaS API.
 func controlSeamActive() bool {
-	return os.Getenv(envControlURL) != "" && os.Getenv(envAuthKey) != ""
+	_, _, ok := controlSeam()
+	return ok
 }
 
 // hostTailscaledDir is the host directory tailscaled publishes its socket in,

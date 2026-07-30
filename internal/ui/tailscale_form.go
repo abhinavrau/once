@@ -177,14 +177,15 @@ func (m TailscaleForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
 }
 
 // runEnable runs the enable lifecycle in the background: the credential probe
-// enforces the scopes and the tailnet policy before anything boots. Under the
-// headscale control seam there is no SaaS OAuth, so the credentials are unused.
+// enforces the scopes and the tailnet policy before anything boots.
 func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 	ns, statuses := m.namespace, m.statusChan
 	return func() tea.Msg {
-		settings := docker.TailscaleSettings{Tag: msg.tag, Mode: msg.mode}
-		if !docker.TailscaleControlSeamActive() {
-			settings.ClientID, settings.ClientSecret = msg.id, msg.secret
+		settings := docker.TailscaleSettings{
+			ClientID:     msg.id,
+			ClientSecret: msg.secret,
+			Tag:          msg.tag,
+			Mode:         msg.mode,
 		}
 		progress := func(p docker.DeployProgress) {
 			if p.Stage == docker.DeployStageWaiting {

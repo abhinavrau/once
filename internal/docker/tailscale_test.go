@@ -47,6 +47,63 @@ func TestNormalizeTag(t *testing.T) {
 	assert.Empty(t, normalize("  "))
 }
 
+func TestSuppressUnusedCredentials(t *testing.T) {
+	typed := TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeSidecar}
+
+	t.Run("under the control seam", func(t *testing.T) {
+		t.Setenv(envAuthKey, "tskey-auth-abc")
+		t.Setenv(envControlURL, "http://headscale:8080")
+
+		stored := typed.suppressUnusedCredentials()
+		assert.Empty(t, stored.ClientID)
+		assert.Empty(t, stored.ClientSecret)
+		// The tag is deliberately kept: docktail stamps it on the Service
+		// definitions it creates on either path.
+		assert.Equal(t, "tag:once", stored.Tag)
+		assert.Equal(t, TailscaleModeSidecar, stored.Mode)
+	})
+
+	t.Run("on the SaaS path", func(t *testing.T) {
+		t.Setenv(envAuthKey, "")
+		t.Setenv(envControlURL, "")
+
+		assert.Equal(t, typed, typed.suppressUnusedCredentials())
+	})
+}
+
+func TestControlSeam(t *testing.T) {
+	// controlSeam is the only reader of the seam's env vars: it needs both to
+	// report active, and controlSeamActive is derived from it rather than
+	// re-reading them.
+	assertSeam := func(t *testing.T, authKey, controlURL string, wantOK bool) {
+		t.Helper()
+		t.Setenv(envAuthKey, authKey)
+		t.Setenv(envControlURL, controlURL)
+
+		key, url, ok := controlSeam()
+		assert.Equal(t, wantOK, ok)
+		assert.Equal(t, authKey, key)
+		assert.Equal(t, controlURL, url)
+		assert.Equal(t, ok, controlSeamActive())
+	}
+
+	t.Run("both set", func(t *testing.T) {
+		assertSeam(t, "tskey-auth-abc", "http://headscale:8080", true)
+	})
+
+	t.Run("auth key missing", func(t *testing.T) {
+		assertSeam(t, "", "http://headscale:8080", false)
+	})
+
+	t.Run("control URL missing", func(t *testing.T) {
+		assertSeam(t, "tskey-auth-abc", "", false)
+	})
+
+	t.Run("neither set", func(t *testing.T) {
+		assertSeam(t, "", "", false)
+	})
+}
+
 func TestValidateTailscaleMode(t *testing.T) {
 	assert.NoError(t, ValidateTailscaleMode(""))
 	assert.NoError(t, ValidateTailscaleMode(TailscaleModeHost))
