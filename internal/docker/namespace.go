@@ -286,14 +286,14 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 	settings.Tag = settings.normalizeTag()
-	mode, fresh, err := n.tailscale.resolveMode(ctx, settings.Mode)
+	resolved, fresh, err := n.tailscale.resolveMode(ctx, settings.Mode)
 	if err != nil {
 		return nil, err
 	}
 	notice := hostModeNotice(settings.Mode, fresh)
-	settings.Mode = mode
-	if mode == TailscaleModeHost {
-		if err := validateHostModePreflight(ctx, tailscaleAPIBaseURL, n.tailscale.daemonFor(mode), settings); err != nil {
+	settings.Mode = resolved
+	if settings.Mode == TailscaleModeHost {
+		if err := validateHostModePreflight(ctx, tailscaleAPIBaseURL, n.tailscale.daemonFor(settings.Mode), settings); err != nil {
 			return nil, err
 		}
 	}

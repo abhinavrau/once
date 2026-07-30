@@ -438,11 +438,10 @@ func (t *Tailscale) legacyTSDProxyVolumeName() string {
 
 // resolveMode is the only implementation of the ADR-0007 mode rule: an
 // explicit mode wins, an empty one keeps an already-enabled install's stored
-// mode (a corrupt or missing stored mode reads as the sidecar, self-healing the
-// label on the rebuild that follows), and a fresh enable defaults to the
-// sidecar. A real inspect failure is an error, not a silent sidecar default:
-// the resolved mode decides whether the host-mode pre-flight must run, and
-// guessing wrong would skip it.
+// mode, a stored mode that is missing or unrecognized (a corrupt or legacy
+// label) reads as the sidecar, and so does a fresh enable. A real inspect
+// failure is an error, not a silent sidecar default: the resolved mode decides
+// whether the host-mode pre-flight must run, and guessing wrong would skip it.
 //
 // fresh reports that no docktail container exists yet, which feeds the
 // --mode host notice. It is only determined when no mode was requested: an
@@ -459,7 +458,7 @@ func (t *Tailscale) resolveMode(ctx context.Context, requested string) (string, 
 		return "", false, fmt.Errorf("inspecting docktail container: %w", err)
 	}
 	stored, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
-	if stored.Mode != "" {
+	if stored.Mode != "" && ValidateTailscaleMode(stored.Mode) == nil {
 		return stored.Mode, false, nil
 	}
 	return TailscaleModeSidecar, false, nil

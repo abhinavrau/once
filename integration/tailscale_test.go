@@ -225,6 +225,21 @@ func plantHostTailscaledSocket(t *testing.T) string {
 	return hostDir
 }
 
+// startAdminServer runs the daemon's admin socket server in-process and waits
+// for its socket, so the once-admin container the enable lifecycle boots has a
+// real socket to bind-mount.
+func startAdminServer(t *testing.T, ctx context.Context) {
+	t.Helper()
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+	adminCtx, stopAdmin := context.WithCancel(ctx)
+	t.Cleanup(stopAdmin)
+	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
+	require.Eventually(t, func() bool {
+		_, err := net.Dial("unix", docker.AdminSocketPath())
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+}
+
 // plantModelessDocktail replaces the once-docktail container with a stopped
 // stand-in whose once label carries the given settings without a mode, faking a
 // corrupt or legacy install for the self-heal path. whoamiImage stands in for
@@ -279,17 +294,7 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	// socket and a fresh enable still defaults to the sidecar, leading its
 	// warnings with the one-line notice that points at --mode host.
 	plantHostTailscaledSocket(t)
-
-	// The enable lifecycle boots once-admin, which bind-mounts the daemon's Unix
-	// socket; run the admin server in-process and wait for the socket.
-	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
-	adminCtx, stopAdmin := context.WithCancel(ctx)
-	t.Cleanup(stopAdmin)
-	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
-	require.Eventually(t, func() bool {
-		_, err := net.Dial("unix", docker.AdminSocketPath())
-		return err == nil
-	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+	startAdminServer(t, ctx)
 
 	proxyRoutes := func() string {
 		out, err := ns.Proxy().ExecOutput(ctx, []string{"kamal-proxy", "list"})
@@ -369,6 +374,16 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	healed, err := ns.Tailscale().LoadSettings(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, docker.TailscaleModeSidecar, healed.Mode, "the rebuilt label must record the resolved mode")
+
+	// With a mode stored, an unset mode keeps it: the re-enable is sticky, so
+	// nothing is rebuilt.
+	rebuilt, err := cli.ContainerInspect(ctx, docktailName)
+	require.NoError(t, err)
+	_, err = ns.EnableTailscale(ctx, controlSeamSettings(), nil)
+	require.NoError(t, err)
+	sticky, err := cli.ContainerInspect(ctx, docktailName)
+	require.NoError(t, err)
+	assert.Equal(t, rebuilt.ID, sticky.ID, "an unset mode must keep the stored one without a rebuild")
 
 	// `deploy --expose tailnet` works now that Tailscale is up: the app is
 	// advertised as a Service named from the App Name (its Host); the local
@@ -549,20 +564,12 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { cli.Close() })
 
-	// Run the daemon's admin socket server so once-admin's bind mount sees a real
-	// socket; point the control seam at a dummy so Enable creates the containers
-	// without attempting OAuth.
-	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+	// Point the control seam at a dummy so Enable creates the containers without
+	// attempting OAuth.
 	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", "http://invalid.control.test:8080")
 	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", "dummy-auth-key")
 	hideHostTailscaled(t)
-	adminCtx, stopAdmin := context.WithCancel(ctx)
-	t.Cleanup(stopAdmin)
-	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
-	require.Eventually(t, func() bool {
-		_, err := net.Dial("unix", docker.AdminSocketPath())
-		return err == nil
-	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+	startAdminServer(t, ctx)
 
 	sidecarSettings := controlSeamSettings()
 	sidecarSettings.Mode = docker.TailscaleModeSidecar
