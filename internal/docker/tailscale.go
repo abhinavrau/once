@@ -122,6 +122,12 @@ const (
 	envAuthKey    = "ONCE_TAILSCALE_AUTH_KEY"
 )
 
+// removedTailscaleFields are label fields older versions of Once wrote that no
+// longer exist: the TSDProxy-era apiKey. Shed on rewrite, unlike unknown fields
+// from newer versions, which are preserved - a dead credential must not ride
+// along in every label Once writes from here on.
+var removedTailscaleFields = []string{"apiKey"}
+
 type TailscaleSettings struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`
@@ -148,11 +154,6 @@ type TailscaleSettings struct {
 
 	labelExtra
 }
-
-// removedTailscaleFields are label fields TSDProxy-era installs wrote that no
-// longer exist. Shed on rewrite rather than carried: a stale API key must not
-// ride along in every label Once writes from here on.
-var removedTailscaleFields = []string{"apiKey"}
 
 // TailnetURL builds an app's https://<app>.<suffix> tailnet URL from the stored
 // domain suffix, or "" when the suffix isn't known yet.

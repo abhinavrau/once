@@ -106,9 +106,9 @@ func TestTailscaleSettingsPreserveUnknownLabelFields(t *testing.T) {
 func TestSheddingEveryUnknownFieldLeavesNoCarry(t *testing.T) {
 	// A label whose only unmodelled field is a removed one carries nothing, so
 	// the decoded value still compares equal to the same settings built by hand.
-	settings, err := UnmarshalTailscaleSettings(`{"clientId":"id","apiKey":"key-789"}`)
+	settings, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.localhost","tailscaleExcluded":true}`)
 	require.NoError(t, err)
-	assert.Equal(t, TailscaleSettings{ClientID: "id"}, settings)
+	assert.Equal(t, ApplicationSettings{Name: "app", Host: "app.localhost", Exposure: ExposureLocal}, settings)
 }
 
 func TestModelledFieldsWinOverPreservedLabelFields(t *testing.T) {
