@@ -53,7 +53,12 @@ func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailsc
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		enable := f.CheckboxField("enable").Checked()
-		duration := f.TextField("duration").Value()
+		duration, err := parseFunnelDuration(f.TextField("duration").Value())
+		// Only an enable spends the duration, so a disable is never held back by it.
+		if enable && err != nil {
+			f.SetError("duration", docker.ErrorMessage(err))
+			return nil
+		}
 		return func() tea.Msg {
 			return settingsRunActionMsg{action: func(_ docker.DeployProgressCallback) (string, error) {
 				return applyFunnel(ns, app, enable, duration)
@@ -75,7 +80,7 @@ func (m SettingsFormFunnel) Update(msg tea.Msg) (SettingsSection, tea.Cmd) {
 
 // Helpers
 
-func applyFunnel(ns *docker.Namespace, app *docker.Application, enable bool, durationStr string) (string, error) {
+func applyFunnel(ns *docker.Namespace, app *docker.Application, enable bool, duration time.Duration) (string, error) {
 	ctx := context.Background()
 
 	if !enable {
@@ -88,10 +93,6 @@ func applyFunnel(ns *docker.Namespace, app *docker.Application, enable bool, dur
 		return "Funnel disabled", nil
 	}
 
-	duration, err := time.ParseDuration(strings.TrimSpace(durationStr))
-	if err != nil {
-		return "", fmt.Errorf("invalid duration %q (e.g. 10m, 2h)", durationStr)
-	}
 	url, _, err := ns.EnableFunnel(ctx, app, duration)
 	if err != nil {
 		return "", funnelUserError(err)
@@ -116,6 +117,24 @@ func funnelURLForApp(ts *docker.Tailscale, app *docker.Application) string {
 		return ""
 	}
 	return settings.FunnelURL(app.Settings.ActiveFunnelPort())
+}
+
+// parseFunnelDuration applies the bounds the Funnel spine applies, so a value
+// that spine would reject is caught at the form instead of after the action
+// has started running.
+func parseFunnelDuration(value string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, errors.New("duration is required (e.g. 10m, 2h)")
+	}
+	duration, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q (e.g. 10m, 2h)", trimmed)
+	}
+	if err := docker.ValidateFunnelDuration(duration); err != nil {
+		return 0, err
+	}
+	return duration, nil
 }
 
 func durationFromExpiry(expiresAt *time.Time, now time.Time) string {
