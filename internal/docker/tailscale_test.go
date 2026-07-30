@@ -57,8 +57,7 @@ func TestSuppressUnusedCredentials(t *testing.T) {
 		stored := typed.suppressUnusedCredentials()
 		assert.Empty(t, stored.ClientID)
 		assert.Empty(t, stored.ClientSecret)
-		// The tag is deliberately kept: docktail stamps it on the Service
-		// definitions it creates on either path.
+		// The tag is deliberately kept: the host-mode pre-flight still reads it.
 		assert.Equal(t, "tag:once", stored.Tag)
 		assert.Equal(t, TailscaleModeSidecar, stored.Mode)
 	})

@@ -201,14 +201,14 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	docktailBefore, err := cli.ContainerInspect(ctx, ns.Name()+"-docktail")
 	require.NoError(t, err, "once-docktail should be running after enabling via the form")
 
-	// The form always passes what was typed; suppressing the credentials the
-	// control seam makes unused is the enable lifecycle's job, so what the user
-	// typed never reaches the once label.
+	// The form always passes what was typed; dropping the credentials the control
+	// seam makes unused is the enable lifecycle's job, so what the user typed
+	// never reaches the once label. The tag is not dropped.
 	stored, err := docker.UnmarshalTailscaleSettings(docktailBefore.Config.Labels["once"])
 	require.NoError(t, err)
-	assert.Empty(t, stored.ClientID, "the control seam must not store the unused OAuth credentials")
-	assert.Empty(t, stored.ClientSecret, "the control seam must not store the unused OAuth credentials")
-	assert.Equal(t, "tag:once", stored.Tag, "the tag is unused under the seam but still stored")
+	assert.Empty(t, stored.ClientID)
+	assert.Empty(t, stored.ClientSecret)
+	assert.Equal(t, "tag:once", stored.Tag)
 
 	sidecarName := ns.Name() + "-tailscale"
 	require.Eventually(t, func() bool {

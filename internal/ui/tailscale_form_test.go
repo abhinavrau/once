@@ -61,9 +61,9 @@ func TestTailscaleForm_EnabledFormSubmitReenablesWithEditedMode(t *testing.T) {
 	assert.Equal(t, tailscaleEnableSubmitMsg{id: "id", secret: "secret", tag: "tag:once", mode: docker.TailscaleModeHost}, msg)
 }
 
-func TestTailscaleForm_EnabledFormDisableActionWorksWithEmptySeamSettings(t *testing.T) {
-	// Under the headscale control seam no credentials or tag are stored; the
-	// fields must not be required, or neither action could ever submit.
+func TestTailscaleForm_EnabledFormDisableActionWorksWithBlankStoredSettings(t *testing.T) {
+	// An enabled install's stored credentials may be blank; the fields must not
+	// be required then, or neither action could ever submit.
 	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{Mode: docker.TailscaleModeSidecar})
 
 	msg := submitAfterTabs(t, m.form, m.form.ItemCount()+1) // fields, Enable, → Disable action

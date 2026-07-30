@@ -129,9 +129,9 @@ type TailscaleSettings struct {
 	// Tag is the Tailscale tag (e.g. tag:once) the sidecar advertises and
 	// docktail stamps on the Service definitions it creates. A tagged OAuth
 	// client can only mint keys for tags it owns, so this must be a tag the
-	// client owns in the tailnet ACL. Unused on the headscale control seam, which
-	// registers with a pre-minted auth key instead of minting tagged keys - it is
-	// still stored there, since docktail stamps it on the Services it creates.
+	// client owns in the tailnet ACL. It is stored on the headscale control seam
+	// too, where only the host-mode pre-flight reads it: that path mints no
+	// tagged keys and runs docktail without the cloud API.
 	Tag string `json:"tag,omitempty"`
 	// DomainSuffix is the tailnet's MagicDNS base (e.g. tailnet-name.ts.net),
 	// read from the local tailscaled at enable time. With it stored, app tailnet
@@ -203,8 +203,8 @@ func (s TailscaleSettings) normalizeTag() string {
 // suppressUnusedCredentials blanks the OAuth credentials when the hidden
 // control seam is active: that path joins with a pre-minted auth key and runs
 // docktail without the cloud API, so nothing reads them and whatever the user
-// typed must not reach the once label. The tag is deliberately kept - docktail
-// stamps it on the Service definitions it creates on either path.
+// typed must not reach the once label. The tag is deliberately kept: the
+// host-mode pre-flight still checks it, and both frontends have always stored it.
 func (s TailscaleSettings) suppressUnusedCredentials() TailscaleSettings {
 	if controlSeamActive() {
 		s.ClientID, s.ClientSecret = "", ""

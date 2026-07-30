@@ -255,8 +255,8 @@ func plantModelessDocktail(t *testing.T, ctx context.Context, cli *client.Client
 }
 
 // controlSeamSettings are the TailscaleSettings used with the control seam,
-// where OAuth credentials are never exercised - the enable lifecycle drops
-// them, so they exist here only to prove they are not stored.
+// where OAuth credentials are never exercised - EnableTailscale drops them
+// before they reach the label, so they are set here to prove exactly that.
 func controlSeamSettings() docker.TailscaleSettings {
 	return docker.TailscaleSettings{
 		ClientID:     "unused-with-control-seam",

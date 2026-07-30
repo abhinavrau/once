@@ -267,8 +267,8 @@ func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, pr
 // from (the tag, and dropping OAuth credentials the control seam makes unused
 // so they are never stored), resolve the mode once and stamp it in, run the
 // host-mode pre-flight (when the resolved mode is host) and the credential
-// probe, bring up the network, boot the Docktail topology with the given
-// credentials, boot once-admin so it is exposed as a Service too, then verify
+// probe, bring up the network, boot the Docktail topology from those settings,
+// boot once-admin so it is exposed as a Service too, then verify
 // every expected service is advertised and approved before reporting success.
 // The returned warnings name any tailnet machines whose Magic DNS entries
 // shadow a service, and lead with the --mode host notice when a fresh enable
