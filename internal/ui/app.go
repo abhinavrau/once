@@ -169,6 +169,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		if key.Matches(msg, appKeys.Quit) {
+			if m.screenIsBusy() {
+				return m, nil
+			}
 			m.shutdown()
 			return m, tea.Quit
 		}
@@ -243,6 +246,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.navigateTo(NewLogs(m.namespace, msg.App))
 
 	case QuitMsg:
+		if m.screenIsBusy() {
+			return m, nil
+		}
 		m.shutdown()
 		return m, tea.Quit
 	}
@@ -285,6 +291,15 @@ func Run(ns *docker.Namespace, installImageRef string) error {
 }
 
 // Private
+
+// screenIsBusy reports whether the current screen owns a task the process
+// must not abandon mid-flight (a settings action, a deploy, an install, a
+// removal). Both doors to shutdown+quit - the ctrl+c key and QuitMsg - check
+// this before acting, so quitting through either one is guarded the same way.
+func (m *App) screenIsBusy() bool {
+	busy, ok := m.currentScreen.(Busy)
+	return ok && busy.Busy()
+}
 
 func (m *App) scheduleNextScrapeTick() tea.Cmd {
 	return tea.Every(ChartUpdateInterval, func(time.Time) tea.Msg { return scrapeTickMsg{} })

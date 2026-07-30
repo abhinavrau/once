@@ -53,6 +53,14 @@ func NewRemove(ns *docker.Namespace, app *docker.Application) Remove {
 	}
 }
 
+// Busy reports whether a removal is in flight. App reuses this to guard its
+// quit key: a removal killed mid-flight is the same hazard as a killed
+// deploy, the container can be gone while the volume or proxy state isn't
+// updated yet.
+func (m Remove) Busy() bool {
+	return m.removing
+}
+
 func (m Remove) Init() tea.Cmd {
 	return nil
 }

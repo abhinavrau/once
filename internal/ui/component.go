@@ -12,6 +12,15 @@ type Component interface {
 	View() string
 }
 
+// Busy is implemented by a Component that owns a background task the process
+// must not abandon mid-flight, such as a deploy or a settings action. App
+// guards its quit key while the current screen reports Busy, so ctrl+c can no
+// longer kill the process between an old container's removal and the new
+// one's start; a screen that doesn't implement Busy is always safe to quit.
+type Busy interface {
+	Busy() bool
+}
+
 // MouseEvent is dispatched to sub-components after the root App resolves
 // mouse coordinates against the mouse tracker's zone map.
 type MouseEvent struct {
