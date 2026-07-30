@@ -290,7 +290,7 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 	if mode == TailscaleModeHost {
-		if err := validateHostModePreflight(ctx, tailscaleAPIBaseURL, NewHostTailscaleDaemon(), settings); err != nil {
+		if err := validateHostModePreflight(ctx, newTailscaleAPI(settings), NewHostTailscaleDaemon(), settings); err != nil {
 			return nil, err
 		}
 	}

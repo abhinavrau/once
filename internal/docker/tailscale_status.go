@@ -28,37 +28,32 @@ func (t *Tailscale) ServiceStatuses(ctx context.Context, names []string) ([]Serv
 	if err != nil {
 		return nil, err
 	}
-	return serviceStatuses(ctx, t.daemonFor(settings.Mode), tailscaleAPIBaseURL, settings, names)
+	return serviceStatuses(ctx, t.daemonFor(settings.Mode), newTailscaleAPI(settings), settings, names)
 }
 
 // Helpers
 
-func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, baseURL string, settings TailscaleSettings, names []string) ([]ServiceStatus, error) {
+func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleAPI, settings TailscaleSettings, names []string) ([]ServiceStatus, error) {
 	serve, err := daemon.ServeStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading serve status from the local tailscaled: %w", err)
 	}
 
-	var token string
-	if !controlSeamActive() {
-		if token, err = tailscaleOAuthToken(ctx, baseURL, settings.ClientID, settings.ClientSecret); err != nil {
-			return nil, err
-		}
-	}
+	cloudChecked := !controlSeamActive()
 
 	statuses := make([]ServiceStatus, 0, len(names))
 	for _, name := range names {
 		advertised := slices.Contains(serve.Services, name)
 		approval := serviceUnknown
-		if token != "" && advertised {
-			if approval, err = serviceApprovalState(ctx, baseURL, token, name); err != nil {
+		if cloudChecked && advertised {
+			if approval, err = serviceApprovalState(ctx, api, name); err != nil {
 				return nil, err
 			}
 		}
 		statuses = append(statuses, ServiceStatus{
 			Name:  name,
 			URL:   settings.TailnetURL(name),
-			State: renderServiceState(advertised, approval, token != "", settings.Tag),
+			State: renderServiceState(advertised, approval, cloudChecked, settings.Tag),
 		})
 	}
 	return statuses, nil

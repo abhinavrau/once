@@ -64,7 +64,7 @@ func fakeHostDaemon(version string, tags ...string) *FakeTailscaleDaemon {
 }
 
 func preflightAgainst(baseURL string, daemon TailscaleDaemon) error {
-	return validateHostModePreflight(context.Background(), baseURL, daemon,
+	return validateHostModePreflight(context.Background(), apiAgainst(baseURL), daemon,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeHost})
 }
 
