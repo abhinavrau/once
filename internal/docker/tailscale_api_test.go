@@ -153,6 +153,46 @@ func TestTailscaleAPIThrottledOrBrokenTokenExchange(t *testing.T) {
 	assert.NotContains(t, unexpected, "rejected the OAuth credentials")
 }
 
+// TestTailscaleAPIAuthenticateProvesCredentialsWithoutARequest is the seam's
+// token-only credential operation (ADR-0011, ticket 05): it must exchange the
+// token and stop, issuing no request beyond that - so a caller proving
+// credentials never touches tailnet data.
+func TestTailscaleAPIAuthenticateProvesCredentialsWithoutARequest(t *testing.T) {
+	s := newAPIServer(t)
+
+	require.NoError(t, s.api().Authenticate(context.Background()))
+	assert.Equal(t, 1, s.tokenRequests)
+	assert.Empty(t, s.calls, "Authenticate must not issue any request beyond the token exchange")
+}
+
+// TestTailscaleAPIAuthenticateCategorizesTokenExchangeFailures pins which
+// sentinel each token-exchange failure carries, since checkOAuthCredentials'
+// boundary (only a rejection is fatal; an unavailable endpoint is not) is
+// built entirely on errors.Is against these two.
+func TestTailscaleAPIAuthenticateCategorizesTokenExchangeFailures(t *testing.T) {
+	rejected := newAPIServer(t)
+	rejected.tokenStatus = http.StatusUnauthorized
+	rejected.tokenBody = ""
+	err := rejected.api().Authenticate(context.Background())
+	require.ErrorIs(t, err, ErrOAuthCredentialsRejected)
+	assert.NotErrorIs(t, err, ErrOAuthTokenEndpointUnavailable)
+
+	unavailable := newAPIServer(t)
+	unavailable.tokenStatus = http.StatusTooManyRequests
+	unavailable.tokenBody = ""
+	err = unavailable.api().Authenticate(context.Background())
+	require.ErrorIs(t, err, ErrOAuthTokenEndpointUnavailable)
+	assert.NotErrorIs(t, err, ErrOAuthCredentialsRejected)
+
+	unexpected := newAPIServer(t)
+	unexpected.tokenStatus = http.StatusNotFound
+	unexpected.tokenBody = ""
+	err = unexpected.api().Authenticate(context.Background())
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrOAuthCredentialsRejected)
+	assert.NotErrorIs(t, err, ErrOAuthTokenEndpointUnavailable)
+}
+
 func TestTailscaleAPITokenResponseWithoutAccessToken(t *testing.T) {
 	s := newAPIServer(t)
 	s.tokenBody = `{"token_type":"bearer"}`

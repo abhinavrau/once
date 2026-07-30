@@ -19,11 +19,27 @@ const (
 	fakeDevicesPath = fakeSvcPath + "/devices"
 )
 
+// authenticateMethod is the sentinel "method" Authenticate calls are canned,
+// recorded, and error-injected under - it carries no method or path of its
+// own, unlike Call, but reuses the same apiRequest bookkeeping so it is a call
+// like any other rather than a bespoke case.
+const authenticateMethod = "AUTHENTICATE"
+
 // apiRequest identifies a Tailscale API request by the two things the seam
 // carries with it: the method and the path.
 type apiRequest struct {
 	method string
 	path   string
+}
+
+// String renders the request the way an unexpected-call failure names it:
+// "METHOD /path", or just the method when there is no path, as with
+// Authenticate.
+func (r apiRequest) String() string {
+	if r.path == "" {
+		return r.method
+	}
+	return r.method + " " + r.path
 }
 
 // fakeAPICall is one call a flow made through the tailscaleAPI seam. It keeps
@@ -84,14 +100,8 @@ func newFakeTailscaleAPI(t fakeAPIReporter) *fakeTailscaleAPI {
 }
 
 func (f *fakeTailscaleAPI) Call(ctx context.Context, method, path string, payload []byte) (int, []byte, error) {
-	request := apiRequest{method, path}
-	f.calls = append(f.calls, fakeAPICall{apiRequest: request, payload: string(payload)})
-
-	reply, ok := f.replies[request]
-	if !ok {
-		f.t.Helper()
-		err := fmt.Errorf("unexpected Tailscale API call %s %s", method, path)
-		f.t.Errorf("%s", err)
+	reply, err := f.record(apiRequest{method, path}, string(payload))
+	if err != nil {
 		return 0, nil, err
 	}
 	if reply.err != nil {
@@ -100,7 +110,32 @@ func (f *fakeTailscaleAPI) Call(ctx context.Context, method, path string, payloa
 	return reply.status, []byte(reply.body), nil
 }
 
+func (f *fakeTailscaleAPI) Authenticate(ctx context.Context) error {
+	reply, err := f.record(apiRequest{authenticateMethod, ""}, "")
+	if err != nil {
+		return err
+	}
+	return reply.err
+}
+
 // Private
+
+// record appends request to the call log with payload, and returns the
+// canned reply for it - the bookkeeping every operation the seam offers
+// shares, so a call fails the same way whether it carries a method and path
+// or, like Authenticate, neither.
+func (f *fakeTailscaleAPI) record(request apiRequest, payload string) (fakeAPIReply, error) {
+	f.calls = append(f.calls, fakeAPICall{apiRequest: request, payload: payload})
+
+	reply, ok := f.replies[request]
+	if !ok {
+		f.t.Helper()
+		err := fmt.Errorf("unexpected Tailscale API call %s", request)
+		f.t.Errorf("%s", err)
+		return fakeAPIReply{}, err
+	}
+	return reply, nil
+}
 
 // reply cans the status and body this request answers with, for as many times
 // as the flow asks.
@@ -194,6 +229,35 @@ func TestFakeTailscaleAPIUnexpectedCallFailsTheTest(t *testing.T) {
 	require.Len(t, reporter.errors, 1)
 	assert.Contains(t, reporter.errors[0], "unexpected Tailscale API call GET "+fakeDevicesPath)
 	assert.True(t, api.requested(http.MethodGet, fakeDevicesPath), "an unexpected call is still recorded")
+}
+
+func TestFakeTailscaleAPIAuthenticateCansAndRecordsCalls(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(authenticateMethod, "", 0, "")
+
+	require.NoError(t, api.Authenticate(context.Background()))
+	require.NoError(t, api.Authenticate(context.Background()))
+
+	assert.True(t, api.requested(authenticateMethod, ""))
+	assert.Equal(t, 2, api.callCount(), "a canned reply answers as often as the flow asks")
+}
+
+func TestFakeTailscaleAPIAuthenticateInjectsErrors(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.fail(authenticateMethod, "", ErrOAuthCredentialsRejected)
+
+	require.ErrorIs(t, api.Authenticate(context.Background()), ErrOAuthCredentialsRejected)
+}
+
+func TestFakeTailscaleAPIAuthenticateUnexpectedCallFailsTheTest(t *testing.T) {
+	reporter := &recordingReporter{}
+	api := newFakeTailscaleAPI(reporter)
+
+	err := api.Authenticate(context.Background())
+	require.Error(t, err, "an uncanned Authenticate must not read as proven credentials")
+	require.Len(t, reporter.errors, 1)
+	assert.Contains(t, reporter.errors[0], "unexpected Tailscale API call "+authenticateMethod)
+	assert.True(t, api.requested(authenticateMethod, ""), "an unexpected call is still recorded")
 }
 
 func TestFakeTailscaleAPIAnswersOnlyTheRegisteredMethodAndPath(t *testing.T) {

@@ -2,8 +2,8 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"time"
 )
@@ -69,24 +69,21 @@ func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleA
 }
 
 // checkOAuthCredentials proves the OAuth credentials before any service state
-// is reported. The adapter exchanges them lazily on its first call (ADR-0011),
-// so without a call of its own a revoked credential is only noticed wherever
-// the per-service cloud check happens to run - never, when nothing is
-// advertised, and mid-listing when only some services are. Only a rejected
-// credential is fatal here: a tailnet that is merely unwell stays the
-// per-service checks' business to report, as it was before this check existed.
+// is reported, via the seam's token-only Authenticate (ADR-0011) - so the
+// check exchanges the token alone and never touches tailnet data it does not
+// need, and cannot fail for tailnet-shaped reasons. Without a call of its own,
+// a revoked credential would only be noticed wherever the per-service cloud
+// check happens to run - never, when nothing is advertised, and mid-listing
+// when only some services are. Everything but a token endpoint that is merely
+// rate-limited or broken is fatal here, forwarded unchanged: that one case
+// never judged the credentials, so it stays the per-service checks' business
+// to report, as it was before this check existed.
 func checkOAuthCredentials(ctx context.Context, api tailscaleAPI) error {
-	status, body, err := api.Call(ctx, http.MethodGet, "/tailnet/-/devices", nil)
-	if err != nil {
-		return err
+	err := api.Authenticate(ctx)
+	if err == nil || errors.Is(err, ErrOAuthTokenEndpointUnavailable) {
+		return nil
 	}
-	switch status {
-	case http.StatusUnauthorized:
-		return fmt.Errorf("Tailscale rejected the OAuth credentials (HTTP %d): %s; check the client ID and secret are correct and not revoked", status, errorMessage(body))
-	case http.StatusForbidden:
-		return fmt.Errorf("the OAuth client is missing the devices scope (Devices -> Core), needed to read which hosts advertise each Service (HTTP %d): %s", status, errorMessage(body))
-	}
-	return nil
+	return err
 }
 
 // renderServiceState turns the two verification sources into one display
