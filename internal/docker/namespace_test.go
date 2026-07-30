@@ -269,6 +269,34 @@ func TestContainerAppName(t *testing.T) {
 	})
 }
 
+type mockRestoreClient struct {
+	containers []container.Summary
+	listErr    error
+	startedAt  map[string]string
+	inspectErr map[string]error
+	inspected  []string
+}
+
+func (m *mockRestoreClient) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.containers, nil
+}
+
+// A successful inspect always carries a populated base, as the daemon's does.
+func (m *mockRestoreClient) ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
+	m.inspected = append(m.inspected, containerID)
+	if err := m.inspectErr[containerID]; err != nil {
+		return container.InspectResponse{}, err
+	}
+	return container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			State: &container.State{StartedAt: m.startedAt[containerID]},
+		},
+	}, nil
+}
+
 func TestRestoreStateDecodesApplicationLabels(t *testing.T) {
 	ns := newRestoreTestNamespace()
 	client := &mockRestoreClient{
@@ -278,7 +306,7 @@ func TestRestoreStateDecodesApplicationLabels(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ns.restoreStateFrom(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client))
 
 	require.Len(t, ns.Applications(), 2)
 
@@ -301,7 +329,7 @@ func TestRestoreStateKeepsNewestContainerPerApp(t *testing.T) {
 
 	restore := func(t *testing.T, containers ...container.Summary) *Application {
 		ns := newRestoreTestNamespace()
-		require.NoError(t, ns.restoreStateFrom(context.Background(), &mockRestoreClient{containers: containers}))
+		require.NoError(t, ns.restoreState(context.Background(), &mockRestoreClient{containers: containers}))
 		require.Len(t, ns.Applications(), 1)
 		return ns.Application("blog")
 	}
@@ -331,7 +359,7 @@ func TestRestoreStateDecodesProxyLabel(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ns.restoreStateFrom(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client))
 
 	require.NotNil(t, ns.Proxy().Settings)
 	assert.Equal(t, settings, *ns.Proxy().Settings)
@@ -342,12 +370,22 @@ func TestRestoreStateLeavesProxySettingsUnsetWithoutLabel(t *testing.T) {
 	client := &mockRestoreClient{
 		containers: []container.Summary{
 			labelledSummary("id-proxy", "once-proxy", 100, "running", ""),
+			appSummary("id-blog", "once-app-blog-a1b2c3", 200, "exited", appSettings("blog")),
 		},
 	}
 
-	require.NoError(t, ns.restoreStateFrom(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client))
 
 	assert.Nil(t, ns.Proxy().Settings)
+	// The app proves the restore did walk the list past the unlabelled proxy.
+	assert.Len(t, ns.Applications(), 1)
+}
+
+func TestRestoreStateFailsWhenListingContainersFails(t *testing.T) {
+	ns := newRestoreTestNamespace()
+	client := &mockRestoreClient{listErr: errors.New("daemon unreachable")}
+
+	assert.ErrorContains(t, ns.restoreState(context.Background(), client), "daemon unreachable")
 }
 
 func TestRestoreStateCapturesRunningSince(t *testing.T) {
@@ -361,9 +399,9 @@ func TestRestoreStateCapturesRunningSince(t *testing.T) {
 		startedAt: map[string]string{"id-blog": startedAt.Format(time.RFC3339Nano)},
 	}
 
-	require.NoError(t, ns.restoreStateFrom(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client))
 
-	assert.True(t, startedAt.Equal(ns.Application("blog").RunningSince))
+	assert.Equal(t, startedAt, ns.Application("blog").RunningSince)
 	assert.True(t, ns.Application("wiki").RunningSince.IsZero())
 	// A stopped app has no start time to read, so it is never inspected.
 	assert.Equal(t, []string{"id-blog"}, client.inspected)
@@ -380,7 +418,7 @@ func TestRestoreStateKeepsRunningAppWhenInspectFails(t *testing.T) {
 		inspectErr: map[string]error{"id-blog": errors.New("no such container")},
 	}
 
-	require.NoError(t, ns.restoreStateFrom(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client))
 
 	blog := ns.Application("blog")
 	require.NotNil(t, blog)
@@ -400,7 +438,7 @@ func TestRestoreStateFailsOnCorruptLabel(t *testing.T) {
 			},
 		}
 
-		require.Error(t, ns.restoreStateFrom(context.Background(), client))
+		require.Error(t, ns.restoreState(context.Background(), client))
 		assert.Empty(t, ns.Applications())
 	})
 
@@ -412,7 +450,7 @@ func TestRestoreStateFailsOnCorruptLabel(t *testing.T) {
 			},
 		}
 
-		require.Error(t, ns.restoreStateFrom(context.Background(), client))
+		require.Error(t, ns.restoreState(context.Background(), client))
 		assert.Nil(t, ns.Proxy().Settings)
 	})
 }
@@ -430,7 +468,7 @@ func TestRestoreStateIgnoresContainersOutsideNamespace(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ns.restoreStateFrom(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client))
 
 	require.Len(t, ns.Applications(), 1)
 	assert.Equal(t, "blog", ns.Applications()[0].Settings.Name)
@@ -438,35 +476,6 @@ func TestRestoreStateIgnoresContainersOutsideNamespace(t *testing.T) {
 }
 
 // Helpers
-
-type mockRestoreClient struct {
-	containers []container.Summary
-	listErr    error
-	startedAt  map[string]string
-	inspectErr map[string]error
-	inspected  []string
-}
-
-func (m *mockRestoreClient) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-	if m.listErr != nil {
-		return nil, m.listErr
-	}
-	return m.containers, nil
-}
-
-// ContainerInspect mirrors the daemon: a successful inspect always carries a
-// populated base, whose State holds the container's start time.
-func (m *mockRestoreClient) ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
-	m.inspected = append(m.inspected, containerID)
-	if err := m.inspectErr[containerID]; err != nil {
-		return container.InspectResponse{}, err
-	}
-	return container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			State: &container.State{StartedAt: m.startedAt[containerID]},
-		},
-	}, nil
-}
 
 func newRestoreTestNamespace() *Namespace {
 	ns := &Namespace{name: "once"}

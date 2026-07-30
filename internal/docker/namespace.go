@@ -80,7 +80,7 @@ func RestoreNamespace(ctx context.Context, name string) (*Namespace, error) {
 		return nil, err
 	}
 
-	if err := ns.restoreState(ctx); err != nil {
+	if err := ns.restoreState(ctx, ns.client); err != nil {
 		return nil, err
 	}
 
@@ -379,7 +379,7 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 
 func (n *Namespace) Refresh(ctx context.Context) error {
 	n.applications = nil
-	return n.restoreState(ctx)
+	return n.restoreState(ctx, n.client)
 }
 
 // RollApplications recreates every running app container (zero-downtime) so they
@@ -543,11 +543,7 @@ type restoreClient interface {
 	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
 }
 
-func (n *Namespace) restoreState(ctx context.Context) error {
-	return n.restoreStateFrom(ctx, n.client)
-}
-
-func (n *Namespace) restoreStateFrom(ctx context.Context, client restoreClient) error {
+func (n *Namespace) restoreState(ctx context.Context, client restoreClient) error {
 	containers, err := client.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return err
