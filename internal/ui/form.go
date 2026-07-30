@@ -401,30 +401,21 @@ func (f Form) Focused() int {
 }
 
 func (f Form) TextField(key string) *TextField {
-	field, ok := f.field(key).(*TextField)
-	if !ok {
-		panic(wrongFieldType(key, "TextField"))
-	}
-	return field
+	return fieldAs[*TextField](f, key, "TextField")
 }
 
 func (f Form) CheckboxField(key string) *CheckboxField {
-	field, ok := f.field(key).(*CheckboxField)
-	if !ok {
-		panic(wrongFieldType(key, "CheckboxField"))
-	}
-	return field
+	return fieldAs[*CheckboxField](f, key, "CheckboxField")
 }
 
 func (f Form) RadioField(key string) *RadioField {
-	field, ok := f.field(key).(*RadioField)
-	if !ok {
-		panic(wrongFieldType(key, "RadioField"))
-	}
-	return field
+	return fieldAs[*RadioField](f, key, "RadioField")
 }
 
+// SetError places message under the named field. The key must name a field of
+// this form, so a drifted key dies rather than silently swallowing the error.
 func (f *Form) SetError(key, message string) {
+	_ = f.indexOf(key)
 	f.errorKey = key
 	f.error = message
 }
@@ -439,10 +430,8 @@ func (f Form) Error() string {
 
 // Private
 
-func (f Form) field(key string) FormField {
-	return f.items[f.indexOf(key)].Field
-}
-
+// indexOf returns the position of the keyed field, panicking if this form has
+// no field with that key.
 func (f Form) indexOf(key string) int {
 	for i, item := range f.items {
 		if item.Key == key {
@@ -616,12 +605,18 @@ func requireUniqueKeys(existing, added []FormItem) {
 	}
 }
 
-func fieldTarget(key string) string {
-	return "field:" + key
+// fieldAs returns the keyed field as T, panicking if the form has no such key
+// or the field is of another type. Both are programmer errors.
+func fieldAs[T FormField](f Form, key, typeName string) T {
+	field, ok := f.items[f.indexOf(key)].Field.(T)
+	if !ok {
+		panic(fmt.Sprintf("form field %q is not a %s", key, typeName))
+	}
+	return field
 }
 
-func wrongFieldType(key, typeName string) string {
-	return fmt.Sprintf("form field %q is not a %s", key, typeName)
+func fieldTarget(key string) string {
+	return "field:" + key
 }
 
 func isDigitKey(k tea.Key) bool {

@@ -204,14 +204,14 @@ func newEnvKeyItem(row int, value string) FormItem {
 	f := NewTextField("KEY")
 	f.SetValue(value)
 	f.SetCharLimit(256)
-	return FormItem{Key: envKeyFieldKey(row), Label: "Key", Field: f}
+	return FormItem{Key: envKeyFieldKey(row), Field: f}
 }
 
 func newEnvValueItem(row int, value string) FormItem {
 	f := NewTextField("value")
 	f.SetValue(value)
 	f.SetCharLimit(1024)
-	return FormItem{Key: envValueFieldKey(row), Label: "Value", Field: f}
+	return FormItem{Key: envValueFieldKey(row), Field: f}
 }
 
 func envKeyFieldKey(row int) string {

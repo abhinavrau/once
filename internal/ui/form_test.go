@@ -422,6 +422,16 @@ func TestForm_PanicsOnUnknownKey(t *testing.T) {
 	})
 }
 
+func TestForm_SetErrorPanicsOnUnknownKey(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name")},
+	)
+
+	assert.PanicsWithValue(t, `form has no field with key "nickname"`, func() {
+		form.SetError("nickname", "boom")
+	})
+}
+
 func TestForm_PanicsOnWrongFieldType(t *testing.T) {
 	form := NewForm("Submit",
 		FormItem{Key: "name", Label: "Name", Field: NewTextField("name")},
