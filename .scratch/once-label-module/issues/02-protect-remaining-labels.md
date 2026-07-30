@@ -40,19 +40,61 @@ holds because decode leaves the carry nil when no unknown fields exist.
 
 **Blocked by:** 01.
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] `ProxySettings`, `ApplicationVolumeSettings`, and `TailscaleSettings`
+- [x] `ProxySettings`, `ApplicationVolumeSettings`, and `TailscaleSettings`
       embed `labelExtra`; their fronts delegate to the codec
-- [ ] Unit tests in `label_test.go` show an unknown label field surviving
+- [x] Unit tests in `label_test.go` show an unknown label field surviving
       decode -> `Marshal` for each of the three types
-- [ ] `Enable`'s rebuild path carries the existing label's unknown fields into
+- [x] `Enable`'s rebuild path carries the existing label's unknown fields into
       the recreated once-docktail label
-- [ ] `Enable`'s same-credentials no-op path and field-by-field comparison are
+- [x] `Enable`'s same-credentials no-op path and field-by-field comparison are
       unchanged
-- [ ] Backup restore still round-trips volume settings (existing
+- [x] Backup restore still round-trips volume settings (existing
       backup tests pass unmodified)
-- [ ] No `persistSettings` or `LoadSettings` call-site changes (candidate 04
+- [x] No `persistSettings` or `LoadSettings` call-site changes (candidate 04
       owns that ground and will build on this)
-- [ ] `make test` and `make lint` green; integration suite untouched or green
+- [x] `make test` and `make lint` green; integration suite untouched or green
       if run
+
+## Comments
+
+### 2026-07-30 - branch `once-label-module-02-protect-remaining-labels`
+
+All four settings types are now on the codec: `ProxySettings`,
+`ApplicationVolumeSettings`, and `TailscaleSettings` embed `labelExtra`, and
+their six exported fronts keep their signatures while delegating to
+`decodeLabel`/`encodeLabel`. `encoding/json` left volume.go and tailscale.go
+entirely. `Enable`'s rebuild grafts the decoded existing label's carry onto the
+incoming settings in one assignment (`settings.labelExtra = existing.labelExtra`)
+after the untouched field-by-field credential check and before `removeTopology`;
+no client seam was built for it. The write-through read paths (`DomainSuffix`,
+`WaitForFunnelActive`) fixed themselves by construction, and no
+`persistSettings`/`LoadSettings` call site changed.
+
+Two deviations, both deliberate:
+
+1. The ticket says none of the three types has a removed-field denylist. That
+   is wrong for `TailscaleSettings`: `apiKey` was a real Once field (added in
+   ed22495, deleted in bb7c0a1) and `TestTailscaleSettingsDropLegacyAPIKey`
+   pins that it is shed on rewrite. Pure binding would have resurrected a dead
+   credential into every rewritten Tailscale label, so the front binds
+   `removedTailscaleFields = []string{"apiKey"}` - exactly ADR-0008's "fields
+   deliberately deleted from the schema go in the denylist". The ticket sentence
+   and PRD decision 8 ("only `ApplicationSettings` has an entry") are stale and
+   should be corrected, not the code.
+2. One line of ticket 01's codec changed: `decodeLabel` now nils an unknown-field
+   map that the denylist emptied. Only the denylist path could produce an empty
+   non-nil carry, which broke `assert.Equal` on decoded values - the property
+   this ticket requires to keep holding.
+
+Note for whoever lands the next settings type: embedding the carry makes
+`ProxySettings` and `ApplicationVolumeSettings` non-comparable, so `==` on them
+is now a compile error (nothing did it; both are exported and used from
+`integration/`).
+
+New `label_test.go` cases cover an unknown field surviving decode -> `Marshal`
+for each of the three types, the Tailscale case also proving `apiKey` still goes
+while `futureFlag` stays, plus one case pinning that shedding every unknown
+field leaves a nil carry. `make test` and `PATH` -fixed `make lint` green;
+integration suite not run (coordinator runs it post-merge).

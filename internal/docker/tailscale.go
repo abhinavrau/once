@@ -2,7 +2,6 @@ package docker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -123,6 +122,12 @@ const (
 	envAuthKey    = "ONCE_TAILSCALE_AUTH_KEY"
 )
 
+// removedTailscaleFields are label fields older versions of Once wrote that no
+// longer exist: the TSDProxy-era apiKey. Shed on rewrite, unlike unknown fields
+// from newer versions, which are preserved - a dead credential must not ride
+// along in every label Once writes from here on.
+var removedTailscaleFields = []string{"apiKey"}
+
 type TailscaleSettings struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`
@@ -146,6 +151,8 @@ type TailscaleSettings struct {
 	// (TailscaleModeHost) or the Once-managed once-tailscale sidecar
 	// (TailscaleModeSidecar).
 	Mode string `json:"mode,omitempty"`
+
+	labelExtra
 }
 
 // TailnetURL builds an app's https://<app>.<suffix> tailnet URL from the stored
@@ -168,14 +175,11 @@ func (s TailscaleSettings) FunnelURL(port int) string {
 }
 
 func UnmarshalTailscaleSettings(s string) (TailscaleSettings, error) {
-	var settings TailscaleSettings
-	err := json.Unmarshal([]byte(s), &settings)
-	return settings, err
+	return decodeLabel[TailscaleSettings](s, removedTailscaleFields...)
 }
 
 func (s TailscaleSettings) Marshal() string {
-	b, _ := json.Marshal(s)
-	return string(b)
+	return encodeLabel(s)
 }
 
 // Private
@@ -250,6 +254,12 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 		if existing.ClientID == settings.ClientID && existing.ClientSecret == settings.ClientSecret && existing.Tag == settings.Tag && existing.Mode == settings.Mode {
 			return t.ensureRunning(ctx, info)
 		}
+		// The rebuild recreates the label from the caller's settings, which carry
+		// no unknown fields, so hand them the stored label's: known optional
+		// fields (suffix, node host) are deliberately dropped because the tailnet
+		// may differ, but a field only a newer Once models is not this binary's to
+		// judge - stale-but-preserved beats destroyed (ADR-0008).
+		settings.labelExtra = existing.labelExtra
 		// The sidecar's auth key and advertised tag derive from the credentials,
 		// the suffix may belong to a different tailnet now, and a mode change
 		// moves where tailscaled lives - either way, rebuild the topology from

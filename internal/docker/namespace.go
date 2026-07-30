@@ -388,7 +388,7 @@ func (n *Namespace) Refresh(ctx context.Context) error {
 
 // RollApplications recreates every running app container (zero-downtime) so they
 // pick up the current docktail.* label state. It refreshes from Docker first so
-// the roll covers apps regardless of whether they were preloaded — the retrofit
+// the roll covers apps regardless of whether they were preloaded - the retrofit
 // behind once tailscale enable/disable.
 func (n *Namespace) RollApplications(ctx context.Context) error {
 	if err := n.Refresh(ctx); err != nil {

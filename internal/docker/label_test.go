@@ -68,6 +68,49 @@ func TestRemovedFieldsAreShedNotPreserved(t *testing.T) {
 	assert.NotContains(t, again.Marshal(), "tailscaleExcluded")
 }
 
+func TestProxySettingsPreserveUnknownLabelFields(t *testing.T) {
+	settings, err := UnmarshalProxySettings(`{"httpPort":8080,"futureFlag":"on"}`)
+	require.NoError(t, err)
+	assert.Equal(t, 8080, settings.HTTPPort)
+
+	settings.HTTPSPort = 8443
+	out := settings.Marshal()
+	assert.Contains(t, out, `"httpsPort":8443`)
+	assert.Contains(t, out, `"futureFlag":"on"`)
+}
+
+func TestApplicationVolumeSettingsPreserveUnknownLabelFields(t *testing.T) {
+	settings, err := UnmarshalApplicationVolumeSettings(`{"secretKeyBase":"sk","futureFlag":"on"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "sk", settings.SecretKeyBase)
+
+	out := settings.Marshal()
+	assert.Contains(t, out, `"secretKeyBase":"sk"`)
+	assert.Contains(t, out, `"futureFlag":"on"`)
+}
+
+func TestTailscaleSettingsPreserveUnknownLabelFields(t *testing.T) {
+	// The destruction this closes: a status read on an older binary loads the
+	// label, learns the suffix, and rewrites - a newer binary's field must ride
+	// along, while a field deleted from the schema still goes.
+	settings, err := UnmarshalTailscaleSettings(`{"clientId":"id","apiKey":"key-789","futureFlag":"on"}`)
+	require.NoError(t, err)
+
+	settings.DomainSuffix = "tailnet-name.ts.net"
+	out := settings.Marshal()
+	assert.Contains(t, out, `"domainSuffix":"tailnet-name.ts.net"`)
+	assert.Contains(t, out, `"futureFlag":"on"`)
+	assert.NotContains(t, out, "apiKey")
+}
+
+func TestSheddingEveryUnknownFieldLeavesNoCarry(t *testing.T) {
+	// A label whose only unmodelled field is a removed one carries nothing, so
+	// the decoded value still compares equal to the same settings built by hand.
+	settings, err := UnmarshalApplicationSettings(`{"name":"app","host":"app.localhost","tailscaleExcluded":true}`)
+	require.NoError(t, err)
+	assert.Equal(t, ApplicationSettings{Name: "app", Host: "app.localhost", Exposure: ExposureLocal}, settings)
+}
+
 func TestModelledFieldsWinOverPreservedLabelFields(t *testing.T) {
 	// Merging preserved fields back in must never resurrect a value this binary
 	// models and has since changed, nor write a modelled key twice.
