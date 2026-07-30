@@ -10,7 +10,7 @@ import (
 )
 
 func serviceStatusesAgainst(a *approvalServer, daemon TailscaleDaemon, names ...string) ([]ServiceStatus, error) {
-	return serviceStatuses(context.Background(), daemon, a.srv.URL,
+	return serviceStatuses(context.Background(), daemon, apiAgainst(a.srv.URL),
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", DomainSuffix: "tail1234.ts.net"},
 		names)
 }

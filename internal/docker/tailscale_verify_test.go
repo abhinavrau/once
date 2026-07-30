@@ -111,7 +111,7 @@ func newApprovalServer(t *testing.T) *approvalServer {
 }
 
 func waitForApprovedAgainst(a *approvalServer, announce func(string), expected ...string) error {
-	return waitForApproved(context.Background(), a.srv.URL,
+	return waitForApproved(context.Background(), apiAgainst(a.srv.URL),
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"},
 		expected, 50*time.Millisecond, time.Millisecond, announce)
 }

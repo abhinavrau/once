@@ -1,12 +1,10 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -53,27 +51,23 @@ func validateTailscaleCredentials(ctx context.Context, settings TailscaleSetting
 	if controlSeamActive() {
 		return nil
 	}
-	return validateOAuthCredentials(ctx, tailscaleAPIBaseURL, settings)
+	return validateOAuthCredentials(ctx, newTailscaleAPI(settings), settings)
 }
 
 // validateOAuthCredentials proves the OAuth client can do everything Docktail
 // and the Once-managed sidecar will need, using the same request shapes they
-// send: a token exchange, a mint-and-delete of a sidecar-shaped auth key
-// (auth_keys scope, tag ownership), and a create-inspect-delete of a throwaway
-// Service definition (services and devices scopes, tag definition). Each
-// failure mode gets its own actionable error. baseURL is parameterised so
-// tests can point it at an httptest server.
-func validateOAuthCredentials(ctx context.Context, baseURL string, settings TailscaleSettings) error {
+// send: a token exchange (the adapter's, on the first call), a mint-and-delete
+// of a sidecar-shaped auth key (auth_keys scope, tag ownership), and a
+// create-inspect-delete of a throwaway Service definition (services and
+// devices scopes, tag definition). Each failure mode gets its own actionable
+// error - including rejected credentials, which surface from the first call,
+// before any key is minted.
+func validateOAuthCredentials(ctx context.Context, api tailscaleAPI, settings TailscaleSettings) error {
 	if settings.Tag == "" {
 		return fmt.Errorf("a Tailscale tag is required (e.g. tag:once); the sidecar auth key and Service definitions cannot be created without one")
 	}
 
-	token, err := tailscaleOAuthToken(ctx, baseURL, settings.ClientID, settings.ClientSecret)
-	if err != nil {
-		return err
-	}
-
-	keyID, _, err := createTailscaleAuthKey(ctx, baseURL, token, settings.Tag)
+	keyID, _, err := createTailscaleAuthKey(ctx, api, settings.Tag)
 	if err != nil {
 		return err
 	}
@@ -82,9 +76,9 @@ func validateOAuthCredentials(ctx context.Context, baseURL string, settings Tail
 	// failed delete must not fail the enable. ponytail: probe keys also expire on
 	// Tailscale's default schedule; the delete just keeps repeated enables from
 	// piling up stale keys.
-	_ = deleteProbeKey(ctx, baseURL, token, keyID)
+	_ = deleteProbeKey(ctx, api, keyID)
 
-	return probeServiceDefinition(ctx, baseURL, token, settings.Tag)
+	return probeServiceDefinition(ctx, api, settings.Tag)
 }
 
 // minHostDaemonMajor/Minor is the oldest host tailscaled that supports
@@ -101,9 +95,9 @@ const (
 // instead of the enable booting the full topology and dying much later in the
 // service-advertisement verify. The tailnet-membership check needs the SaaS
 // devices API, so it is skipped on the headscale control seam; the local
-// checks apply everywhere. baseURL and daemon are parameterised so tests can
-// use an httptest server and the canned-JSON fake.
-func validateHostModePreflight(ctx context.Context, baseURL string, daemon TailscaleDaemon, settings TailscaleSettings) error {
+// checks apply everywhere. The API seam and daemon are parameterised so tests
+// can use an httptest server and the canned-JSON fake.
+func validateHostModePreflight(ctx context.Context, api tailscaleAPI, daemon TailscaleDaemon, settings TailscaleSettings) error {
 	if !hostTailscaledPresent() {
 		return fmt.Errorf("host mode needs a running tailscaled on this host, but its socket %s is missing; install and start Tailscale, or use --mode sidecar",
 			filepath.Join(hostTailscaledDir(), tailscaledSocketFile))
@@ -124,19 +118,15 @@ func validateHostModePreflight(ctx context.Context, baseURL string, daemon Tails
 	if controlSeamActive() {
 		return nil
 	}
-	return validateHostInTailnet(ctx, baseURL, settings, self.NodeKey)
+	return validateHostInTailnet(ctx, api, self.NodeKey)
 }
 
 // mintSidecarAuthKey mints the tagged auth key the once-tailscale sidecar
 // registers with. It shares createTailscaleAuthKey with the enable-time probe,
 // so the key the sidecar boots with always has exactly the shape the probe
 // proved could be minted.
-func mintSidecarAuthKey(ctx context.Context, baseURL string, settings TailscaleSettings) (string, error) {
-	token, err := tailscaleOAuthToken(ctx, baseURL, settings.ClientID, settings.ClientSecret)
-	if err != nil {
-		return "", err
-	}
-	_, key, err := createTailscaleAuthKey(ctx, baseURL, token, settings.Tag)
+func mintSidecarAuthKey(ctx context.Context, api tailscaleAPI, settings TailscaleSettings) (string, error) {
+	_, key, err := createTailscaleAuthKey(ctx, api, settings.Tag)
 	return key, err
 }
 
@@ -147,13 +137,8 @@ func mintSidecarAuthKey(ctx context.Context, baseURL string, settings TailscaleS
 // into a different tailnet than the credential. The node key is the join key:
 // `tailscale status --json` reports it as Self.PublicKey and the devices list
 // as nodeKey.
-func validateHostInTailnet(ctx context.Context, baseURL string, settings TailscaleSettings, nodeKey string) error {
-	token, err := tailscaleOAuthToken(ctx, baseURL, settings.ClientID, settings.ClientSecret)
-	if err != nil {
-		return err
-	}
-
-	status, body, err := tailscaleAPICall(ctx, http.MethodGet, baseURL+"/tailnet/-/devices", token, nil)
+func validateHostInTailnet(ctx context.Context, api tailscaleAPI, nodeKey string) error {
+	status, body, err := api.Call(ctx, http.MethodGet, "/tailnet/-/devices", nil)
 	if err != nil {
 		return err
 	}
@@ -209,42 +194,6 @@ func hostDaemonSupportsServices(version string) bool {
 	return major > minHostDaemonMajor || (major == minHostDaemonMajor && minor >= minHostDaemonMinor)
 }
 
-// tailscaleOAuthToken exchanges the OAuth client credentials for an access
-// token. A failure here means the client ID or secret is wrong or revoked.
-func tailscaleOAuthToken(ctx context.Context, baseURL, clientID, clientSecret string) (string, error) {
-	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/oauth/token", strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("contacting the Tailscale API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Tailscale rejected the OAuth credentials (%s); check the client ID and secret are correct and not revoked", resp.Status)
-	}
-
-	var body struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", fmt.Errorf("decoding Tailscale OAuth token response: %w", err)
-	}
-	if body.AccessToken == "" {
-		return "", fmt.Errorf("Tailscale OAuth token response contained no access token")
-	}
-	return body.AccessToken, nil
-}
-
 // createTailscaleAuthKey mints a tagged auth key of the shape Once uses for
 // the once-tailscale sidecar's TS_AUTHKEY: reusable, non-ephemeral (the
 // sidecar keeps its node state in a volume), preauthorized, tagged. Reusable
@@ -254,7 +203,7 @@ func tailscaleOAuthToken(ctx context.Context, baseURL, clientID, clientSecret st
 // failure into a permanent "invalid key" crash loop. A 403 means the OAuth
 // client lacks the auth_keys scope; any other rejection means it does not own
 // the requested tag.
-func createTailscaleAuthKey(ctx context.Context, baseURL, token, tag string) (id, key string, err error) {
+func createTailscaleAuthKey(ctx context.Context, api tailscaleAPI, tag string) (id, key string, err error) {
 	var reqBody tsKeyRequest
 	reqBody.Description = "once-tailscale"
 	reqBody.Capabilities.Devices.Create.Reusable = true
@@ -266,7 +215,7 @@ func createTailscaleAuthKey(ctx context.Context, baseURL, token, tag string) (id
 		return "", "", err
 	}
 
-	status, body, err := tailscaleAPICall(ctx, http.MethodPost, baseURL+"/tailnet/-/keys", token, payload)
+	status, body, err := api.Call(ctx, http.MethodPost, "/tailnet/-/keys", payload)
 	if err != nil {
 		return "", "", err
 	}
@@ -289,8 +238,8 @@ func createTailscaleAuthKey(ctx context.Context, baseURL, token, tag string) (id
 	return respBody.ID, respBody.Key, nil
 }
 
-func deleteProbeKey(ctx context.Context, baseURL, token, keyID string) error {
-	status, _, err := tailscaleAPICall(ctx, http.MethodDelete, baseURL+"/tailnet/-/keys/"+url.PathEscape(keyID), token, nil)
+func deleteProbeKey(ctx context.Context, api tailscaleAPI, keyID string) error {
+	status, _, err := api.Call(ctx, http.MethodDelete, "/tailnet/-/keys/"+url.PathEscape(keyID), nil)
 	if err != nil {
 		return err
 	}
@@ -307,10 +256,10 @@ func deleteProbeKey(ctx context.Context, baseURL, token, keyID string) error {
 // delete it (deleteService). The create is also where an undefined tag surfaces.
 // The "-" tailnet path segment matches Docktail, which defaults
 // TAILSCALE_TAILNET to "-" when Once leaves it unset.
-func probeServiceDefinition(ctx context.Context, baseURL, token, tag string) error {
-	svcURL := baseURL + "/tailnet/-/services/" + probeServiceName
+func probeServiceDefinition(ctx context.Context, api tailscaleAPI, tag string) error {
+	svcPath := "/tailnet/-/services/" + probeServiceName
 
-	status, body, err := tailscaleAPICall(ctx, http.MethodGet, svcURL, token, nil)
+	status, body, err := api.Call(ctx, http.MethodGet, svcPath, nil)
 	if err != nil {
 		return err
 	}
@@ -341,7 +290,7 @@ func probeServiceDefinition(ctx context.Context, baseURL, token, tag string) err
 	if err != nil {
 		return err
 	}
-	status, body, err = tailscaleAPICall(ctx, http.MethodPut, svcURL, token, payload)
+	status, body, err = api.Call(ctx, http.MethodPut, svcPath, payload)
 	if err != nil {
 		return err
 	}
@@ -355,13 +304,13 @@ func probeServiceDefinition(ctx context.Context, baseURL, token, tag string) err
 	}
 
 	// The Service now exists; clean it up whether or not the devices check passes.
-	devErr := probeServiceDevices(ctx, svcURL, token)
-	_ = deleteProbeService(ctx, svcURL, token)
+	devErr := probeServiceDevices(ctx, api, svcPath)
+	_ = deleteProbeService(ctx, api, svcPath)
 	return devErr
 }
 
-func probeServiceDevices(ctx context.Context, svcURL, token string) error {
-	status, body, err := tailscaleAPICall(ctx, http.MethodGet, svcURL+"/devices", token, nil)
+func probeServiceDevices(ctx context.Context, api tailscaleAPI, svcPath string) error {
+	status, body, err := api.Call(ctx, http.MethodGet, svcPath+"/devices", nil)
 	if err != nil {
 		return err
 	}
@@ -374,8 +323,8 @@ func probeServiceDevices(ctx context.Context, svcURL, token string) error {
 	return nil
 }
 
-func deleteProbeService(ctx context.Context, svcURL, token string) error {
-	status, body, err := tailscaleAPICall(ctx, http.MethodDelete, svcURL, token, nil)
+func deleteProbeService(ctx context.Context, api tailscaleAPI, svcPath string) error {
+	status, body, err := api.Call(ctx, http.MethodDelete, svcPath, nil)
 	if err != nil {
 		return err
 	}
@@ -388,35 +337,6 @@ func deleteProbeService(ctx context.Context, svcURL, token string) error {
 
 func servicesScopeError(status int, body []byte) error {
 	return fmt.Errorf("the OAuth client is missing the services scope (General -> Services: Write), needed to manage Tailscale Service definitions (HTTP %d): %s", status, errorMessage(body))
-}
-
-// tailscaleAPICall performs an authenticated JSON API request and returns the
-// status code and (bounded) response body.
-func tailscaleAPICall(ctx context.Context, method, endpoint, token string, payload []byte) (int, []byte, error) {
-	var reqBody io.Reader
-	if payload != nil {
-		reqBody = bytes.NewReader(payload)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, reqBody)
-	if err != nil {
-		return 0, nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("contacting the Tailscale API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if err != nil {
-		return 0, nil, fmt.Errorf("reading Tailscale API response: %w", err)
-	}
-	return resp.StatusCode, body, nil
 }
 
 func errorMessage(body []byte) string {

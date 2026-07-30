@@ -541,7 +541,7 @@ func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings)
 	if authKey != "" && controlURL != "" {
 		extraArgs = "--login-server=" + controlURL
 	} else {
-		if authKey, err = mintSidecarAuthKey(ctx, tailscaleAPIBaseURL, settings); err != nil {
+		if authKey, err = mintSidecarAuthKey(ctx, newTailscaleAPI(settings), settings); err != nil {
 			return err
 		}
 		extraArgs = "--advertise-tags=" + settings.Tag

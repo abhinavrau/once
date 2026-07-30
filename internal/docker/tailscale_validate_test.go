@@ -100,7 +100,7 @@ func newProbeServer(t *testing.T) *probeServer {
 }
 
 func validateAgainst(p *probeServer, tag string) error {
-	return validateOAuthCredentials(context.Background(), p.srv.URL,
+	return validateOAuthCredentials(context.Background(), apiAgainst(p.srv.URL),
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: tag})
 }
 
@@ -135,7 +135,7 @@ func TestValidateOAuthCredentialsUsesNormalizedTag(t *testing.T) {
 	// key and Service payloads as "tag:once", not the misleading bare name.
 	settings := TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "once,tag:admin"}
 	settings.Tag = settings.normalizeTag()
-	err := validateOAuthCredentials(context.Background(), p.srv.URL, settings)
+	err := validateOAuthCredentials(context.Background(), apiAgainst(p.srv.URL), settings)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"tag:once", "tag:admin"},
@@ -247,7 +247,7 @@ func TestValidateOAuthCredentialsReusesLeftoverProbeService(t *testing.T) {
 }
 
 func TestValidateOAuthCredentialsRequiresTag(t *testing.T) {
-	err := validateOAuthCredentials(context.Background(), "http://unused",
+	err := validateOAuthCredentials(context.Background(), apiAgainst("http://unused"),
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tag is required")
@@ -265,8 +265,8 @@ func TestValidateTailscaleCredentialsSkipsControlSeam(t *testing.T) {
 func TestMintSidecarAuthKeyMatchesProbeShape(t *testing.T) {
 	p := newProbeServer(t)
 
-	key, err := mintSidecarAuthKey(context.Background(), p.srv.URL,
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"})
+	key, err := mintSidecarAuthKey(context.Background(), apiAgainst(p.srv.URL),
+		TailscaleSettings{Tag: "tag:once"})
 	require.NoError(t, err)
 	assert.Equal(t, "tskey-auth-xyz", key)
 
