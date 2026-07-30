@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -77,14 +78,16 @@ func TestServiceStatusesMultipleServicesInOrder(t *testing.T) {
 	assert.Equal(t, "whoami", statuses[1].Name)
 	assert.Contains(t, statuses[1].State, "pending approval")
 
-	// The credential check comes first, then the per-service devices reads,
-	// which must stay byte-compatible with Docktail's listServiceHosts
-	// requests: GET /tailnet/-/services/svc:<name>/devices.
+	// The credential check proves the token alone and runs before any
+	// per-service call, then the per-service devices reads, which must stay
+	// byte-compatible with Docktail's listServiceHosts requests: GET
+	// /tailnet/-/services/svc:<name>/devices.
+	require.NotEmpty(t, api.calls)
+	assert.Equal(t, authenticateMethod, api.calls[0].method)
 	assert.Equal(t, []string{
-		tsDevicesPath,
 		"/tailnet/-/services/svc:once-admin/devices",
 		"/tailnet/-/services/svc:whoami/devices",
-	}, api.paths(http.MethodGet))
+	}, api.paths(http.MethodGet), "the credential check must not issue the devices read")
 }
 
 // TestServiceStatusesRejectedCredentialsWithNothingAdvertised covers the
@@ -106,32 +109,33 @@ func TestServiceStatusesRejectedCredentialsReportedBeforeAnyService(t *testing.T
 
 	_, err := serviceStatusesAgainst(api, daemon, "once-admin", "whoami")
 	require.ErrorIs(t, err, errRevokedCredentials)
-	assert.Equal(t, []string{tsDevicesPath}, api.paths(http.MethodGet),
+	assert.Empty(t, api.paths(http.MethodGet),
 		"the credential failure must surface before the per-service listing, not mid-list")
 }
 
-func TestServiceStatusesUnauthorizedCredentialCheck(t *testing.T) {
-	_, err := serviceStatusesAgainst(credentialCheckStatus(t, http.StatusUnauthorized),
-		&FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}, "whoami")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rejected the OAuth credentials")
-	assert.Contains(t, err.Error(), "not revoked")
-}
+// TestServiceStatusesRejectedCredentialsForwardsAuthenticateErrorVerbatim pins
+// the wording contract: the check does not construct its own message for a
+// rejection, it forwards Authenticate's error exactly as the adapter reports
+// it (ADR-0011 keeps status-to-error wording with the adapter's own token
+// exchange, since it no longer picks apart a devices-endpoint response).
+func TestServiceStatusesRejectedCredentialsForwardsAuthenticateErrorVerbatim(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	rejected := fmt.Errorf("Tailscale rejected the OAuth credentials (401 Unauthorized); check the client ID and secret are correct and not revoked: %w", ErrOAuthCredentialsRejected)
+	api.fail(authenticateMethod, "", rejected)
+	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
-func TestServiceStatusesForbiddenCredentialCheckNamesTheMissingScope(t *testing.T) {
-	_, err := serviceStatusesAgainst(credentialCheckStatus(t, http.StatusForbidden),
-		&FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}, "whoami")
+	_, err := serviceStatusesAgainst(api, daemon, "whoami")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "devices scope")
-	assert.Contains(t, err.Error(), "no access")
+	assert.Equal(t, rejected, err)
 }
 
 // TestServiceStatusesToleratesUnwellTailnetInCredentialCheck pins the boundary
-// of the check: it answers "are these credentials still good", so a tailnet
-// that is merely rate-limited or down must not turn a listing that would have
-// worked into a hard failure blamed on the operator's credentials.
+// of the check: it answers "are these credentials still good", so a token
+// endpoint that is merely rate-limited or down must not turn a listing that
+// would have worked into a hard failure blamed on the operator's credentials.
 func TestServiceStatusesToleratesUnwellTailnetInCredentialCheck(t *testing.T) {
-	api := credentialCheckStatus(t, http.StatusTooManyRequests)
+	api := newFakeTailscaleAPI(t)
+	api.fail(authenticateMethod, "", errors.New("Tailscale rate-limited the OAuth token request (429 Too Many Requests); the credentials were not rejected - wait a minute and try again"))
 	api.reply(http.MethodGet, serviceDevicesPath("whoami"),
 		http.StatusOK, `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`)
 	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
@@ -179,29 +183,22 @@ func serviceStatusesAgainst(api tailscaleAPI, daemon TailscaleDaemon, names ...s
 func statusAPI(t *testing.T, hosts map[string]string) *fakeTailscaleAPI {
 	t.Helper()
 	api := approvalAPI(t, hosts)
-	api.reply(http.MethodGet, tsDevicesPath, http.StatusOK, `{"devices":[]}`)
+	api.reply(authenticateMethod, "", 0, "")
 	return api
 }
 
 // errRevokedCredentials stands in for the rejection the adapter reports out of
-// its lazy token exchange, so these tests assert the failure reaches the caller
-// without pinning the adapter's wording.
-var errRevokedCredentials = errors.New("Tailscale rejected the OAuth credentials")
+// its lazy token exchange, wrapping ErrOAuthCredentialsRejected as the real
+// adapter's tokenExchangeError does, so the credential check's categorization
+// sees the same signal these tests assert the failure reaches the caller
+// through, without pinning the adapter's exact wording.
+var errRevokedCredentials = fmt.Errorf("stub token exchange failure: %w", ErrOAuthCredentialsRejected)
 
 // rejectingAPI is a tailnet whose OAuth credentials have been revoked: the
 // adapter fails the token exchange, so the flow's first call never lands.
 func rejectingAPI(t *testing.T) *fakeTailscaleAPI {
 	t.Helper()
 	api := newFakeTailscaleAPI(t)
-	api.fail(http.MethodGet, tsDevicesPath, errRevokedCredentials)
-	return api
-}
-
-// credentialCheckStatus answers the up-front credential check with one status
-// and a message body, as the API refuses a request it did accept a token for.
-func credentialCheckStatus(t *testing.T, status int) *fakeTailscaleAPI {
-	t.Helper()
-	api := newFakeTailscaleAPI(t)
-	api.reply(http.MethodGet, tsDevicesPath, status, `{"message":"no access"}`)
+	api.fail(authenticateMethod, "", errRevokedCredentials)
 	return api
 }

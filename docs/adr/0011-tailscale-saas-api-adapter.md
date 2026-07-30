@@ -4,9 +4,11 @@ Once talks to two Tailscale surfaces: the local daemon, behind the
 TailscaleDaemon seam, and the SaaS control-plane HTTP API, which used to be
 reached by threading a baseURL string - with exactly one production value -
 and a hand-fetched bearer token through every flow. The SaaS surface now sits
-behind a single unexported seam in the Docker module: a one-method interface
-whose authenticated Call takes method, path, and payload and returns status
-and a bounded body. Its HTTP adapter owns the production base URL, the OAuth
+behind a single unexported seam in the Docker module: an authenticated Call
+that takes method, path, and payload and returns status and a bounded body,
+plus a token-only Authenticate that proves the credentials alone, for callers
+that need only to know the credentials are good without a tailnet request of
+their own. Its HTTP adapter owns the production base URL, the OAuth
 client-credentials exchange (performed lazily on first call and cached for
 the instance, which lives one operation), the bearer header, and the bounded
 response read. Request payloads, paths, and status-to-error wording stay in

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,12 @@ const (
 	tailscaleAPIRequestTimeout = 30 * time.Second
 )
 
+// ErrOAuthCredentialsRejected marks a token exchange failure as a rejection of
+// the credentials themselves - the client ID or secret is wrong or revoked -
+// as opposed to a throttled or broken token endpoint, which never judged
+// them. Authenticate's callers use it to tell the two apart.
+var ErrOAuthCredentialsRejected = errors.New("Tailscale rejected the OAuth credentials")
+
 // tailscaleAPI is Once's seam to the Tailscale SaaS control-plane HTTP API
 // (ADR-0011): one authenticated call, whose implementation owns the base URL,
 // the OAuth exchange, the bearer header, and the bounded response read. Paths,
@@ -47,6 +54,14 @@ type tailscaleAPI interface {
 	// "/tailnet/-/keys") and returns the response status and body. A nil payload
 	// sends no request body.
 	Call(ctx context.Context, method, path string, payload []byte) (int, []byte, error)
+
+	// Authenticate proves the credentials alone, via the OAuth token exchange,
+	// without issuing any request that touches tailnet data - so a credential
+	// check has nothing tailnet-shaped to fail on. A nil result means the
+	// credentials are good; ErrOAuthCredentialsRejected marks a rejection of
+	// the credentials themselves, and any other error says nothing about
+	// whether they are good.
+	Authenticate(ctx context.Context) error
 }
 
 // httpTailscaleAPI is the production tailscaleAPI: the real Tailscale API over
@@ -115,6 +130,11 @@ func (a *httpTailscaleAPI) Call(ctx context.Context, method, path string, payloa
 	return resp.StatusCode, body, nil
 }
 
+func (a *httpTailscaleAPI) Authenticate(ctx context.Context) error {
+	_, err := a.accessToken(ctx)
+	return err
+}
+
 // Private
 
 // accessToken returns the instance's access token, exchanging the OAuth client
@@ -176,7 +196,7 @@ func tokenExchangeError(resp *http.Response) error {
 	case resp.StatusCode >= http.StatusInternalServerError:
 		return fmt.Errorf("the OAuth token request failed with a server error (%s); the credentials were not rejected - try again shortly", resp.Status)
 	case resp.StatusCode == http.StatusBadRequest, resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
-		return fmt.Errorf("Tailscale rejected the OAuth credentials (%s); check the client ID and secret are correct and not revoked", resp.Status)
+		return fmt.Errorf("%w (%s); check the client ID and secret are correct and not revoked", ErrOAuthCredentialsRejected, resp.Status)
 	default:
 		return fmt.Errorf("unexpected response from the Tailscale OAuth token endpoint (%s)", resp.Status)
 	}
