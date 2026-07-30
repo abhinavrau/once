@@ -117,7 +117,7 @@ func (a *httpTailscaleAPI) accessToken(ctx context.Context) (string, error) {
 	var body struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, tailscaleAPIMaxResponse)).Decode(&body); err != nil {
 		return "", fmt.Errorf("decoding Tailscale OAuth token response: %w", err)
 	}
 	if body.AccessToken == "" {
