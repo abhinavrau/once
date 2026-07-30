@@ -63,29 +63,6 @@ func TestWaitForAdvertisedEmptyServeConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "whoami")
 }
 
-// serviceDevicesPath is the listServiceHosts path Docktail reads a Service's
-// advertising devices from, and so must Once.
-func serviceDevicesPath(name string) string {
-	return "/tailnet/-/services/svc:" + name + "/devices"
-}
-
-// approvalAPI cans one listServiceHosts response per service name, so the
-// approval checks parse the same JSON shape the real API returns.
-func approvalAPI(t *testing.T, hosts map[string]string) *fakeTailscaleAPI {
-	t.Helper()
-	api := newFakeTailscaleAPI(t)
-	for name, body := range hosts {
-		api.reply(http.MethodGet, serviceDevicesPath(name), http.StatusOK, body)
-	}
-	return api
-}
-
-func waitForApprovedAgainst(api tailscaleAPI, announce func(string), expected ...string) error {
-	return waitForApproved(context.Background(), api,
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"},
-		expected, 50*time.Millisecond, time.Millisecond, announce)
-}
-
 func TestWaitForApprovedAnnouncesPhaseOnce(t *testing.T) {
 	api := approvalAPI(t, map[string]string{
 		"whoami": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`,
@@ -182,4 +159,29 @@ func TestVerifyServicesSkipsControlSeam(t *testing.T) {
 func TestVerifyServicesNoExpectedServices(t *testing.T) {
 	err := (&Tailscale{}).VerifyServices(context.Background(), nil, nil)
 	require.NoError(t, err)
+}
+
+// Helpers
+
+// serviceDevicesPath is the listServiceHosts path Docktail reads a Service's
+// advertising devices from, and so must Once.
+func serviceDevicesPath(name string) string {
+	return "/tailnet/-/services/svc:" + name + "/devices"
+}
+
+// approvalAPI cans one listServiceHosts response per service name, so the
+// approval checks parse the same JSON shape the real API returns.
+func approvalAPI(t *testing.T, hosts map[string]string) *fakeTailscaleAPI {
+	t.Helper()
+	api := newFakeTailscaleAPI(t)
+	for name, body := range hosts {
+		api.reply(http.MethodGet, serviceDevicesPath(name), http.StatusOK, body)
+	}
+	return api
+}
+
+func waitForApprovedAgainst(api tailscaleAPI, announce func(string), expected ...string) error {
+	return waitForApproved(context.Background(), api,
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"},
+		expected, 50*time.Millisecond, time.Millisecond, announce)
 }

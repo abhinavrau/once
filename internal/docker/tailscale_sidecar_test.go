@@ -72,24 +72,6 @@ func (f *fakeSidecarBootClient) ImagePull(ctx context.Context, ref string, optio
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
-// bootSidecarDispatch drives the dispatch against the fake with the control
-// seam configured, so no key is minted and no tailnet is contacted, and with
-// the login wait stubbed. It reports whether the login wait ran.
-func bootSidecarDispatch(t *testing.T, client *fakeSidecarBootClient) (bool, error) {
-	t.Helper()
-	t.Setenv(envControlURL, "https://headscale.test")
-	t.Setenv(envAuthKey, "key-abc")
-
-	ts := NewTailscale(&Namespace{name: "once"})
-	loginWaited := false
-	ts.awaitLogin = func(context.Context) error {
-		loginWaited = true
-		return nil
-	}
-	err := ts.bootSidecarWithClient(t.Context(), client, TailscaleSettings{Mode: TailscaleModeSidecar})
-	return loginWaited, err
-}
-
 func TestBootSidecarRebuildsCrashLoopingContainer(t *testing.T) {
 	// A wedged sidecar's baked-in auth key may be dead, so it is removed and
 	// rebuilt with a fresh one rather than started back into its loop.
@@ -198,4 +180,24 @@ func TestSidecarLoginWaitDefaultsToRealImplementation(t *testing.T) {
 	ts := NewTailscale(&Namespace{name: "once"})
 	require.Nil(t, ts.awaitLogin)
 	assert.Panics(t, func() { _ = ts.awaitSidecarLogin(t.Context()) })
+}
+
+// Helpers
+
+// bootSidecarDispatch drives the dispatch against the fake with the control
+// seam configured, so no key is minted and no tailnet is contacted, and with
+// the login wait stubbed. It reports whether the login wait ran.
+func bootSidecarDispatch(t *testing.T, client *fakeSidecarBootClient) (bool, error) {
+	t.Helper()
+	t.Setenv(envControlURL, "https://headscale.test")
+	t.Setenv(envAuthKey, "key-abc")
+
+	ts := NewTailscale(&Namespace{name: "once"})
+	loginWaited := false
+	ts.awaitLogin = func(context.Context) error {
+		loginWaited = true
+		return nil
+	}
+	err := ts.bootSidecarWithClient(t.Context(), client, TailscaleSettings{Mode: TailscaleModeSidecar})
+	return loginWaited, err
 }

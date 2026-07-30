@@ -31,25 +31,6 @@ const (
 	sidecarKeyPayload = `{"capabilities":{"devices":{"create":{"reusable":true,"ephemeral":false,"preauthorized":true,"tags":["tag:once"]}}},"description":"once-tailscale"}`
 )
 
-// probeAPI returns a seam that answers every step of the credential probe
-// with success; each test re-cans the one step it exercises.
-func probeAPI(t *testing.T) *fakeTailscaleAPI {
-	t.Helper()
-	api := newFakeTailscaleAPI(t)
-	api.reply(http.MethodPost, tsKeysPath, http.StatusOK, `{"id":"k123","key":"tskey-auth-xyz"}`)
-	api.reply(http.MethodDelete, probeKeyPath, http.StatusOK, "")
-	api.reply(http.MethodGet, probeSvcPath, http.StatusNotFound, "")
-	api.reply(http.MethodPut, probeSvcPath, http.StatusOK, `{}`)
-	api.reply(http.MethodGet, probeDevsPath, http.StatusOK, `{"hosts":[]}`)
-	api.reply(http.MethodDelete, probeSvcPath, http.StatusOK, "")
-	return api
-}
-
-func validateAgainst(api tailscaleAPI, tag string) error {
-	return validateOAuthCredentials(context.Background(), api,
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: tag})
-}
-
 func TestValidateOAuthCredentialsSuccess(t *testing.T) {
 	api := probeAPI(t)
 
@@ -210,4 +191,25 @@ func TestMintSidecarAuthKeyMatchesProbeShape(t *testing.T) {
 
 	// The sidecar registers with this key; unlike the probe's, it is not deleted.
 	assert.False(t, api.requested(http.MethodDelete, probeKeyPath))
+}
+
+// Helpers
+
+// probeAPI returns a seam that answers every step of the credential probe
+// with success; each test re-cans the one step it exercises.
+func probeAPI(t *testing.T) *fakeTailscaleAPI {
+	t.Helper()
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodPost, tsKeysPath, http.StatusOK, `{"id":"k123","key":"tskey-auth-xyz"}`)
+	api.reply(http.MethodDelete, probeKeyPath, http.StatusOK, "")
+	api.reply(http.MethodGet, probeSvcPath, http.StatusNotFound, "")
+	api.reply(http.MethodPut, probeSvcPath, http.StatusOK, `{}`)
+	api.reply(http.MethodGet, probeDevsPath, http.StatusOK, `{"hosts":[]}`)
+	api.reply(http.MethodDelete, probeSvcPath, http.StatusOK, "")
+	return api
+}
+
+func validateAgainst(api tailscaleAPI, tag string) error {
+	return validateOAuthCredentials(context.Background(), api,
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: tag})
 }
