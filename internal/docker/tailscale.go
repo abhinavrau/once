@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Images are pinned to exact versions, the same doctrine as proxyImage.
@@ -215,6 +216,11 @@ type Tailscale struct {
 	namespace    *Namespace
 	Settings     *TailscaleSettings
 	domainSuffix string // in-memory cache so a learned suffix survives a failed persist
+	// awaitLogin is a hook for the post-boot sidecar login wait, which runs the
+	// tailscale CLI over a hijacked docker exec connection and so is unfakeable
+	// at the boot dispatch's client seam (ADR-0009). Nil means the real wait;
+	// only tests override it.
+	awaitLogin func(context.Context) error
 }
 
 func NewTailscale(ns *Namespace) *Tailscale {
@@ -506,6 +512,29 @@ func (t *Tailscale) ensureRunning(ctx context.Context, info container.InspectRes
 	return nil
 }
 
+// sidecarBootClient lists the engine methods the sidecar boot dispatch calls,
+// so the dispatch is drivable by a fake without a daemon (ADR-0009). The
+// concrete *client.Client satisfies it structurally, so production passes it
+// unchanged.
+type sidecarBootClient interface {
+	containerRemover
+	imagePuller
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
+	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+}
+
+// containerRemover and imagePuller keep the shared remove and pull helpers down
+// to the one method each of them calls, so callers outside the boot dispatch
+// don't inherit the whole seam.
+type containerRemover interface {
+	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+}
+
+type imagePuller interface {
+	ImagePull(ctx context.Context, ref string, options image.PullOptions) (io.ReadCloser, error)
+}
+
 // bootSidecar idempotently boots the once-tailscale sidecar: an unprivileged
 // tailscale/tailscale container in userspace networking mode - no TUN device,
 // no NET_ADMIN, no host networking - with its node state on a volume and its
@@ -516,18 +545,25 @@ func (t *Tailscale) ensureRunning(ctx context.Context, info container.InspectRes
 // the real problem, rather than much later in the service verify. A sidecar
 // found already crash-looping is rebuilt with a freshly minted key.
 func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings) error {
-	info, err := t.namespace.client.ContainerInspect(ctx, t.sidecarName())
+	return t.bootSidecarWithClient(ctx, t.namespace.client, settings)
+}
+
+// bootSidecarWithClient is bootSidecar's dispatch, reaching the engine by
+// parameter rather than through the namespace, so tests drive every branch -
+// crash-looping, stopped, running, missing - with a fake.
+func (t *Tailscale) bootSidecarWithClient(ctx context.Context, c sidecarBootClient, settings TailscaleSettings) error {
+	info, err := c.ContainerInspect(ctx, t.sidecarName())
 	switch {
 	case err == nil && sidecarWedged(info.State):
 		// A crash-looping sidecar can't be started out of its loop: its baked-in
 		// TS_AUTHKEY may be dead (revoked, expired). Rebuild it with a freshly
 		// minted key - the state volume survives, so the node identity does too.
-		if err := t.removeContainer(ctx, t.sidecarName()); err != nil {
+		if err := forceRemoveContainer(ctx, c, t.sidecarName()); err != nil {
 			return err
 		}
 	case err == nil:
 		if !info.State.Running {
-			if err := t.namespace.client.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
+			if err := c.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
 				return fmt.Errorf("starting tailscale sidecar: %w", err)
 			}
 		}
@@ -547,11 +583,11 @@ func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings)
 		extraArgs = "--advertise-tags=" + settings.Tag
 	}
 
-	if err := t.pullImage(ctx, tailscaleSidecarImage); err != nil {
+	if err := pullImageRef(ctx, c, tailscaleSidecarImage); err != nil {
 		return err
 	}
 
-	resp, err := t.namespace.client.ContainerCreate(ctx,
+	resp, err := c.ContainerCreate(ctx,
 		&container.Config{
 			Image: tailscaleSidecarImage,
 			Env: []string{
@@ -583,14 +619,17 @@ func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings)
 		return fmt.Errorf("creating tailscale sidecar: %w", err)
 	}
 
-	if err := t.namespace.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		t.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+	if err := c.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		c.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("starting tailscale sidecar: %w", err)
 	}
 	return t.awaitSidecarLogin(ctx)
 }
 
 func (t *Tailscale) awaitSidecarLogin(ctx context.Context) error {
+	if t.awaitLogin != nil {
+		return t.awaitLogin(ctx)
+	}
 	daemon := NewSidecarTailscaleDaemon(t.namespace.client, t.sidecarName())
 	return waitForSidecarLogin(ctx, daemon, t.sidecarCrashed, sidecarLoginTimeout, sidecarLoginPoll)
 }
@@ -690,22 +729,11 @@ func (t *Tailscale) removeTopology(ctx context.Context) error {
 }
 
 func (t *Tailscale) pullImage(ctx context.Context, ref string) error {
-	reader, err := t.namespace.client.ImagePull(ctx, ref, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("pulling %s: %w", ref, err)
-	}
-	defer reader.Close()
-	_, _ = io.Copy(io.Discard, reader)
-	return nil
+	return pullImageRef(ctx, t.namespace.client, ref)
 }
 
 func (t *Tailscale) removeContainer(ctx context.Context, name string) error {
-	if err := t.namespace.client.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}); err != nil {
-		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("removing %s: %w", name, err)
-		}
-	}
-	return nil
+	return forceRemoveContainer(ctx, t.namespace.client, name)
 }
 
 func (t *Tailscale) removeVolume(ctx context.Context, name string) error {
@@ -718,6 +746,28 @@ func (t *Tailscale) removeVolume(ctx context.Context, name string) error {
 }
 
 // Helpers
+
+// pullImageRef pulls an image and drains its progress stream.
+func pullImageRef(ctx context.Context, c imagePuller, ref string) error {
+	reader, err := c.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("pulling %s: %w", ref, err)
+	}
+	defer reader.Close()
+	_, _ = io.Copy(io.Discard, reader)
+	return nil
+}
+
+// forceRemoveContainer removes a container by name, tolerating one that is
+// already gone.
+func forceRemoveContainer(ctx context.Context, c containerRemover, name string) error {
+	if err := c.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}); err != nil {
+		if !errdefs.IsNotFound(err) {
+			return fmt.Errorf("removing %s: %w", name, err)
+		}
+	}
+	return nil
+}
 
 // docktailLabels returns the labels that expose an app as a Tailscale Service
 // under its own name. Nil when Tailscale is disabled, so app containers carry
