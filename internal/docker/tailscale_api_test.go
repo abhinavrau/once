@@ -14,6 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// recordedRequest is one request the adapter sent to apiServer.
+type recordedRequest struct {
+	method      string
+	path        string
+	auth        string
+	payload     string
+	contentType string
+}
+
 // apiServer stands in for the Tailscale SaaS API in the adapter's own tests -
 // the OAuth exchange cannot run in CI, so this is where it is covered. It
 // serves the token endpoint and one echo endpoint, recording every request so
@@ -24,15 +33,12 @@ type apiServer struct {
 	tokenStatus   int
 	tokenBody     string
 	tokenRequests int
+	tokenForm     map[string]string
+	tokenType     string
 
-	callStatus   int
-	callBody     string
-	callAuth     []string
-	callPaths    []string
-	callPayloads []string
-	callTypes    []string
-	tokenForm    map[string]string
-	tokenType    string
+	callStatus int
+	callBody   string
+	calls      []recordedRequest
 }
 
 func newAPIServer(t *testing.T) *apiServer {
@@ -57,12 +63,15 @@ func newAPIServer(t *testing.T) *apiServer {
 			return
 		}
 
-		body, err := io.ReadAll(r.Body)
+		payload, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
-		s.callAuth = append(s.callAuth, r.Header.Get("Authorization"))
-		s.callPaths = append(s.callPaths, r.URL.Path)
-		s.callPayloads = append(s.callPayloads, string(body))
-		s.callTypes = append(s.callTypes, r.Header.Get("Content-Type"))
+		s.calls = append(s.calls, recordedRequest{
+			method:      r.Method,
+			path:        r.URL.Path,
+			auth:        r.Header.Get("Authorization"),
+			payload:     string(payload),
+			contentType: r.Header.Get("Content-Type"),
+		})
 		w.WriteHeader(s.callStatus)
 		_, _ = w.Write([]byte(s.callBody))
 	}))
@@ -74,6 +83,99 @@ func (s *apiServer) api() *httpTailscaleAPI {
 	return apiAgainst(s.srv.URL)
 }
 
+func TestTailscaleAPIExchangesTokenAndSendsBearer(t *testing.T) {
+	s := newAPIServer(t)
+
+	status, body, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, `{"devices":[]}`, string(body))
+
+	assert.Equal(t, 1, s.tokenRequests)
+	assert.Equal(t, map[string]string{
+		"grant_type":    "client_credentials",
+		"client_id":     "id",
+		"client_secret": "secret",
+	}, s.tokenForm)
+	assert.Equal(t, "application/x-www-form-urlencoded", s.tokenType)
+
+	require.Len(t, s.calls, 1)
+	assert.Equal(t, recordedRequest{
+		method: http.MethodGet,
+		path:   "/tailnet/-/devices",
+		auth:   "Bearer tskey-api-test",
+	}, s.calls[0])
+}
+
+func TestTailscaleAPISendsJSONPayload(t *testing.T) {
+	s := newAPIServer(t)
+
+	_, _, err := s.api().Call(context.Background(), http.MethodPut, "/tailnet/-/services/svc:x", []byte(`{"name":"svc:x"}`))
+	require.NoError(t, err)
+
+	require.Len(t, s.calls, 1)
+	assert.Equal(t, `{"name":"svc:x"}`, s.calls[0].payload)
+	assert.Equal(t, "application/json", s.calls[0].contentType)
+}
+
+func TestTailscaleAPIBodylessCallSendsNoContentType(t *testing.T) {
+	s := newAPIServer(t)
+
+	_, _, err := s.api().Call(context.Background(), http.MethodDelete, "/tailnet/-/keys/k123", nil)
+	require.NoError(t, err)
+
+	require.Len(t, s.calls, 1)
+	assert.Empty(t, s.calls[0].payload)
+	assert.Empty(t, s.calls[0].contentType)
+}
+
+func TestTailscaleAPIRejectedCredentials(t *testing.T) {
+	s := newAPIServer(t)
+	s.tokenStatus = http.StatusUnauthorized
+	s.tokenBody = ""
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Tailscale rejected the OAuth credentials (401 Unauthorized)")
+	assert.Contains(t, err.Error(), "check the client ID and secret are correct and not revoked")
+	assert.Empty(t, s.calls, "a rejected exchange must not send the request")
+}
+
+func TestTailscaleAPITokenResponseWithoutAccessToken(t *testing.T) {
+	s := newAPIServer(t)
+	s.tokenBody = `{"token_type":"bearer"}`
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no access token")
+	assert.Empty(t, s.calls)
+}
+
+func TestTailscaleAPIUndecodableTokenResponse(t *testing.T) {
+	s := newAPIServer(t)
+	s.tokenBody = "not json"
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decoding Tailscale OAuth token response")
+}
+
+func TestTailscaleAPIReusesTokenAcrossCalls(t *testing.T) {
+	s := newAPIServer(t)
+	api := s.api()
+
+	for range 3 {
+		_, _, err := api.Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, 1, s.tokenRequests, "the exchange happens at most once per adapter instance")
+	require.Len(t, s.calls, 3)
+	for _, call := range s.calls {
+		assert.Equal(t, "Bearer tskey-api-test", call.auth)
+	}
+}
+
 func TestTailscaleAPIBoundsResponseBody(t *testing.T) {
 	s := newAPIServer(t)
 	s.callBody = strings.Repeat("x", tailscaleAPIMaxResponse+4096)
@@ -81,6 +183,17 @@ func TestTailscaleAPIBoundsResponseBody(t *testing.T) {
 	_, body, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
 	require.NoError(t, err)
 	assert.Len(t, body, tailscaleAPIMaxResponse)
+}
+
+func TestTailscaleAPIBoundsTokenResponse(t *testing.T) {
+	s := newAPIServer(t)
+	// The access token sits past the bound, so only an unbounded read reaches it.
+	s.tokenBody = `{"padding":"` + strings.Repeat("x", tailscaleAPIMaxResponse) + `","access_token":"tskey-api-test"}`
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decoding Tailscale OAuth token response")
+	assert.Empty(t, s.calls)
 }
 
 func TestTailscaleAPIWrapsExchangeNetworkError(t *testing.T) {
@@ -118,91 +231,6 @@ func TestTailscaleAPILogsNothing(t *testing.T) {
 	_, _, err := s.api().Call(context.Background(), http.MethodPut, "/tailnet/-/services/svc:x", []byte(`{"secret":"payload"}`))
 	require.NoError(t, err)
 	assert.Empty(t, logged.String())
-}
-
-func TestTailscaleAPIExchangesTokenAndSendsBearer(t *testing.T) {
-	s := newAPIServer(t)
-
-	status, body, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, status)
-	assert.Equal(t, `{"devices":[]}`, string(body))
-
-	assert.Equal(t, 1, s.tokenRequests)
-	assert.Equal(t, map[string]string{
-		"grant_type":    "client_credentials",
-		"client_id":     "id",
-		"client_secret": "secret",
-	}, s.tokenForm)
-	assert.Equal(t, "application/x-www-form-urlencoded", s.tokenType)
-
-	assert.Equal(t, []string{"Bearer tskey-api-test"}, s.callAuth)
-	assert.Equal(t, []string{"/tailnet/-/devices"}, s.callPaths)
-}
-
-func TestTailscaleAPISendsJSONPayload(t *testing.T) {
-	s := newAPIServer(t)
-
-	_, _, err := s.api().Call(context.Background(), http.MethodPut, "/tailnet/-/services/svc:x", []byte(`{"name":"svc:x"}`))
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{`{"name":"svc:x"}`}, s.callPayloads)
-	assert.Equal(t, []string{"application/json"}, s.callTypes)
-}
-
-func TestTailscaleAPIRejectedCredentials(t *testing.T) {
-	s := newAPIServer(t)
-	s.tokenStatus = http.StatusUnauthorized
-	s.tokenBody = ""
-
-	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Tailscale rejected the OAuth credentials (401 Unauthorized)")
-	assert.Contains(t, err.Error(), "check the client ID and secret are correct and not revoked")
-	assert.Empty(t, s.callPaths, "a rejected exchange must not send the request")
-}
-
-func TestTailscaleAPITokenResponseWithoutAccessToken(t *testing.T) {
-	s := newAPIServer(t)
-	s.tokenBody = `{"token_type":"bearer"}`
-
-	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no access token")
-	assert.Empty(t, s.callPaths)
-}
-
-func TestTailscaleAPIUndecodableTokenResponse(t *testing.T) {
-	s := newAPIServer(t)
-	s.tokenBody = "not json"
-
-	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decoding Tailscale OAuth token response")
-}
-
-func TestTailscaleAPIReusesTokenAcrossCalls(t *testing.T) {
-	s := newAPIServer(t)
-	api := s.api()
-
-	for range 3 {
-		_, _, err := api.Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-		require.NoError(t, err)
-	}
-
-	assert.Equal(t, 1, s.tokenRequests, "the exchange happens at most once per adapter instance")
-	assert.Len(t, s.callPaths, 3)
-	assert.Equal(t, []string{"Bearer tskey-api-test", "Bearer tskey-api-test", "Bearer tskey-api-test"}, s.callAuth)
-}
-
-func TestTailscaleAPIBodylessCallSendsNoContentType(t *testing.T) {
-	s := newAPIServer(t)
-
-	_, _, err := s.api().Call(context.Background(), http.MethodDelete, "/tailnet/-/keys/k123", nil)
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{""}, s.callPayloads)
-	assert.Equal(t, []string{""}, s.callTypes)
 }
 
 // Helpers

@@ -37,7 +37,8 @@ type tailscaleAPI interface {
 // httpTailscaleAPI is the production tailscaleAPI: the real Tailscale API over
 // HTTP. One instance serves one operation - it exchanges the OAuth client
 // credentials for an access token on its first call and reuses that token for
-// the rest of its life, so no expiry handling is needed.
+// the rest of its life, so no expiry handling is needed. An operation's calls
+// are sequential, so the cached token needs no locking.
 type httpTailscaleAPI struct {
 	baseURL      string
 	clientID     string
@@ -50,6 +51,16 @@ type httpTailscaleAPI struct {
 // at the real API.
 func newTailscaleAPI(settings TailscaleSettings) *httpTailscaleAPI {
 	return newTailscaleAPIAt(tailscaleAPIBaseURL, settings)
+}
+
+// newTailscaleAPIAt builds the adapter against an explicit base URL; only the
+// production constructor and the adapter's own tests call it.
+func newTailscaleAPIAt(baseURL string, settings TailscaleSettings) *httpTailscaleAPI {
+	return &httpTailscaleAPI{
+		baseURL:      baseURL,
+		clientID:     settings.ClientID,
+		clientSecret: settings.ClientSecret,
+	}
 }
 
 func (a *httpTailscaleAPI) Call(ctx context.Context, method, path string, payload []byte) (int, []byte, error) {
@@ -77,9 +88,9 @@ func (a *httpTailscaleAPI) Call(ctx context.Context, method, path string, payloa
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, tailscaleAPIMaxResponse))
+	body, err := readBoundedBody(resp)
 	if err != nil {
-		return 0, nil, fmt.Errorf("reading Tailscale API response: %w", err)
+		return 0, nil, err
 	}
 	return resp.StatusCode, body, nil
 }
@@ -114,27 +125,32 @@ func (a *httpTailscaleAPI) accessToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("Tailscale rejected the OAuth credentials (%s); check the client ID and secret are correct and not revoked", resp.Status)
 	}
 
-	var body struct {
+	body, err := readBoundedBody(resp)
+	if err != nil {
+		return "", err
+	}
+
+	var token struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, tailscaleAPIMaxResponse)).Decode(&body); err != nil {
+	if err := json.Unmarshal(body, &token); err != nil {
 		return "", fmt.Errorf("decoding Tailscale OAuth token response: %w", err)
 	}
-	if body.AccessToken == "" {
+	if token.AccessToken == "" {
 		return "", fmt.Errorf("Tailscale OAuth token response contained no access token")
 	}
-	a.token = body.AccessToken
+	a.token = token.AccessToken
 	return a.token, nil
 }
 
 // Helpers
 
-// newTailscaleAPIAt builds the adapter against an explicit base URL; only the
-// production constructor and the adapter's own tests call it.
-func newTailscaleAPIAt(baseURL string, settings TailscaleSettings) *httpTailscaleAPI {
-	return &httpTailscaleAPI{
-		baseURL:      baseURL,
-		clientID:     settings.ClientID,
-		clientSecret: settings.ClientSecret,
+// readBoundedBody reads a response body up to the adapter's bound, so no
+// Tailscale API response - token exchange included - can exhaust memory.
+func readBoundedBody(resp *http.Response) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, tailscaleAPIMaxResponse))
+	if err != nil {
+		return nil, fmt.Errorf("reading Tailscale API response: %w", err)
 	}
+	return body, nil
 }
