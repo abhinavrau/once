@@ -91,6 +91,13 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 	return m
 }
 
+// Busy reports whether the install activity screen owns an in-flight deploy.
+// App reuses this to guard its quit key, the same protection a running
+// Settings action gets.
+func (m Install) Busy() bool {
+	return m.state == installStateActivity
+}
+
 func (m Install) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.initCurrentScreen()}
 	if m.showLogo() {

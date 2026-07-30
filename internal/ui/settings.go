@@ -120,6 +120,14 @@ func NewSettings(ns *docker.Namespace, app *docker.Application, sectionType Sett
 	}
 }
 
+// Busy reports whether a task owns the model's progress stream: a deploy or a
+// settings action. App reuses this to guard its quit key, so the same notion
+// of "an action is running" that guards the section's cancel message also
+// guards the app-level quit key.
+func (m Settings) Busy() bool {
+	return m.state == settingsStateDeploying || m.state == settingsStateRunningAction
+}
+
 func (m Settings) Init() tea.Cmd {
 	return m.section.Init()
 }
@@ -135,7 +143,7 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if m.state == settingsStateForm {
 			m.section, _ = m.section.Update(msg)
 		}
-		if m.running() {
+		if m.Busy() {
 			cmds = append(cmds, m.progress.Init())
 		}
 
@@ -211,13 +219,13 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m.handleActionResult(msg)
 
 	case progressUpdateMsg:
-		if m.running() {
+		if m.Busy() {
 			m.progress = m.progress.SetPercent(progressBarPercent(msg.progress))
 			cmds = append(cmds, m.stream.Wait())
 		}
 
 	case ProgressTickMsg:
-		if m.running() {
+		if m.Busy() {
 			var cmd tea.Cmd
 			m.progress, cmd = m.progress.Update(msg)
 			cmds = append(cmds, cmd)
@@ -275,11 +283,6 @@ func (m Settings) View() string {
 }
 
 // Private
-
-// running reports whether a task owns the model's progress stream.
-func (m Settings) running() bool {
-	return m.state == settingsStateDeploying || m.state == settingsStateRunningAction
-}
 
 func (m Settings) navigateToDashboard() tea.Cmd {
 	return func() tea.Msg { return NavigateToDashboardMsg{AppName: m.app.Settings.Name} }
