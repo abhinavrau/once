@@ -54,6 +54,7 @@ type Settings struct {
 	section              SettingsSection
 	sectionType          SettingsSectionType
 	progress             Progress
+	stream               *progressStream
 	err                  error
 	warnings             []string
 	actionSuccessMessage string
@@ -69,8 +70,12 @@ type settingsActionFinishedMsg struct {
 	message string
 }
 
+// settingsAction is a long-running settings operation. Actions that report no
+// progress ignore the callback.
+type settingsAction func(docker.DeployProgressCallback) (string, error)
+
 type settingsRunActionMsg struct {
-	action func() (string, error)
+	action settingsAction
 }
 
 func NewSettings(ns *docker.Namespace, app *docker.Application, sectionType SettingsSectionType) Settings {
@@ -115,6 +120,14 @@ func NewSettings(ns *docker.Namespace, app *docker.Application, sectionType Sett
 	}
 }
 
+// Busy reports whether a task owns the model's progress stream: a deploy or a
+// settings action. App reuses this to guard its quit key, so the same notion
+// of "an action is running" that guards the section's cancel message also
+// guards the app-level quit key.
+func (m Settings) Busy() bool {
+	return m.state == settingsStateDeploying || m.state == settingsStateRunningAction
+}
+
 func (m Settings) Init() tea.Cmd {
 	return m.section.Init()
 }
@@ -130,7 +143,7 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if m.state == settingsStateForm {
 			m.section, _ = m.section.Update(msg)
 		}
-		if m.state == settingsStateDeploying || m.state == settingsStateRunningAction {
+		if m.Busy() {
 			cmds = append(cmds, m.progress.Init())
 		}
 
@@ -164,19 +177,29 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 			}
 		}
 
+	// A run owns this model until it ends, so only an idle form may start one
+	// or be left: a second run would orphan the first one's stream, and
+	// navigating away mid-run would discard the drain loop and the handler for
+	// the run's result.
 	case SettingsSectionCancelMsg:
+		if m.state != settingsStateForm {
+			return m, nil
+		}
 		return m, m.navigateToDashboard()
 
 	case SettingsSectionSubmitMsg:
+		if m.state != settingsStateForm {
+			return m, nil
+		}
 		return m.handleFormSubmit(msg)
 
 	case settingsRunActionMsg:
+		if m.state != settingsStateForm {
+			return m, nil
+		}
 		m.state = settingsStateRunningAction
-		m.progress = NewProgress(m.width, Colors.Border)
-		return m, tea.Batch(m.progress.Init(), func() tea.Msg {
-			message, err := msg.action()
-			return settingsActionFinishedMsg{err: err, message: message}
-		})
+		m = m.startProgress()
+		return m, tea.Batch(m.progress.Init(), m.runAction(msg.action), m.stream.Wait())
 
 	case settingsDeployFinishedMsg:
 		if msg.err != nil {
@@ -195,8 +218,14 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case settingsActionFinishedMsg:
 		return m.handleActionResult(msg)
 
+	case progressUpdateMsg:
+		if m.Busy() {
+			m.progress = m.progress.SetPercent(progressBarPercent(msg.progress))
+			cmds = append(cmds, m.stream.Wait())
+		}
+
 	case ProgressTickMsg:
-		if m.state == settingsStateDeploying || m.state == settingsStateRunningAction {
+		if m.Busy() {
 			var cmd tea.Cmd
 			m.progress, cmd = m.progress.Update(msg)
 			cmds = append(cmds, cmd)
@@ -261,8 +290,8 @@ func (m Settings) navigateToDashboard() tea.Cmd {
 
 func (m Settings) handleFormSubmit(msg SettingsSectionSubmitMsg) (Component, tea.Cmd) {
 	m.state = settingsStateDeploying
-	m.progress = NewProgress(m.width, Colors.Border)
-	return m, tea.Batch(m.progress.Init(), m.runApplySettings(msg.Settings))
+	m = m.startProgress()
+	return m, tea.Batch(m.progress.Init(), m.runApplySettings(msg.Settings), m.stream.Wait())
 }
 
 func (m Settings) handleActionResult(msg settingsActionFinishedMsg) (Component, tea.Cmd) {
@@ -293,12 +322,27 @@ func (m Settings) renderActionComplete() string {
 	return lipgloss.JoinVertical(lipgloss.Left, statusLine, buttonView)
 }
 
+// startProgress resets the bar and opens a fresh stream for the run that is
+// about to start, so a previous run's finished stream is never reused.
+func (m Settings) startProgress() Settings {
+	m.progress = NewProgress(m.width, Colors.Border)
+	m.stream = newProgressStream()
+	return m
+}
+
 func (m Settings) runApplySettings(settings docker.ApplicationSettings) tea.Cmd {
 	ns, app := m.namespace, m.app
-	return func() tea.Msg {
-		warnings, err := ns.ApplySettings(context.Background(), app, settings, nil)
+	return m.stream.Run(func(ctx context.Context, progress docker.DeployProgressCallback) tea.Msg {
+		warnings, err := ns.ApplySettings(ctx, app, settings, progress)
 		return settingsDeployFinishedMsg{warnings: warnings, err: err}
-	}
+	})
+}
+
+func (m Settings) runAction(action settingsAction) tea.Cmd {
+	return m.stream.Run(func(_ context.Context, progress docker.DeployProgressCallback) tea.Msg {
+		message, err := action(progress)
+		return settingsActionFinishedMsg{err: err, message: message}
+	})
 }
 
 // Helpers

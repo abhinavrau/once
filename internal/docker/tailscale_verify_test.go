@@ -2,10 +2,8 @@ package docker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -65,63 +63,13 @@ func TestWaitForAdvertisedEmptyServeConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "whoami")
 }
 
-// approvalServer stands in for the Tailscale API's OAuth token and
-// service-devices endpoints. Hosts are configurable per service name;
-// requests are recorded so tests can assert byte-compatibility with the
-// requests Docktail sends.
-type approvalServer struct {
-	srv *httptest.Server
-
-	hosts    map[string]string // service name -> hosts JSON response
-	statuses map[string]int    // service name -> devices endpoint status
-
-	devicePaths []string
-}
-
-func newApprovalServer(t *testing.T) *approvalServer {
-	t.Helper()
-	a := &approvalServer{hosts: map[string]string{}, statuses: map[string]int{}}
-	a.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/oauth/token" {
-			require.NoError(t, r.ParseForm())
-			assert.Equal(t, "client_credentials", r.Form.Get("grant_type"))
-			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "tskey-api-verify"})
-			return
-		}
-
-		assert.Equal(t, http.MethodGet, r.Method)
-		assert.Equal(t, "Bearer tskey-api-verify", r.Header.Get("Authorization"))
-		a.devicePaths = append(a.devicePaths, r.URL.Path)
-
-		for name, hosts := range a.hosts {
-			if r.URL.Path == "/tailnet/-/services/svc:"+name+"/devices" {
-				if status := a.statuses[name]; status != 0 {
-					w.WriteHeader(status)
-					_, _ = w.Write([]byte(`{"message":"boom"}`))
-					return
-				}
-				_, _ = w.Write([]byte(hosts))
-				return
-			}
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(a.srv.Close)
-	return a
-}
-
-func waitForApprovedAgainst(a *approvalServer, announce func(string), expected ...string) error {
-	return waitForApproved(context.Background(), a.srv.URL,
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"},
-		expected, 50*time.Millisecond, time.Millisecond, announce)
-}
-
 func TestWaitForApprovedAnnouncesPhaseOnce(t *testing.T) {
-	a := newApprovalServer(t)
-	a.hosts["whoami"] = `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`
+	api := approvalAPI(t, map[string]string{
+		"whoami": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`,
+	})
 
 	var lines []string
-	err := waitForApprovedAgainst(a, func(line string) { lines = append(lines, line) }, "whoami")
+	err := waitForApprovedAgainst(api, func(line string) { lines = append(lines, line) }, "whoami")
 	require.NoError(t, err)
 	require.Len(t, lines, 1, "an immediately-resolved wait must announce exactly once")
 	assert.Contains(t, lines[0], "whoami")
@@ -129,60 +77,73 @@ func TestWaitForApprovedAnnouncesPhaseOnce(t *testing.T) {
 }
 
 func TestWaitForApprovedSuccess(t *testing.T) {
-	a := newApprovalServer(t)
-	a.hosts["whoami"] = `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`
-	a.hosts["once-admin"] = `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:manual","configured":"ready"}]}`
+	api := approvalAPI(t, map[string]string{
+		"whoami":     `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`,
+		"once-admin": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:manual","configured":"ready"}]}`,
+	})
 
-	require.NoError(t, waitForApprovedAgainst(a, nil, "whoami", "once-admin"))
+	require.NoError(t, waitForApprovedAgainst(api, nil, "whoami", "once-admin"))
 
 	// The devices reads must be byte-compatible with Docktail's listServiceHosts
 	// requests: GET /tailnet/-/services/svc:<name>/devices.
 	assert.Equal(t, []string{
 		"/tailnet/-/services/svc:whoami/devices",
 		"/tailnet/-/services/svc:once-admin/devices",
-	}, a.devicePaths)
+	}, api.paths(http.MethodGet))
 }
 
 func TestWaitForApprovedPendingApprovalFailsFast(t *testing.T) {
-	a := newApprovalServer(t)
-	a.hosts["whoami"] = `{"hosts":[{"stableNodeID":"n1","approvalLevel":"not-approved","configured":"ready"}]}`
+	api := approvalAPI(t, map[string]string{
+		"whoami": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"not-approved","configured":"ready"}]}`,
+	})
 
-	err := waitForApprovedAgainst(a, nil, "whoami")
+	err := waitForApprovedAgainst(api, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"whoami"`)
 	assert.Contains(t, err.Error(), "pending approval")
 	assert.Contains(t, err.Error(), "autoApprovers.services")
 	assert.Contains(t, err.Error(), "tag:once")
-	assert.Len(t, a.devicePaths, 1, "pending approval must fail immediately, not poll until timeout")
+	assert.Equal(t, 1, api.callCount(), "pending approval must fail immediately, not poll until timeout")
 }
 
 func TestWaitForApprovedServiceNeverAppears(t *testing.T) {
-	a := newApprovalServer(t)
-	a.hosts["whoami"] = `{"hosts":[]}`
+	api := approvalAPI(t, map[string]string{"whoami": `{"hosts":[]}`})
 
-	err := waitForApprovedAgainst(a, nil, "whoami")
+	err := waitForApprovedAgainst(api, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "never appeared in the tailnet: whoami")
-	assert.Greater(t, len(a.devicePaths), 1, "an unknown service is polled until the deadline")
+	assert.Greater(t, api.callCount(), 1, "an unknown service is polled until the deadline")
 }
 
 func TestWaitForApprovedMissingServiceDefinitionPollsThenFails(t *testing.T) {
-	a := newApprovalServer(t) // no hosts configured: every devices read is a 404
+	// Docktail has not defined the Service yet: every devices read is a 404.
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, serviceDevicesPath("whoami"), http.StatusNotFound, "")
 
-	err := waitForApprovedAgainst(a, nil, "whoami")
+	err := waitForApprovedAgainst(api, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "never appeared in the tailnet: whoami")
+	assert.Greater(t, api.callCount(), 1, "a missing definition is polled until the deadline")
 }
 
 func TestWaitForApprovedSurfacesAPIErrors(t *testing.T) {
-	a := newApprovalServer(t)
-	a.hosts["whoami"] = `{"hosts":[]}`
-	a.statuses["whoami"] = http.StatusForbidden
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, serviceDevicesPath("whoami"), http.StatusForbidden, `{"message":"boom"}`)
 
-	err := waitForApprovedAgainst(a, nil, "whoami")
+	err := waitForApprovedAgainst(api, nil, "whoami")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `service "whoami"`)
 	assert.Contains(t, err.Error(), "boom")
+}
+
+func TestWaitForApprovedSurfacesTransportErrors(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	unreachable := errors.New("contacting the Tailscale API: connection refused")
+	api.fail(http.MethodGet, serviceDevicesPath("whoami"), unreachable)
+
+	err := waitForApprovedAgainst(api, nil, "whoami")
+	require.ErrorIs(t, err, unreachable)
+	assert.Equal(t, 1, api.callCount(), "a transport failure must abort the wait, not poll until the deadline")
 }
 
 func TestVerifyServicesSkipsControlSeam(t *testing.T) {
@@ -198,4 +159,29 @@ func TestVerifyServicesSkipsControlSeam(t *testing.T) {
 func TestVerifyServicesNoExpectedServices(t *testing.T) {
 	err := (&Tailscale{}).VerifyServices(context.Background(), nil, nil)
 	require.NoError(t, err)
+}
+
+// Helpers
+
+// serviceDevicesPath is the listServiceHosts path Docktail reads a Service's
+// advertising devices from, and so must Once.
+func serviceDevicesPath(name string) string {
+	return "/tailnet/-/services/svc:" + name + "/devices"
+}
+
+// approvalAPI cans one listServiceHosts response per service name, so the
+// approval checks parse the same JSON shape the real API returns.
+func approvalAPI(t *testing.T, hosts map[string]string) *fakeTailscaleAPI {
+	t.Helper()
+	api := newFakeTailscaleAPI(t)
+	for name, body := range hosts {
+		api.reply(http.MethodGet, serviceDevicesPath(name), http.StatusOK, body)
+	}
+	return api
+}
+
+func waitForApprovedAgainst(api tailscaleAPI, announce func(string), expected ...string) error {
+	return waitForApproved(context.Background(), api,
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"},
+		expected, 50*time.Millisecond, time.Millisecond, announce)
 }

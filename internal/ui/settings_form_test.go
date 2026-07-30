@@ -20,8 +20,8 @@ func TestSettingsFormApplication_InitialState(t *testing.T) {
 	form := NewSettingsFormApplication(settings)
 
 	assert.Equal(t, 0, form.form.Focused())
-	assert.Equal(t, "ghcr.io/basecamp/once-campfire:latest", form.form.TextField(appImageField).Value())
-	assert.True(t, form.form.CheckboxField(appTLSField).Checked())
+	assert.Equal(t, "ghcr.io/basecamp/once-campfire:latest", form.form.TextField("image").Value())
+	assert.True(t, form.form.CheckboxField("tls").Checked())
 }
 
 func TestSettingsFormApplication_TabNavigation(t *testing.T) {
@@ -53,16 +53,16 @@ func TestSettingsFormApplication_ShiftTabNavigation(t *testing.T) {
 
 func TestSettingsFormApplication_SpaceTogglesTLS(t *testing.T) {
 	form := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com", Exposure: docker.ExposurePublic})
-	assert.True(t, form.form.CheckboxField(appTLSField).Checked())
+	assert.True(t, form.form.CheckboxField("tls").Checked())
 
 	applicationPressTab(&form)
 	assert.Equal(t, 1, form.form.Focused())
 
 	applicationPressSpace(&form)
-	assert.False(t, form.form.CheckboxField(appTLSField).Checked())
+	assert.False(t, form.form.CheckboxField("tls").Checked())
 
 	applicationPressSpace(&form)
-	assert.True(t, form.form.CheckboxField(appTLSField).Checked())
+	assert.True(t, form.form.CheckboxField("tls").Checked())
 }
 
 func TestSettingsFormApplication_SpaceDoesNotToggleTLSForNonPublic(t *testing.T) {
@@ -72,18 +72,18 @@ func TestSettingsFormApplication_SpaceDoesNotToggleTLSForNonPublic(t *testing.T)
 	assert.Equal(t, 1, form.form.Focused())
 
 	applicationPressSpace(&form)
-	assert.True(t, form.form.CheckboxField(appTLSField).Checked(), "toggle ignored outside public exposure")
+	assert.True(t, form.form.CheckboxField("tls").Checked(), "toggle ignored outside public exposure")
 }
 
 func TestSettingsFormApplication_TLSShowsDisabledForNonPublic(t *testing.T) {
 	public := NewSettingsFormApplication(docker.ApplicationSettings{Host: "app.example.com", Exposure: docker.ExposurePublic})
-	assert.Equal(t, "[✓] Enabled", public.form.CheckboxField(appTLSField).View())
+	assert.Equal(t, "[✓] Enabled", public.form.CheckboxField("tls").View())
 
 	local := NewSettingsFormApplication(docker.ApplicationSettings{Host: "chat.localhost", Exposure: docker.ExposureLocal})
-	assert.Equal(t, "Only available for public exposure", local.form.CheckboxField(appTLSField).View())
+	assert.Equal(t, "Only available for public exposure", local.form.CheckboxField("tls").View())
 
 	tailnet := NewSettingsFormApplication(docker.ApplicationSettings{Host: "chat", Exposure: docker.ExposureTailnet})
-	assert.Equal(t, "Only available for public exposure", tailnet.form.CheckboxField(appTLSField).View())
+	assert.Equal(t, "Only available for public exposure", tailnet.form.CheckboxField("tls").View())
 }
 
 func TestSettingsFormApplication_Submit(t *testing.T) {
@@ -140,11 +140,11 @@ func TestSettingsFormEmail_InitialState(t *testing.T) {
 	form := NewSettingsFormEmail(settings)
 
 	assert.Equal(t, 0, form.form.Focused())
-	assert.Equal(t, "smtp.example.com", form.form.TextField(emailServerField).Value())
-	assert.Equal(t, "587", form.form.TextField(emailPortField).Value())
-	assert.Equal(t, "user@example.com", form.form.TextField(emailUsernameField).Value())
-	assert.Equal(t, "secret", form.form.TextField(emailPasswordField).Value())
-	assert.Equal(t, "noreply@example.com", form.form.TextField(emailFromField).Value())
+	assert.Equal(t, "smtp.example.com", form.form.TextField("server").Value())
+	assert.Equal(t, "587", form.form.TextField("port").Value())
+	assert.Equal(t, "user@example.com", form.form.TextField("username").Value())
+	assert.Equal(t, "secret", form.form.TextField("password").Value())
+	assert.Equal(t, "noreply@example.com", form.form.TextField("from").Value())
 }
 
 func TestSettingsFormEmail_TabNavigation(t *testing.T) {
@@ -223,16 +223,16 @@ func TestSettingsFormResources_InitialState(t *testing.T) {
 	form := NewSettingsFormResources(settings)
 
 	assert.Equal(t, 0, form.form.Focused())
-	assert.Equal(t, "2", form.form.TextField(resourcesCPUField).Value())
-	assert.Equal(t, "512", form.form.TextField(resourcesMemoryField).Value())
+	assert.Equal(t, "2", form.form.TextField("cpu").Value())
+	assert.Equal(t, "512", form.form.TextField("memory").Value())
 }
 
 func TestSettingsFormResources_InitialState_ZeroValues(t *testing.T) {
 	form := NewSettingsFormResources(docker.ApplicationSettings{})
 
 	assert.Equal(t, 0, form.form.Focused())
-	assert.Equal(t, "", form.form.TextField(resourcesCPUField).Value())
-	assert.Equal(t, "", form.form.TextField(resourcesMemoryField).Value())
+	assert.Equal(t, "", form.form.TextField("cpu").Value())
+	assert.Equal(t, "", form.form.TextField("memory").Value())
 }
 
 func TestSettingsFormResources_TabNavigation(t *testing.T) {
@@ -311,10 +311,10 @@ func TestSettingsFormBackups_ActionReadsCurrentFieldValue(t *testing.T) {
 	}
 	form := NewSettingsFormBackups(app, nil)
 
-	assert.Equal(t, "/old/path", form.form.TextField(backupsPathField).Value())
+	assert.Equal(t, "/old/path", form.form.TextField("path").Value())
 
 	// Type a new path into the field
-	form.form.TextField(backupsPathField).SetValue("/new/path")
+	form.form.TextField("path").SetValue("/new/path")
 
 	// Tab to Done, then to the action button, then press enter
 	backupsPressTab(&form)
@@ -330,7 +330,7 @@ func TestSettingsFormBackups_ActionReadsCurrentFieldValue(t *testing.T) {
 	require.True(t, ok, "expected settingsRunActionMsg, got %T", msg)
 
 	// Run the action — it will fail (no Docker) but should use the new path
-	_, err := actionMsg.action()
+	_, err := actionMsg.action(nil)
 	require.Error(t, err)
 	// The error should NOT be "backup location is required", proving it read "/new/path"
 	assert.NotContains(t, err.Error(), "backup location is required")
@@ -417,8 +417,8 @@ func TestSettingsFormEnvironment_InitialState_Empty(t *testing.T) {
 	form := NewSettingsFormEnvironment(docker.ApplicationSettings{})
 
 	assert.Equal(t, 2, form.form.ItemCount(), "one empty row = 2 items")
-	assert.Equal(t, "", form.form.TextField(0).Value())
-	assert.Equal(t, "", form.form.TextField(1).Value())
+	assert.Equal(t, "", form.form.TextField(envKeyFieldKey(0)).Value())
+	assert.Equal(t, "", form.form.TextField(envValueFieldKey(0)).Value())
 	assert.Equal(t, 0, form.form.Focused())
 }
 
@@ -431,11 +431,11 @@ func TestSettingsFormEnvironment_InitialState_WithVars(t *testing.T) {
 	})
 
 	assert.Equal(t, 6, form.form.ItemCount(), "2 populated rows + 1 empty = 6 items")
-	assert.Equal(t, "APP_ENV", form.form.TextField(0).Value(), "sorted alphabetically")
-	assert.Equal(t, "production", form.form.TextField(1).Value())
-	assert.Equal(t, "DB_HOST", form.form.TextField(2).Value())
-	assert.Equal(t, "postgres.local", form.form.TextField(3).Value())
-	assert.Equal(t, "", form.form.TextField(4).Value(), "trailing empty key")
+	assert.Equal(t, "APP_ENV", form.form.TextField(envKeyFieldKey(0)).Value(), "sorted alphabetically")
+	assert.Equal(t, "production", form.form.TextField(envValueFieldKey(0)).Value())
+	assert.Equal(t, "DB_HOST", form.form.TextField(envKeyFieldKey(1)).Value())
+	assert.Equal(t, "postgres.local", form.form.TextField(envValueFieldKey(1)).Value())
+	assert.Equal(t, "", form.form.TextField(envKeyFieldKey(2)).Value(), "trailing empty key")
 }
 
 func TestSettingsFormEnvironment_TabNavigation(t *testing.T) {

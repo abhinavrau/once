@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -20,17 +19,16 @@ type ApplicationVolumeSettings struct {
 	SecretKeyBase   string `json:"secretKeyBase"`
 	VAPIDPublicKey  string `json:"vapidPublicKey"`
 	VAPIDPrivateKey string `json:"vapidPrivateKey"`
+
+	labelExtra
 }
 
 func UnmarshalApplicationVolumeSettings(s string) (ApplicationVolumeSettings, error) {
-	var settings ApplicationVolumeSettings
-	err := json.Unmarshal([]byte(s), &settings)
-	return settings, err
+	return decodeLabel[ApplicationVolumeSettings](s)
 }
 
 func (s ApplicationVolumeSettings) Marshal() string {
-	b, _ := json.Marshal(s)
-	return string(b)
+	return encodeLabel(s)
 }
 
 type ApplicationVolume struct {

@@ -25,7 +25,7 @@ and each frontend renders them its own way.
 
 **Blocked by:** 01 - TUI surfaces settings-deploy failures honestly.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Namespace exposes one Apply Settings entry point returning any warnings and an error
 - [ ] The CLI update command and the TUI settings form submit both call it and contain no ordering of their own
@@ -36,3 +36,7 @@ and each frontend renders them its own way.
 - [ ] A settings change that alters nothing still short-circuits without rolling the container
 - [ ] Precondition ordering is unit-tested without a Docker daemon
 - [ ] Integration tests pass, with CLI warning-ordering assertions updated
+
+## Comments
+
+2026-07-29 (coordinator): implemented and merged to main in commit 8875a95 (branch namespace-workflow-spine-tickets, merged before the candidate 02-07 review round). Status set to done to match.

@@ -2,7 +2,6 @@ package docker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Images are pinned to exact versions, the same doctrine as proxyImage.
@@ -122,14 +122,21 @@ const (
 	envAuthKey    = "ONCE_TAILSCALE_AUTH_KEY"
 )
 
+// removedTailscaleFields are label fields older versions of Once wrote that no
+// longer exist: the TSDProxy-era apiKey. Shed on rewrite, unlike unknown fields
+// from newer versions, which are preserved - a dead credential must not ride
+// along in every label Once writes from here on.
+var removedTailscaleFields = []string{"apiKey"}
+
 type TailscaleSettings struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`
 	// Tag is the Tailscale tag (e.g. tag:once) the sidecar advertises and
 	// docktail stamps on the Service definitions it creates. A tagged OAuth
 	// client can only mint keys for tags it owns, so this must be a tag the
-	// client owns in the tailnet ACL. Empty on the headscale control seam, which
-	// uses a pre-minted auth key instead.
+	// client owns in the tailnet ACL. It is stored on the headscale control seam
+	// too, where only the host-mode pre-flight reads it: that path mints no
+	// tagged keys and runs docktail without the cloud API.
 	Tag string `json:"tag,omitempty"`
 	// DomainSuffix is the tailnet's MagicDNS base (e.g. tailnet-name.ts.net),
 	// read from the local tailscaled at enable time. With it stored, app tailnet
@@ -144,6 +151,8 @@ type TailscaleSettings struct {
 	// (TailscaleModeHost) or the Once-managed once-tailscale sidecar
 	// (TailscaleModeSidecar).
 	Mode string `json:"mode,omitempty"`
+
+	labelExtra
 }
 
 // TailnetURL builds an app's https://<app>.<suffix> tailnet URL from the stored
@@ -166,21 +175,11 @@ func (s TailscaleSettings) FunnelURL(port int) string {
 }
 
 func UnmarshalTailscaleSettings(s string) (TailscaleSettings, error) {
-	var settings TailscaleSettings
-	err := json.Unmarshal([]byte(s), &settings)
-	return settings, err
+	return decodeLabel[TailscaleSettings](s, removedTailscaleFields...)
 }
 
 func (s TailscaleSettings) Marshal() string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
-// TailscaleControlSeamActive reports whether the hidden headscale control seam
-// is configured, so callers can skip Tailscale SaaS-only flows (like the
-// policy API) that do not exist on headscale.
-func TailscaleControlSeamActive() bool {
-	return controlSeamActive()
+	return encodeLabel(s)
 }
 
 // Private
@@ -205,6 +204,18 @@ func (s TailscaleSettings) normalizeTag() string {
 	return strings.Join(segments, ",")
 }
 
+// suppressUnusedCredentials blanks the OAuth credentials when the hidden
+// control seam is active: that path joins with a pre-minted auth key and runs
+// docktail without the cloud API, so nothing reads them and whatever the user
+// typed must not reach the once label. The tag is deliberately kept: the
+// host-mode pre-flight still checks it, and both frontends have always stored it.
+func (s TailscaleSettings) suppressUnusedCredentials() TailscaleSettings {
+	if controlSeamActive() {
+		s.ClientID, s.ClientSecret = "", ""
+	}
+	return s
+}
+
 // Tailscale manages the Docktail topology: the once-docktail container that
 // advertises labelled containers as Tailscale Services, plus - in the default
 // sidecar mode - the unprivileged once-tailscale sidecar it drives. Mirroring
@@ -215,6 +226,11 @@ type Tailscale struct {
 	namespace    *Namespace
 	Settings     *TailscaleSettings
 	domainSuffix string // in-memory cache so a learned suffix survives a failed persist
+	// awaitLogin is a hook for the post-boot sidecar login wait, which runs the
+	// tailscale CLI over a hijacked docker exec connection and so is unfakeable
+	// at the boot dispatch's client seam (ADR-0009). Nil means the real wait;
+	// only tests override it.
+	awaitLogin func(context.Context) error
 }
 
 func NewTailscale(ns *Namespace) *Tailscale {
@@ -223,49 +239,41 @@ func NewTailscale(ns *Namespace) *Tailscale {
 
 // Enable boots the Docktail topology: once-docktail, plus - in sidecar mode -
 // the once-tailscale sidecar it drives over a shared socket volume (userspace
-// networking, unprivileged). settings.Mode is the requested mode: empty keeps
-// an already-enabled install's stored mode and defaults a fresh enable to the
-// sidecar; host mode is explicit opt-in (ADR-0007). Re-running with the same
-// credentials and mode just ensures everything is running; changed credentials
-// or mode rebuild the topology while the sidecar's state volume (node
-// identity) is kept. The returned notice, when non-empty, tells the user a
-// fresh enable defaulted to the sidecar even though a host tailscaled is
-// present.
-func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) (string, error) {
-	var notice string
+// networking, unprivileged). settings.Mode must already be resolved through
+// resolveMode (Namespace.EnableTailscale does that); Enable does no mode
+// defaulting of its own. Re-running with the same credentials and mode just
+// ensures everything is running; changed credentials or mode rebuild the
+// topology while the sidecar's state volume (node identity) is kept - which is
+// also how a stored label carrying no mode self-heals, since the resolved mode
+// differs from the empty stored one.
+func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) error {
 	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
 	switch {
 	case err == nil:
 		existing, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
-		if settings.Mode == "" {
-			settings.Mode = existing.Mode
-		}
 		if existing.ClientID == settings.ClientID && existing.ClientSecret == settings.ClientSecret && existing.Tag == settings.Tag && existing.Mode == settings.Mode {
-			return "", t.ensureRunning(ctx, info)
+			return t.ensureRunning(ctx, info)
 		}
+		// The rebuild recreates the label from the caller's settings, which carry
+		// no unknown fields, so hand them the stored label's: known optional
+		// fields (suffix, node host) are deliberately dropped because the tailnet
+		// may differ, but a field only a newer Once models is not this binary's to
+		// judge - stale-but-preserved beats destroyed (ADR-0008).
+		settings.labelExtra = existing.labelExtra
 		// The sidecar's auth key and advertised tag derive from the credentials,
 		// the suffix may belong to a different tailnet now, and a mode change
 		// moves where tailscaled lives - either way, rebuild the topology from
 		// scratch (keeping the state volume).
 		if err := t.removeTopology(ctx); err != nil {
-			return "", err
+			return err
 		}
 	case !errdefs.IsNotFound(err):
-		return "", fmt.Errorf("inspecting docktail container: %w", err)
-	default:
-		if settings.Mode == "" && hostTailscaledPresent() {
-			notice = "a tailscaled is already running on this host; Once boots its own sidecar by default - re-run with `--mode host` to drive the host daemon instead"
-		}
-	}
-	// Also covers a rebuild whose stored settings carry no mode (corrupt or
-	// legacy label): defaulting here self-heals it to the sidecar.
-	if settings.Mode == "" {
-		settings.Mode = TailscaleModeSidecar
+		return fmt.Errorf("inspecting docktail container: %w", err)
 	}
 
 	if settings.Mode == TailscaleModeSidecar {
 		if err := t.bootSidecar(ctx, settings); err != nil {
-			return "", err
+			return err
 		}
 	}
 
@@ -276,16 +284,16 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) (str
 	}
 
 	if err := t.pullImage(ctx, docktailImage); err != nil {
-		return "", err
+		return err
 	}
 	if err := t.create(ctx, settings); err != nil {
-		return "", err
+		return err
 	}
 	t.Settings = &settings
 
 	// Retrofit running apps so they appear on the tailnet immediately, not just
 	// on their next deploy. once-docktail now exists, so the roll injects labels.
-	return notice, t.namespace.RollApplications(ctx)
+	return t.namespace.RollApplications(ctx)
 }
 
 // Disable removes once-docktail and the Once-managed sidecar, keeping the
@@ -335,7 +343,7 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 		return t.domainSuffix, nil
 	}
 
-	settings, err := t.LoadSettings(ctx)
+	settings, daemon, err := t.session(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -344,7 +352,7 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 		return settings.DomainSuffix, nil
 	}
 
-	suffix, err := t.daemonFor(settings.Mode).MagicDNSSuffix(ctx)
+	suffix, err := daemon.MagicDNSSuffix(ctx)
 	if err != nil || suffix == "" {
 		return "", err
 	}
@@ -367,7 +375,7 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 // Once can't manage - surfacing activation failure prevents reporting a
 // Funnel active when it isn't.
 func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (string, error) {
-	settings, err := t.LoadSettings(ctx)
+	settings, daemon, err := t.session(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -375,7 +383,7 @@ func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (
 	if err != nil {
 		return "", err
 	}
-	hostPort, err := waitForFunnelBackend(ctx, t.daemonFor(settings.Mode), backend, funnelActivationTimeout, funnelActivationPoll)
+	hostPort, err := waitForFunnelBackend(ctx, daemon, backend, funnelActivationTimeout, funnelActivationPoll)
 	if err != nil {
 		return "", err
 	}
@@ -450,29 +458,32 @@ func (t *Tailscale) legacyTSDProxyVolumeName() string {
 	return t.namespace.name + "-tsdproxy-data"
 }
 
-// effectiveMode resolves the mode an Enable with the requested mode would run
-// in, mirroring Enable's own resolution: an explicit mode wins, an empty one
-// keeps an already-enabled install's stored mode (tolerating a corrupt label,
-// which Enable self-heals to the sidecar), and a fresh enable defaults to the
-// sidecar. A real inspect failure is an error, not a silent sidecar default:
-// callers use this to decide whether the host-mode pre-flight must run, and
-// guessing wrong would skip it.
-func (t *Tailscale) effectiveMode(ctx context.Context, requested string) (string, error) {
+// resolveMode is the only implementation of the ADR-0007 mode rule: an
+// explicit mode wins, an empty one keeps an already-enabled install's stored
+// mode, a stored mode that is missing or unrecognized (a corrupt or legacy
+// label) reads as the sidecar, and so does a fresh enable. A real inspect
+// failure is an error, not a silent sidecar default: the resolved mode decides
+// whether the host-mode pre-flight must run, and guessing wrong would skip it.
+//
+// fresh reports that no docktail container exists yet, which feeds the
+// --mode host notice. It is only determined when no mode was requested: an
+// explicit mode needs no inspect, and the notice it would feed never fires.
+func (t *Tailscale) resolveMode(ctx context.Context, requested string) (string, bool, error) {
 	if requested != "" {
-		return requested, nil
+		return requested, false, nil
 	}
 	info, err := t.namespace.client.ContainerInspect(ctx, t.containerName())
 	if errdefs.IsNotFound(err) {
-		return TailscaleModeSidecar, nil
+		return TailscaleModeSidecar, true, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("inspecting docktail container: %w", err)
+		return "", false, fmt.Errorf("inspecting docktail container: %w", err)
 	}
 	stored, _ := UnmarshalTailscaleSettings(info.Config.Labels[labelKey])
-	if stored.Mode != "" {
-		return stored.Mode, nil
+	if stored.Mode != "" && ValidateTailscaleMode(stored.Mode) == nil {
+		return stored.Mode, false, nil
 	}
-	return TailscaleModeSidecar, nil
+	return TailscaleModeSidecar, false, nil
 }
 
 // daemonFor returns the TailscaleDaemon matching where tailscaled runs: the
@@ -482,6 +493,19 @@ func (t *Tailscale) daemonFor(mode string) TailscaleDaemon {
 		return NewHostTailscaleDaemon()
 	}
 	return NewSidecarTailscaleDaemon(t.namespace.client, t.sidecarName())
+}
+
+// session binds every read path's stored settings to the daemon they imply:
+// the single door (ADR-0010) that replaces a hand-written LoadSettings plus
+// daemonFor pair at each read path's start. It never resolves a requested
+// mode (that is resolveMode's, at enable time) - read paths bind from the
+// stored mode as-is.
+func (t *Tailscale) session(ctx context.Context) (TailscaleSettings, TailscaleDaemon, error) {
+	settings, err := t.LoadSettings(ctx)
+	if err != nil {
+		return TailscaleSettings{}, nil, err
+	}
+	return settings, t.daemonFor(settings.Mode), nil
 }
 
 // ensureRunning starts the topology's containers if stopped and loads the
@@ -506,6 +530,29 @@ func (t *Tailscale) ensureRunning(ctx context.Context, info container.InspectRes
 	return nil
 }
 
+// sidecarBootClient lists the engine methods the sidecar boot dispatch calls,
+// so the dispatch is drivable by a fake without a daemon (ADR-0009). The
+// concrete *client.Client satisfies it structurally, so production passes it
+// unchanged.
+type sidecarBootClient interface {
+	containerRemover
+	imagePuller
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
+	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+}
+
+// containerRemover and imagePuller keep the shared remove and pull helpers down
+// to the one method each of them calls, so callers outside the boot dispatch
+// don't inherit the whole seam.
+type containerRemover interface {
+	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+}
+
+type imagePuller interface {
+	ImagePull(ctx context.Context, ref string, options image.PullOptions) (io.ReadCloser, error)
+}
+
 // bootSidecar idempotently boots the once-tailscale sidecar: an unprivileged
 // tailscale/tailscale container in userspace networking mode - no TUN device,
 // no NET_ADMIN, no host networking - with its node state on a volume and its
@@ -516,18 +563,25 @@ func (t *Tailscale) ensureRunning(ctx context.Context, info container.InspectRes
 // the real problem, rather than much later in the service verify. A sidecar
 // found already crash-looping is rebuilt with a freshly minted key.
 func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings) error {
-	info, err := t.namespace.client.ContainerInspect(ctx, t.sidecarName())
+	return t.bootSidecarWithClient(ctx, t.namespace.client, settings)
+}
+
+// bootSidecarWithClient is bootSidecar's dispatch, reaching the engine by
+// parameter rather than through the namespace, so tests drive every branch -
+// crash-looping, stopped, running, missing - with a fake.
+func (t *Tailscale) bootSidecarWithClient(ctx context.Context, c sidecarBootClient, settings TailscaleSettings) error {
+	info, err := c.ContainerInspect(ctx, t.sidecarName())
 	switch {
 	case err == nil && sidecarWedged(info.State):
 		// A crash-looping sidecar can't be started out of its loop: its baked-in
 		// TS_AUTHKEY may be dead (revoked, expired). Rebuild it with a freshly
 		// minted key - the state volume survives, so the node identity does too.
-		if err := t.removeContainer(ctx, t.sidecarName()); err != nil {
+		if err := forceRemoveContainer(ctx, c, t.sidecarName()); err != nil {
 			return err
 		}
 	case err == nil:
 		if !info.State.Running {
-			if err := t.namespace.client.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
+			if err := c.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
 				return fmt.Errorf("starting tailscale sidecar: %w", err)
 			}
 		}
@@ -536,22 +590,22 @@ func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings)
 		return fmt.Errorf("inspecting tailscale sidecar: %w", err)
 	}
 
-	authKey, controlURL := os.Getenv(envAuthKey), os.Getenv(envControlURL)
+	authKey, controlURL, seam := controlSeam()
 	var extraArgs string
-	if authKey != "" && controlURL != "" {
+	if seam {
 		extraArgs = "--login-server=" + controlURL
 	} else {
-		if authKey, err = mintSidecarAuthKey(ctx, tailscaleAPIBaseURL, settings); err != nil {
+		if authKey, err = mintSidecarAuthKey(ctx, newTailscaleAPI(settings), settings); err != nil {
 			return err
 		}
 		extraArgs = "--advertise-tags=" + settings.Tag
 	}
 
-	if err := t.pullImage(ctx, tailscaleSidecarImage); err != nil {
+	if err := pullImageRef(ctx, c, tailscaleSidecarImage); err != nil {
 		return err
 	}
 
-	resp, err := t.namespace.client.ContainerCreate(ctx,
+	resp, err := c.ContainerCreate(ctx,
 		&container.Config{
 			Image: tailscaleSidecarImage,
 			Env: []string{
@@ -583,14 +637,17 @@ func (t *Tailscale) bootSidecar(ctx context.Context, settings TailscaleSettings)
 		return fmt.Errorf("creating tailscale sidecar: %w", err)
 	}
 
-	if err := t.namespace.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		t.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+	if err := c.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		c.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("starting tailscale sidecar: %w", err)
 	}
 	return t.awaitSidecarLogin(ctx)
 }
 
 func (t *Tailscale) awaitSidecarLogin(ctx context.Context) error {
+	if t.awaitLogin != nil {
+		return t.awaitLogin(ctx)
+	}
 	daemon := NewSidecarTailscaleDaemon(t.namespace.client, t.sidecarName())
 	return waitForSidecarLogin(ctx, daemon, t.sidecarCrashed, sidecarLoginTimeout, sidecarLoginPoll)
 }
@@ -690,22 +747,11 @@ func (t *Tailscale) removeTopology(ctx context.Context) error {
 }
 
 func (t *Tailscale) pullImage(ctx context.Context, ref string) error {
-	reader, err := t.namespace.client.ImagePull(ctx, ref, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("pulling %s: %w", ref, err)
-	}
-	defer reader.Close()
-	_, _ = io.Copy(io.Discard, reader)
-	return nil
+	return pullImageRef(ctx, t.namespace.client, ref)
 }
 
 func (t *Tailscale) removeContainer(ctx context.Context, name string) error {
-	if err := t.namespace.client.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}); err != nil {
-		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("removing %s: %w", name, err)
-		}
-	}
-	return nil
+	return forceRemoveContainer(ctx, t.namespace.client, name)
 }
 
 func (t *Tailscale) removeVolume(ctx context.Context, name string) error {
@@ -718,6 +764,28 @@ func (t *Tailscale) removeVolume(ctx context.Context, name string) error {
 }
 
 // Helpers
+
+// pullImageRef pulls an image and drains its progress stream.
+func pullImageRef(ctx context.Context, c imagePuller, ref string) error {
+	reader, err := c.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("pulling %s: %w", ref, err)
+	}
+	defer reader.Close()
+	_, _ = io.Copy(io.Discard, reader)
+	return nil
+}
+
+// forceRemoveContainer removes a container by name, tolerating one that is
+// already gone.
+func forceRemoveContainer(ctx context.Context, c containerRemover, name string) error {
+	if err := c.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}); err != nil {
+		if !errdefs.IsNotFound(err) {
+			return fmt.Errorf("removing %s: %w", name, err)
+		}
+	}
+	return nil
+}
 
 // docktailLabels returns the labels that expose an app as a Tailscale Service
 // under its own name. Nil when Tailscale is disabled, so app containers carry
@@ -748,10 +816,22 @@ func docktailLabels(appName, network string, enabled bool, funnelPort int) map[s
 	return labels
 }
 
+// controlSeam is the only reader of the hidden headscale control seam's env
+// vars: it returns the pre-minted auth key and control URL the sidecar joins
+// with, and whether the seam is configured at all (both vars set). Everything
+// that behaves differently under the seam goes through here, so promoting the
+// seam to first-class headscale support - or to another VPN provider's control
+// plane - has one door to open (ADR-0010).
+func controlSeam() (authKey, controlURL string, ok bool) {
+	authKey, controlURL = os.Getenv(envAuthKey), os.Getenv(envControlURL)
+	return authKey, controlURL, authKey != "" && controlURL != ""
+}
+
 // controlSeamActive reports whether the hidden headscale control seam is
 // configured, replacing OAuth credential minting and the Tailscale SaaS API.
 func controlSeamActive() bool {
-	return os.Getenv(envControlURL) != "" && os.Getenv(envAuthKey) != ""
+	_, _, ok := controlSeam()
+	return ok
 }
 
 // hostTailscaledDir is the host directory tailscaled publishes its socket in,
@@ -770,6 +850,16 @@ func hostTailscaledDir() string {
 func hostTailscaledPresent() bool {
 	info, err := os.Stat(filepath.Join(hostTailscaledDir(), tailscaledSocketFile))
 	return err == nil && !info.IsDir()
+}
+
+// hostModeNotice returns the one-line notice that keeps host mode discoverable
+// (ADR-0007): a fresh enable that took the sidecar default while a host
+// tailscaled is running. An explicit mode or a re-enable never earns it.
+func hostModeNotice(requested string, fresh bool) string {
+	if requested != "" || !fresh || !hostTailscaledPresent() {
+		return ""
+	}
+	return "a tailscaled is already running on this host; Once boots its own sidecar by default - re-run with `--mode host` to drive the host daemon instead"
 }
 
 // waitForFunnelBackend polls the local daemon until a funnel-enabled endpoint

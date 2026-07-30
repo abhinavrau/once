@@ -31,7 +31,7 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 		return nil
 	}
 
-	settings, err := t.LoadSettings(ctx)
+	settings, daemon, err := t.session(ctx)
 	if err != nil {
 		return err
 	}
@@ -41,10 +41,10 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 			progress(DeployProgress{Stage: DeployStageWaiting, Status: line})
 		}
 	}
-	if err := waitForAdvertised(ctx, t.daemonFor(settings.Mode), expected, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
+	if err := waitForAdvertised(ctx, daemon, expected, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
 		return err
 	}
-	return waitForApproved(ctx, tailscaleAPIBaseURL, settings, expected, serviceVerifyTimeout, serviceVerifyPoll, announce)
+	return waitForApproved(ctx, newTailscaleAPI(settings), settings, expected, serviceVerifyTimeout, serviceVerifyPoll, announce)
 }
 
 // Helpers
@@ -84,11 +84,7 @@ func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []s
 // Docktail uses) until every expected service has an approved advertising
 // host. A host stuck at not-approved fails immediately: approval needs a
 // human or an autoApprovers rule, so waiting cannot fix it.
-func waitForApproved(ctx context.Context, baseURL string, settings TailscaleSettings, expected []string, timeout, poll time.Duration, announce func(string)) error {
-	token, err := tailscaleOAuthToken(ctx, baseURL, settings.ClientID, settings.ClientSecret)
-	if err != nil {
-		return err
-	}
+func waitForApproved(ctx context.Context, api tailscaleAPI, settings TailscaleSettings, expected []string, timeout, poll time.Duration, announce func(string)) error {
 	if announce != nil {
 		announce(fmt.Sprintf("waiting up to %s for the tailnet to approve: %s", timeout, strings.Join(expected, ", ")))
 	}
@@ -98,7 +94,7 @@ func waitForApproved(ctx context.Context, baseURL string, settings TailscaleSett
 	for {
 		var waiting []string
 		for _, name := range unapproved {
-			state, err := serviceApprovalState(ctx, baseURL, token, name)
+			state, err := serviceApprovalState(ctx, api, name)
 			if err != nil {
 				return err
 			}
@@ -137,8 +133,8 @@ const (
 // any is approved, via GET /tailnet/-/services/svc:<name>/devices - the same
 // request Docktail's listServiceHosts sends. approvalLevel is one of
 // not-approved, approved:auto, approved:manual.
-func serviceApprovalState(ctx context.Context, baseURL, token, name string) (approvalState, error) {
-	status, body, err := tailscaleAPICall(ctx, http.MethodGet, baseURL+"/tailnet/-/services/svc:"+name+"/devices", token, nil)
+func serviceApprovalState(ctx context.Context, api tailscaleAPI, name string) (approvalState, error) {
+	status, body, err := api.Call(ctx, http.MethodGet, "/tailnet/-/services/svc:"+name+"/devices", nil)
 	if err != nil {
 		return serviceUnknown, err
 	}

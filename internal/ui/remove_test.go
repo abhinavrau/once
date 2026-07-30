@@ -79,6 +79,21 @@ func TestRemove_ConfirmStartsRemoval(t *testing.T) {
 	assert.True(t, m.removing)
 }
 
+// A removal killed mid-flight is the same hazard a killed deploy is: the
+// container can be gone while the volume or proxy state is not yet updated.
+// App guards its quit key on Busy, so Remove must report itself busy too.
+func TestRemove_BusyWhileRemoving(t *testing.T) {
+	m := newTestRemove()
+	m, _ = updateRemove(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	assert.False(t, m.Busy())
+
+	m, _ = updateRemove(m, ConfirmationConfirmMsg{})
+	assert.True(t, m.Busy())
+
+	m, _ = updateRemove(m, removeFinishedMsg{err: errors.New("permission denied")})
+	assert.False(t, m.Busy())
+}
+
 func TestRemove_SuccessNavigatesToDashboard(t *testing.T) {
 	m := newTestRemove()
 

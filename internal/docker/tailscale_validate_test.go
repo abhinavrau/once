@@ -2,175 +2,94 @@ package docker
 
 import (
 	"context"
-	"encoding/json"
-	"io"
+	"errors"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// probeServer stands in for the Tailscale API: it issues a token, mints and
-// deletes an auth key, and serves the probe Service endpoints. Each endpoint's
-// status is configurable, and requests are recorded so tests can assert the
-// probe's request shapes and cleanup. The zero configuration from
-// newProbeServer answers every probe step with success.
-type probeServer struct {
-	srv *httptest.Server
+// The probe's request paths, spelled out rather than derived from the
+// production constants: they must match what Docktail sends, including the "-"
+// tailnet segment, so a change to either side has to be made deliberately here.
+const (
+	tsKeysPath    = "/tailnet/-/keys"
+	probeKeyPath  = "/tailnet/-/keys/k123"
+	probeSvcPath  = "/tailnet/-/services/svc:once-probe"
+	probeDevsPath = "/tailnet/-/services/svc:once-probe/devices"
+)
 
-	tokenStatus      int
-	keyStatus        int
-	keyBody          string
-	serviceGetStatus int
-	serviceGetBody   string
-	servicePutStatus int
-	servicePutBody   string
-	devicesStatus    int
+const (
+	notPermittedMsg = `{"message":"calling actor does not have enough permissions"}`
 
-	keyRequest       tsKeyRequest
-	putRequestBody   string
-	deletedKey       string
-	deletedService   bool
-	devicesRequested bool
-}
-
-func newProbeServer(t *testing.T) *probeServer {
-	t.Helper()
-	p := &probeServer{
-		tokenStatus:      http.StatusOK,
-		keyStatus:        http.StatusOK,
-		serviceGetStatus: http.StatusNotFound,
-		servicePutStatus: http.StatusOK,
-		devicesStatus:    http.StatusOK,
-	}
-	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/oauth/token" {
-			assert.Equal(t, "Bearer tskey-api-probe", r.Header.Get("Authorization"))
-		}
-		switch {
-		case r.URL.Path == "/oauth/token":
-			if p.tokenStatus != http.StatusOK {
-				w.WriteHeader(p.tokenStatus)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "tskey-api-probe"})
-		case r.Method == http.MethodPost && r.URL.Path == "/tailnet/-/keys":
-			body, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(body, &p.keyRequest)
-			if p.keyStatus != http.StatusOK {
-				w.WriteHeader(p.keyStatus)
-				_, _ = w.Write([]byte(p.keyBody))
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"id": "k123", "key": "tskey-auth-xyz"})
-		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/tailnet/-/keys/"):
-			p.deletedKey = r.URL.Path
-		case r.Method == http.MethodGet && r.URL.Path == "/tailnet/-/services/svc:once-probe/devices":
-			p.devicesRequested = true
-			if p.devicesStatus != http.StatusOK {
-				w.WriteHeader(p.devicesStatus)
-				_, _ = w.Write([]byte(`{"message":"calling actor does not have enough permissions"}`))
-				return
-			}
-			_, _ = w.Write([]byte(`{"hosts":[]}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/tailnet/-/services/svc:once-probe":
-			w.WriteHeader(p.serviceGetStatus)
-			_, _ = w.Write([]byte(p.serviceGetBody))
-		case r.Method == http.MethodPut && r.URL.Path == "/tailnet/-/services/svc:once-probe":
-			body, _ := io.ReadAll(r.Body)
-			p.putRequestBody = string(body)
-			if p.servicePutStatus != http.StatusOK {
-				w.WriteHeader(p.servicePutStatus)
-				_, _ = w.Write([]byte(p.servicePutBody))
-				return
-			}
-			_, _ = w.Write([]byte(`{}`))
-		case r.Method == http.MethodDelete && r.URL.Path == "/tailnet/-/services/svc:once-probe":
-			p.deletedService = true
-		default:
-			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(p.srv.Close)
-	return p
-}
-
-func validateAgainst(p *probeServer, tag string) error {
-	return validateOAuthCredentials(context.Background(), p.srv.URL,
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: tag})
-}
+	// sidecarKeyPayload is the auth-key request Once sends for tag:once:
+	// reusable (a restart-always container must be able to re-auth after dying
+	// mid-login), non-ephemeral (the sidecar keeps its node state in a volume),
+	// preauthorized, tagged, described as the sidecar. The probe and the real
+	// sidecar mint must send exactly these bytes.
+	sidecarKeyPayload = `{"capabilities":{"devices":{"create":{"reusable":true,"ephemeral":false,"preauthorized":true,"tags":["tag:once"]}}},"description":"once-tailscale"}`
+)
 
 func TestValidateOAuthCredentialsSuccess(t *testing.T) {
-	p := newProbeServer(t)
+	api := probeAPI(t)
 
-	require.NoError(t, validateAgainst(p, "tag:once"))
+	require.NoError(t, validateAgainst(api, "tag:once"))
 
-	// The probe key must match the sidecar auth key Once mints: reusable,
-	// non-ephemeral, preauthorized, tagged.
-	create := p.keyRequest.Capabilities.Devices.Create
-	assert.False(t, create.Ephemeral)
-	assert.True(t, create.Reusable)
-	assert.True(t, create.Preauthorized)
-	assert.Equal(t, []string{"tag:once"}, create.Tags)
-	assert.Equal(t, "once-tailscale", p.keyRequest.Description)
-	assert.Equal(t, "/tailnet/-/keys/k123", p.deletedKey)
+	assert.Equal(t, sidecarKeyPayload, api.payload(http.MethodPost, tsKeysPath))
+	assert.True(t, api.requested(http.MethodDelete, probeKeyPath), "the probe key must be cleaned up")
 
 	// The Service create must be byte-compatible with Docktail's putService
 	// payload (json.Marshal of a map: alphabetical keys).
 	assert.Equal(t,
 		`{"comment":"Once credential probe - safe to delete","name":"svc:once-probe","ports":["tcp:443"],"tags":["tag:once"]}`,
-		p.putRequestBody)
-	assert.True(t, p.devicesRequested)
-	assert.True(t, p.deletedService, "probe Service must be cleaned up")
+		api.payload(http.MethodPut, probeSvcPath))
+	assert.True(t, api.requested(http.MethodGet, probeDevsPath))
+	assert.True(t, api.requested(http.MethodDelete, probeSvcPath), "probe Service must be cleaned up")
 }
 
 func TestValidateOAuthCredentialsUsesNormalizedTag(t *testing.T) {
-	p := newProbeServer(t)
+	api := probeAPI(t)
 
 	// EnableTailscale normalizes before probing; a bare "once" must reach the
 	// key and Service payloads as "tag:once", not the misleading bare name.
 	settings := TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "once,tag:admin"}
 	settings.Tag = settings.normalizeTag()
-	err := validateOAuthCredentials(context.Background(), p.srv.URL, settings)
+	err := validateOAuthCredentials(context.Background(), api, settings)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"tag:once", "tag:admin"},
-		p.keyRequest.Capabilities.Devices.Create.Tags)
-	assert.Contains(t, p.putRequestBody, `"tags":["tag:once","tag:admin"]`)
+	assert.Contains(t, api.payload(http.MethodPost, tsKeysPath), `"tags":["tag:once","tag:admin"]`)
+	assert.Contains(t, api.payload(http.MethodPut, probeSvcPath), `"tags":["tag:once","tag:admin"]`)
 }
 
 func TestValidateOAuthCredentialsRejectsBadCredentials(t *testing.T) {
-	p := newProbeServer(t)
-	p.tokenStatus = http.StatusUnauthorized
+	api := probeAPI(t)
+	// Rejected credentials surface from the adapter on the probe's first call,
+	// wherever that call goes; the wording is the adapter's, tested there.
+	rejected := errors.New("Tailscale rejected the OAuth credentials (401 Unauthorized)")
+	api.fail(http.MethodPost, tsKeysPath, rejected)
 
-	err := validateAgainst(p, "tag:once")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "client ID and secret")
-	assert.Empty(t, p.deletedKey, "no key should be minted when credentials are rejected")
+	err := validateAgainst(api, "tag:once")
+	require.ErrorIs(t, err, rejected)
+	assert.Equal(t, 1, api.callCount(), "a failed first call must abort the probe, not mint or probe further")
 }
 
 func TestValidateOAuthCredentialsMissingAuthKeysScope(t *testing.T) {
-	p := newProbeServer(t)
-	p.keyStatus = http.StatusForbidden
-	p.keyBody = `{"message":"calling actor does not have enough permissions"}`
+	api := probeAPI(t)
+	api.reply(http.MethodPost, tsKeysPath, http.StatusForbidden, notPermittedMsg)
 
-	err := validateAgainst(p, "tag:once")
+	err := validateAgainst(api, "tag:once")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auth_keys")
 	assert.Contains(t, err.Error(), "does not have enough permissions")
-	assert.Empty(t, p.putRequestBody, "the Service probe must not run after a scope failure")
+	assert.False(t, api.requested(http.MethodPut, probeSvcPath), "the Service probe must not run after a scope failure")
 }
 
 func TestValidateOAuthCredentialsRejectsUnownedTag(t *testing.T) {
-	p := newProbeServer(t)
-	p.keyStatus = http.StatusBadRequest
-	p.keyBody = `{"message":"requested tags are invalid or not permitted"}`
+	api := probeAPI(t)
+	api.reply(http.MethodPost, tsKeysPath, http.StatusBadRequest, `{"message":"requested tags are invalid or not permitted"}`)
 
-	err := validateAgainst(p, "tag:wrong")
+	err := validateAgainst(api, "tag:wrong")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTagNotInPolicy)
 	assert.Contains(t, err.Error(), "tag:wrong")
@@ -180,74 +99,72 @@ func TestValidateOAuthCredentialsRejectsUnownedTag(t *testing.T) {
 }
 
 func TestValidateOAuthCredentialsServerErrorIsNotATagProblem(t *testing.T) {
-	p := newProbeServer(t)
-	p.keyStatus = http.StatusInternalServerError
+	api := probeAPI(t)
+	api.reply(http.MethodPost, tsKeysPath, http.StatusInternalServerError, "")
 
-	err := validateAgainst(p, "tag:once")
+	err := validateAgainst(api, "tag:once")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrTagNotInPolicy, "a 5xx must not tell the user to edit the tailnet policy")
 }
 
 func TestValidateOAuthCredentialsMissingServicesScope(t *testing.T) {
-	p := newProbeServer(t)
-	p.serviceGetStatus = http.StatusForbidden
-	p.serviceGetBody = `{"message":"calling actor does not have enough permissions"}`
+	api := probeAPI(t)
+	api.reply(http.MethodGet, probeSvcPath, http.StatusForbidden, notPermittedMsg)
 
-	err := validateAgainst(p, "tag:once")
+	err := validateAgainst(api, "tag:once")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Services: Write")
-	assert.NotEmpty(t, p.deletedKey, "the auth key probe runs and cleans up first")
+	assert.True(t, api.requested(http.MethodDelete, probeKeyPath), "the auth key probe runs and cleans up first")
 }
 
 func TestValidateOAuthCredentialsRejectsUndefinedServiceTag(t *testing.T) {
-	p := newProbeServer(t)
-	p.servicePutStatus = http.StatusBadRequest
-	p.servicePutBody = `{"message":"tag \"tag:once\" is invalid or not permitted"}`
+	api := probeAPI(t)
+	api.reply(http.MethodPut, probeSvcPath, http.StatusBadRequest, `{"message":"tag \"tag:once\" is invalid or not permitted"}`)
 
-	err := validateAgainst(p, "tag:once")
+	err := validateAgainst(api, "tag:once")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTagNotInPolicy)
 	assert.Contains(t, err.Error(), "tag:once")
 	assert.Contains(t, err.Error(), "tagOwners")
-	assert.False(t, p.deletedService, "a rejected create leaves nothing to delete")
+	assert.False(t, api.requested(http.MethodDelete, probeSvcPath), "a rejected create leaves nothing to delete")
 }
 
 func TestValidateOAuthCredentialsMissingDevicesScope(t *testing.T) {
-	p := newProbeServer(t)
-	p.devicesStatus = http.StatusForbidden
+	api := probeAPI(t)
+	api.reply(http.MethodGet, probeDevsPath, http.StatusForbidden, notPermittedMsg)
 
-	err := validateAgainst(p, "tag:once")
+	err := validateAgainst(api, "tag:once")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Devices -> Core")
-	assert.True(t, p.deletedService, "probe Service must be cleaned up even when the devices check fails")
+	assert.True(t, api.requested(http.MethodDelete, probeSvcPath), "probe Service must be cleaned up even when the devices check fails")
 }
 
 func TestValidateOAuthCredentialsRefusesForeignServiceName(t *testing.T) {
-	p := newProbeServer(t)
-	p.serviceGetStatus = http.StatusOK
-	p.serviceGetBody = `{"name":"svc:once-probe","comment":"my real service"}`
+	api := probeAPI(t)
+	api.reply(http.MethodGet, probeSvcPath, http.StatusOK, `{"name":"svc:once-probe","comment":"my real service"}`)
 
-	err := validateAgainst(p, "tag:once")
+	err := validateAgainst(api, "tag:once")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
-	assert.Empty(t, p.putRequestBody, "a foreign Service must never be overwritten")
-	assert.False(t, p.deletedService, "a foreign Service must never be deleted")
+	assert.False(t, api.requested(http.MethodPut, probeSvcPath), "a foreign Service must never be overwritten")
+	assert.False(t, api.requested(http.MethodDelete, probeSvcPath), "a foreign Service must never be deleted")
 }
 
 func TestValidateOAuthCredentialsReusesLeftoverProbeService(t *testing.T) {
-	p := newProbeServer(t)
-	p.serviceGetStatus = http.StatusOK
-	p.serviceGetBody = `{"name":"svc:once-probe","comment":"Once credential probe - safe to delete"}`
+	api := probeAPI(t)
+	api.reply(http.MethodGet, probeSvcPath, http.StatusOK,
+		`{"name":"svc:once-probe","comment":"Once credential probe - safe to delete"}`)
 
 	// A leftover from an interrupted probe is ours: overwrite and delete it
 	// rather than failing enable forever.
-	require.NoError(t, validateAgainst(p, "tag:once"))
-	assert.NotEmpty(t, p.putRequestBody)
-	assert.True(t, p.deletedService)
+	require.NoError(t, validateAgainst(api, "tag:once"))
+	assert.True(t, api.requested(http.MethodPut, probeSvcPath))
+	assert.True(t, api.requested(http.MethodDelete, probeSvcPath))
 }
 
 func TestValidateOAuthCredentialsRequiresTag(t *testing.T) {
-	err := validateOAuthCredentials(context.Background(), "http://unused",
+	// The seam cans nothing: any call would fail the test.
+	err := validateOAuthCredentials(context.Background(), newFakeTailscaleAPI(t),
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tag is required")
@@ -263,22 +180,36 @@ func TestValidateTailscaleCredentialsSkipsControlSeam(t *testing.T) {
 }
 
 func TestMintSidecarAuthKeyMatchesProbeShape(t *testing.T) {
-	p := newProbeServer(t)
+	api := probeAPI(t)
 
-	key, err := mintSidecarAuthKey(context.Background(), p.srv.URL,
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"})
+	key, err := mintSidecarAuthKey(context.Background(), api, TailscaleSettings{Tag: "tag:once"})
 	require.NoError(t, err)
 	assert.Equal(t, "tskey-auth-xyz", key)
 
-	// Exactly the shape the probe proved: reusable (a restart-always container
-	// must be able to re-auth after dying mid-login), non-ephemeral,
-	// preauthorized, tagged, described as the sidecar.
-	assert.Equal(t, "once-tailscale", p.keyRequest.Description)
-	assert.True(t, p.keyRequest.Capabilities.Devices.Create.Preauthorized)
-	assert.True(t, p.keyRequest.Capabilities.Devices.Create.Reusable)
-	assert.False(t, p.keyRequest.Capabilities.Devices.Create.Ephemeral)
-	assert.Equal(t, []string{"tag:once"}, p.keyRequest.Capabilities.Devices.Create.Tags)
+	// Byte-for-byte the request the probe proved could be minted.
+	assert.Equal(t, sidecarKeyPayload, api.payload(http.MethodPost, tsKeysPath))
 
 	// The sidecar registers with this key; unlike the probe's, it is not deleted.
-	assert.Empty(t, p.deletedKey)
+	assert.False(t, api.requested(http.MethodDelete, probeKeyPath))
+}
+
+// Helpers
+
+// probeAPI returns a seam that answers every step of the credential probe
+// with success; each test re-cans the one step it exercises.
+func probeAPI(t *testing.T) *fakeTailscaleAPI {
+	t.Helper()
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodPost, tsKeysPath, http.StatusOK, `{"id":"k123","key":"tskey-auth-xyz"}`)
+	api.reply(http.MethodDelete, probeKeyPath, http.StatusOK, "")
+	api.reply(http.MethodGet, probeSvcPath, http.StatusNotFound, "")
+	api.reply(http.MethodPut, probeSvcPath, http.StatusOK, `{}`)
+	api.reply(http.MethodGet, probeDevsPath, http.StatusOK, `{"hosts":[]}`)
+	api.reply(http.MethodDelete, probeSvcPath, http.StatusOK, "")
+	return api
+}
+
+func validateAgainst(api tailscaleAPI, tag string) error {
+	return validateOAuthCredentials(context.Background(), api,
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: tag})
 }

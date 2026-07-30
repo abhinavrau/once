@@ -16,6 +16,7 @@ type InstallImageForm struct {
 func NewInstallImageForm() InstallImageForm {
 	m := InstallImageForm{
 		form: NewForm("Next", FormItem{
+			Key:      "image",
 			Label:    "Image",
 			Field:    NewTextField("user/repo:tag"),
 			Required: true,
@@ -23,7 +24,7 @@ func NewInstallImageForm() InstallImageForm {
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
-		ref := catalog.Resolve(f.TextField(0).Value())
+		ref := catalog.Resolve(f.TextField("image").Value())
 		return func() tea.Msg { return InstallImageSubmitMsg{ImageRef: ref} }
 	})
 	m.form.OnCancel(func(f *Form) tea.Cmd {

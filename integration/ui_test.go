@@ -3,7 +3,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/basecamp/once/internal/background"
 	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/mouse"
 	"github.com/basecamp/once/internal/ui"
 )
 
@@ -46,9 +45,8 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.waitForView("Image", 5*time.Second)
 
 	// -- Screen 2: Image form --
-	d.typeText("ghcr.io/basecamp/once-campfire:main")
-	d.send(keyMsg("tab"))
-	d.send(keyMsg("enter"))
+	d.fillField("image", "ghcr.io/basecamp/once-campfire:main")
+	d.click("submit")
 
 	d.waitForView("Exposure", 5*time.Second)
 
@@ -60,24 +58,19 @@ func TestUIInstallAndManageApp(t *testing.T) {
 
 	// -- Selecting tailnet exposure while Tailscale is disabled offers the
 	// enable overlay inline; dismissing it returns to the filled-in form. --
-	d.send(keyMsg("right")) // Local → Tailnet
-	d.send(keyMsg("tab"))   // → Host
-	d.send(keyMsg("tab"))   // → Install
-	d.send(keyMsg("enter"))
+	d.selectRadioOption("exposure", "Tailnet")
+	d.click("submit")
 	d.waitForView("Client ID", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
 		return !strings.Contains(d.viewContent(), "Client ID")
 	}, 5*time.Second)
 
-	// Back on the form with focus still on Install: wrap around to the
-	// exposure radio, return to local, and install.
-	d.send(keyMsg("tab"))  // → Cancel
-	d.send(keyMsg("tab"))  // → Exposure
-	d.send(keyMsg("left")) // Tailnet → Local
-	d.send(keyMsg("tab"))  // → Host (keep the suggestion)
-	d.send(keyMsg("tab"))  // → Install
-	d.send(keyMsg("enter"))
+	// Back on the filled-in form: return to local (which restores the local
+	// host suggestion) and install.
+	d.selectRadioOption("exposure", "Local")
+	assert.Contains(t, d.viewContent(), "once-campfire.localhost")
+	d.click("submit")
 
 	// -- Install activity → dashboard --
 	// Wait for "running" which only appears in the dashboard panel state info,
@@ -120,8 +113,7 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.waitForView("Remove application? Its data will be kept.", 5*time.Second)
 
 	// Confirm with the keep-data default: the app goes away, the volume stays.
-	d.send(keyMsg("tab"))
-	d.send(keyMsg("enter"))
+	d.click("confirm")
 	d.waitForView("There are no applications installed", 30*time.Second)
 	_, err = docker.FindVolume(ctx, ns, appName)
 	assert.NoError(t, err, "keep-data remove should leave the app volume in place")
@@ -153,16 +145,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	useControlSeam(t, ctx, cp)
 	hideHostTailscaled(t)
 
-	// Enable boots once-admin, which bind-mounts the daemon's Unix socket; run the
-	// admin server in-process and wait for the socket so Boot doesn't fail.
-	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
-	adminCtx, stopAdmin := context.WithCancel(ctx)
-	t.Cleanup(stopAdmin)
-	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
-	require.Eventually(t, func() bool {
-		_, err := net.Dial("unix", docker.AdminSocketPath())
-		return err == nil
-	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+	startAdminServer(t, ctx)
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:     "whoami",
@@ -185,18 +168,14 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	}, 5*time.Second)
 
 	// -- open the form and enable Tailscale --
-	// The credential fields are focused in tab order; the tag is prefilled with
-	// tag:once. Under the control seam the credentials are unused: enable skips
-	// SaaS OAuth (and with it the credential probe) and boots directly.
+	// The tag keeps its tag:once prefill and the mode its sidecar default.
+	// Under the control seam the credentials are unused: enable skips SaaS OAuth
+	// (and with it the credential probe) and boots directly.
 	d.send(keyMsg("t"))
 	d.waitForView("Client ID", 5*time.Second)
-	d.typeText("unused-with-control-seam")
-	d.send(keyMsg("tab")) // → Client Secret
-	d.typeText("unused-with-control-seam")
-	d.send(keyMsg("tab"))   // → Tag (keep the tag:once prefill)
-	d.send(keyMsg("tab"))   // → Mode (keep the sidecar default)
-	d.send(keyMsg("tab"))   // → Enable
-	d.send(keyMsg("enter")) // submit
+	d.fillField("client-id", "unused-with-control-seam")
+	d.fillField("client-secret", "unused-with-control-seam")
+	d.click("submit")
 
 	// The form runs the real EnableTailscale and stays open (showing progress,
 	// which replaces the field labels) until the lifecycle finishes, then closes.
@@ -211,6 +190,15 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	// the retrofitted app carries the service labels.
 	docktailBefore, err := cli.ContainerInspect(ctx, ns.Name()+"-docktail")
 	require.NoError(t, err, "once-docktail should be running after enabling via the form")
+
+	// The form always passes what was typed; dropping the credentials the control
+	// seam makes unused is the enable lifecycle's job, so what the user typed
+	// never reaches the once label. The tag is not dropped.
+	stored, err := docker.UnmarshalTailscaleSettings(docktailBefore.Config.Labels["once"])
+	require.NoError(t, err)
+	assert.Empty(t, stored.ClientID)
+	assert.Empty(t, stored.ClientSecret)
+	assert.Equal(t, "tag:once", stored.Tag)
 
 	sidecarName := ns.Name() + "-tailscale"
 	require.Eventually(t, func() bool {
@@ -236,20 +224,14 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 
 	// -- re-enabling into host mode fails the pre-flight fast (the host
 	// tailscaled is hidden) and surfaces the error in the form --
-	d.send(keyMsg("tab"))   // → Client Secret
-	d.send(keyMsg("tab"))   // → Tag
-	d.send(keyMsg("tab"))   // → Mode
-	d.send(keyMsg("space")) // Sidecar → Host
-	d.send(keyMsg("tab"))   // → Enable
-	d.send(keyMsg("enter")) // submit
+	d.selectRadioOption("mode", "Host")
+	d.click("submit")
 	d.waitForView("host mode needs a running tailscaled", 30*time.Second)
 
 	// -- flipping back to sidecar and resubmitting unchanged settings is an
 	// idempotent no-op that closes the form without rebuilding the topology --
-	d.send(keyMsg("shift+tab")) // → Mode
-	d.send(keyMsg("space"))     // Host → Sidecar
-	d.send(keyMsg("tab"))       // → Enable
-	d.send(keyMsg("enter"))     // submit
+	d.selectRadioOption("mode", "Sidecar")
+	d.click("submit")
 	d.waitUntil(func() bool {
 		return !strings.Contains(d.viewContent(), "close")
 	}, 3*time.Minute)
@@ -265,16 +247,14 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	d.send(keyMsg("up"))
 	d.send(keyMsg("enter"))
 	d.waitForView("Image", 5*time.Second)
-	d.typeText(whoamiImage)
-	d.send(keyMsg("tab"))
-	d.send(keyMsg("enter"))
+	d.fillField("image", whoamiImage)
+	d.click("submit")
 
 	d.waitForView("Exposure", 5*time.Second)
 	view := d.viewContent()
 	assert.Contains(t, view, "(•) Tailnet", "tailnet should be preselected when Tailscale is enabled")
-	d.send(keyMsg("tab")) // → Host (keep the "whoami" suggestion)
-	d.send(keyMsg("tab")) // → Install
-	d.send(keyMsg("enter"))
+	// Keep the "whoami" service-name suggestion and install.
+	d.click("submit")
 
 	d.waitUntil(func() bool {
 		_ = ns.Refresh(ctx)
@@ -320,6 +300,53 @@ func (d *appDriver) send(msg tea.Msg) {
 func (d *appDriver) typeText(text string) {
 	for _, r := range text {
 		d.send(keyMsg(string(r)))
+	}
+}
+
+// click enters the update chain where a real click does once App has resolved
+// coordinates to a target name: App hands the event to the current screen, the
+// screen to any open overlay, and the component resolves the target itself.
+// It fails the test immediately, naming the target, if nothing on the current
+// screen is registered under that name - otherwise the click would silently
+// no-op and leave the driver typing into whatever was already focused.
+func (d *appDriver) click(target string) {
+	d.t.Helper()
+	view := d.viewContent()
+	if !mouse.Registered(target) {
+		d.t.Fatalf("click target %q is not registered on the current screen\n\nView:\n%s", target, view)
+	}
+	d.send(ui.MouseEvent{Target: target, IsClick: true})
+}
+
+// clickField clicks the form field with the given key. On a text field that
+// only moves focus; on a checkbox it toggles, and on a radio it cycles one
+// option - the same as pressing space with the field focused.
+func (d *appDriver) clickField(key string) {
+	d.click("field:" + key)
+}
+
+func (d *appDriver) fillField(key, text string) {
+	d.clickField(key)
+	d.typeText(text)
+}
+
+// maxRadioClicks bounds selectRadioOption so a label that never appears fails
+// with a view dump instead of spinning.
+const maxRadioClicks = 8
+
+// selectRadioOption clicks the keyed radio field until label is the selected
+// option. One click cycles one option, so a full cycle is the worst case.
+func (d *appDriver) selectRadioOption(key, label string) {
+	d.t.Helper()
+	selected := func() bool { return strings.Contains(d.viewContent(), "(•) "+label) }
+	for range maxRadioClicks {
+		if selected() {
+			return
+		}
+		d.clickField(key)
+	}
+	if !selected() {
+		d.t.Fatalf("radio %q never selected %q\n\nView:\n%s", key, label, d.viewContent())
 	}
 }
 
@@ -379,12 +406,21 @@ func (d *appDriver) flush() {
 	}
 }
 
+// processMsg runs on the test goroutine, so a rejected submit can fail the test
+// on the spot. The rejection rides a tea.Batch alongside the submitting form's
+// own command and the two are unordered, so this only assumes the message
+// arrives, not when.
 func (d *appDriver) processMsg(msg tea.Msg) {
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, cmd := range batch {
+	d.t.Helper()
+	switch msg := msg.(type) {
+	case tea.BatchMsg:
+		for _, cmd := range msg {
 			d.enqueueCmd(cmd)
 		}
 		return
+	case ui.FormSubmitRejectedMsg:
+		d.t.Fatalf("form rejected the submit on field %q: %s\n\nView:\n%s",
+			msg.Key, msg.Reason, d.viewContent())
 	}
 	_, cmd := d.app.Update(msg)
 	d.enqueueCmd(cmd)

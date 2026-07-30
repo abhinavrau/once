@@ -2,6 +2,7 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
@@ -165,6 +166,116 @@ func TestSettings_ViewShowsProgressWhileDeploying(t *testing.T) {
 	assert.NotEmpty(t, view)
 }
 
+func TestSettings_ProgressMsgMovesBarWhileDeploying(t *testing.T) {
+	s := deployingSettings()
+
+	s, cmd := updateSettings(s, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
+	assert.Equal(t, 42, s.progress.percent)
+	require.NotNil(t, cmd, "expected the wait command to be re-armed")
+
+	s.stream.report(docker.DeployProgress{Stage: docker.DeployStageStarting, Percentage: 7})
+	assert.Equal(t,
+		progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageStarting, Percentage: 7}},
+		runWithin(t, cmd),
+	)
+
+	s, _ = updateSettings(s, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageStarting}})
+	assert.Equal(t, -1, s.progress.percent)
+}
+
+func TestSettings_ProgressMsgIgnoredOnForm(t *testing.T) {
+	s := testSettings()
+	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	s, _ = updateSettings(s, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
+	assert.Equal(t, -1, s.progress.percent)
+}
+
+func TestSettings_ActionReportsProgressThroughItsCallback(t *testing.T) {
+	s := testSettings()
+	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	action := func(progress docker.DeployProgressCallback) (string, error) {
+		progress(docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42})
+		return "Update complete", nil
+	}
+
+	s, cmd := updateSettings(s, settingsRunActionMsg{action: action})
+	require.Equal(t, settingsStateRunningAction, s.state)
+
+	msgs := runBatch(t, cmd)
+	assert.Contains(t, msgs, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
+	assert.Contains(t, msgs, settingsActionFinishedMsg{message: "Update complete"})
+}
+
+// The apply path reports through the same plumbing; this pins the end of it, so
+// a finished apply can never leave the wait command blocked on the channel.
+func TestSettings_ApplyEndsTheProgressWait(t *testing.T) {
+	s := testSettings()
+	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// An invalid Configuration fails inside ApplySettings before it needs
+	// Docker, which keeps this a unit test.
+	invalid := s.app.Settings
+	invalid.Image = ""
+
+	s, cmd := updateSettings(s, SettingsSectionSubmitMsg{Settings: invalid})
+	require.Equal(t, settingsStateDeploying, s.state)
+
+	msgs := runBatch(t, cmd)
+	assert.Contains(t, msgs, settingsDeployFinishedMsg{err: docker.ErrImageRequired})
+	assert.Contains(t, msgs, nil, "expected the wait command to end when the channel closed")
+}
+
+func TestSettings_IgnoresASecondRunWhileOneIsInFlight(t *testing.T) {
+	s := testSettings()
+	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
+	s.state = settingsStateRunningAction
+	inFlight := newProgressStream()
+	s.stream = inFlight
+
+	s, cmd := updateSettings(s, settingsRunActionMsg{action: func(docker.DeployProgressCallback) (string, error) {
+		return "", nil
+	}})
+	assert.Nil(t, cmd)
+	assert.Same(t, inFlight, s.stream)
+}
+
+// A cancel landing mid-run used to discard this model, taking the drain loop
+// and the handler for the run's result with it.
+func TestSettings_CancelIsIgnoredWhileARunIsInFlight(t *testing.T) {
+	for _, state := range []settingsState{settingsStateDeploying, settingsStateRunningAction} {
+		s := deployingSettings()
+		s.state = state
+
+		s, cmd := updateSettings(s, SettingsSectionCancelMsg{})
+		assert.Nil(t, cmd)
+		assert.Equal(t, state, s.state)
+	}
+}
+
+// The cancel guard exists so the run's completion still has a handler: a
+// discarded model would drop this message, stranding the app with the old
+// container removed and the new one never started.
+func TestSettings_DeployCompletionSurvivesACancel(t *testing.T) {
+	s := deployingSettings()
+
+	s, _ = updateSettings(s, SettingsSectionCancelMsg{})
+	require.Equal(t, settingsStateDeploying, s.state)
+
+	_, cmd := updateSettings(s, settingsDeployFinishedMsg{})
+	require.NotNil(t, cmd)
+	assert.Equal(t, NavigateToAppMsg{App: s.app}, cmd())
+}
+
+func TestSettings_CancelLeavesAnIdleForm(t *testing.T) {
+	s := testSettings()
+
+	_, cmd := updateSettings(s, SettingsSectionCancelMsg{})
+	require.NotNil(t, cmd)
+	assert.Equal(t, NavigateToDashboardMsg{AppName: s.app.Settings.Name}, cmd())
+}
+
 // Helpers
 
 func testSettings() Settings {
@@ -181,7 +292,42 @@ func testSettings() Settings {
 	return NewSettings(ns, app, SettingsSectionApplication)
 }
 
+// deployingSettings returns a sized model mid-deploy, with the live stream a
+// real run would have opened.
+func deployingSettings() Settings {
+	s, _ := updateSettings(testSettings(), tea.WindowSizeMsg{Width: 80, Height: 24})
+	s.state = settingsStateDeploying
+	return s.startProgress()
+}
+
 func updateSettings(s Settings, msg tea.Msg) (Settings, tea.Cmd) {
 	comp, cmd := s.Update(msg)
 	return comp.(Settings), cmd
+}
+
+// runBatch collects the messages a batch produces. The commands run
+// concurrently because the wait-for-progress command only returns once the
+// task command has reported.
+func runBatch(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	require.NotNil(t, cmd)
+
+	batch, ok := cmd().(tea.BatchMsg)
+	require.True(t, ok, "expected a tea.BatchMsg")
+
+	produced := make(chan tea.Msg, len(batch))
+	for _, c := range batch {
+		go func() { produced <- c() }()
+	}
+
+	msgs := make([]tea.Msg, 0, len(batch))
+	for range batch {
+		select {
+		case msg := <-produced:
+			msgs = append(msgs, msg)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for batch commands")
+		}
+	}
+	return msgs
 }

@@ -8,6 +8,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 
 	"github.com/basecamp/once/internal/docker"
@@ -24,11 +25,20 @@ var appKeys = struct {
 	Quit: WithHelp(NewKeyBinding("ctrl+c"), "ctrl+c", "quit"),
 }
 
+const (
+	// quitNoticeDuration is how long the "busy, quit refused" notice stays on
+	// screen before it clears itself.
+	quitNoticeDuration = 2 * time.Second
+
+	quitNoticeText = "Busy - finishing current action; quit when done."
+)
+
 type (
 	namespaceChangedMsg    struct{}
 	scrapeTickMsg          struct{}
 	scrapeUserStatsTickMsg struct{}
 	scrapeDoneMsg          struct{}
+	quitNoticeExpiredMsg   struct{}
 
 	NavigateToInstallMsg   struct{}
 	NavigateToDashboardMsg struct {
@@ -72,6 +82,7 @@ type App struct {
 	watchCtx        context.Context
 	watchCancel     context.CancelFunc
 	installImageRef string
+	quitNoticeShown bool
 }
 
 func NewApp(ns *docker.Namespace, installImageRef string) *App {
@@ -169,6 +180,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		if key.Matches(msg, appKeys.Quit) {
+			if m.screenIsBusy() {
+				return m, m.showQuitNotice()
+			}
 			m.shutdown()
 			return m, tea.Quit
 		}
@@ -243,8 +257,15 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.navigateTo(NewLogs(m.namespace, msg.App))
 
 	case QuitMsg:
+		if m.screenIsBusy() {
+			return m, m.showQuitNotice()
+		}
 		m.shutdown()
 		return m, tea.Quit
+
+	case quitNoticeExpiredMsg:
+		m.quitNoticeShown = false
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -256,6 +277,9 @@ func (m *App) View() tea.View {
 	var content string
 	if m.sizeGuard.LargeEnough() {
 		content = mouse.Sweep(m.currentScreen.View())
+		if m.quitNoticeShown {
+			content = m.overlayQuitNotice(content)
+		}
 	} else {
 		content = m.sizeGuard.View()
 	}
@@ -285,6 +309,36 @@ func Run(ns *docker.Namespace, installImageRef string) error {
 }
 
 // Private
+
+// screenIsBusy reports whether the current screen owns a task the process
+// must not abandon mid-flight (a settings action, a deploy, an install, a
+// removal). Both doors to shutdown+quit - the ctrl+c key and QuitMsg - check
+// this before acting, so quitting through either one is guarded the same way.
+func (m *App) screenIsBusy() bool {
+	busy, ok := m.currentScreen.(Busy)
+	return ok && busy.Busy()
+}
+
+// showQuitNotice marks the guarded-quit notice visible and schedules it to
+// clear itself, so a refused quit reads as "busy, try again shortly" rather
+// than a hung TUI.
+func (m *App) showQuitNotice() tea.Cmd {
+	m.quitNoticeShown = true
+	return tea.Tick(quitNoticeDuration, func(time.Time) tea.Msg { return quitNoticeExpiredMsg{} })
+}
+
+// overlayQuitNotice composites the guarded-quit notice on top of the current
+// screen's rendered content without altering its layout, matching how
+// PopupHelp overlays on top of Install.
+func (m *App) overlayQuitNotice(content string) string {
+	notice := lipgloss.NewStyle().
+		Foreground(Colors.Warning).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(Colors.Warning).
+		Padding(0, 1).
+		Render(quitNoticeText)
+	return OverlayCenter(content, notice, m.lastSize.Width, m.lastSize.Height)
+}
 
 func (m *App) scheduleNextScrapeTick() tea.Cmd {
 	return tea.Every(ChartUpdateInterval, func(time.Time) tea.Msg { return scrapeTickMsg{} })

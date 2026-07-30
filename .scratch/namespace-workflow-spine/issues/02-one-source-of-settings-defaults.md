@@ -17,10 +17,14 @@ Configuration the same way than to move it and then reconcile the defaults.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] One exported default Configuration exists and is the only place a field's default value is written
 - [ ] The CLI's deploy flags take their defaults from it
 - [ ] The TUI install path builds its Configuration from it rather than a hand-written literal
 - [ ] An app installed via the TUI and one deployed via the CLI with no flags have identical Configuration apart from name, image, host and exposure
 - [ ] A test fails if a Configuration field gains a non-zero default in one path but not the other
+
+## Comments
+
+2026-07-29 (coordinator): implemented and merged to main in commit d648ebf (branch namespace-workflow-spine-tickets, merged before the candidate 02-07 review round). Status set to done to match.

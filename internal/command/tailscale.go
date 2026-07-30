@@ -102,9 +102,11 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 // Private
 
 func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	settings := docker.TailscaleSettings{Tag: t.tag, Mode: t.mode}
-	if !docker.TailscaleControlSeamActive() {
-		settings.ClientID, settings.ClientSecret = t.clientID, t.clientSecret
+	settings := docker.TailscaleSettings{
+		ClientID:     t.clientID,
+		ClientSecret: t.clientSecret,
+		Tag:          t.tag,
+		Mode:         t.mode,
 	}
 	var warnings []string
 	err := runShowingProgress("tailscale enable", func(progress docker.DeployProgressCallback) error {

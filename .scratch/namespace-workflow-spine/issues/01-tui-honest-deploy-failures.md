@@ -29,7 +29,7 @@ by each frontend.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A settings change whose roll fails shows the error on the settings screen instead of navigating to the app
 - [ ] After a failed roll, the Application's in-memory Configuration is the one that was running before the change
@@ -37,3 +37,7 @@ by each frontend.
 - [ ] `ErrTailscaleNotEnabled`'s message names the condition without naming a CLI command
 - [ ] The CLI still tells the user to run `once tailscale enable` when it reports that condition
 - [ ] The characterization test asserting navigate-on-error is replaced by one asserting the error is surfaced
+
+## Comments
+
+2026-07-29 (coordinator): implemented and merged to main in commit aee4f6c (branch namespace-workflow-spine-tickets, merged before the candidate 02-07 review round). Status set to done to match.

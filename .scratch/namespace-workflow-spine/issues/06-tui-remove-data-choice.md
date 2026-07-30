@@ -18,7 +18,7 @@ closes the frontend behaviour gap.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] The TUI remove screen offers a choice between removing only the Application and removing it with its data
 - [ ] The default choice keeps the data, matching the CLI's default
@@ -26,3 +26,7 @@ closes the frontend behaviour gap.
 - [ ] Removing with keep-data leaves the Application's volume in place; removing with data deletes it
 - [ ] CLI remove behaviour and flag default are unchanged
 - [ ] Integration tests pass, with the TUI remove driver updated for the new choice in the same change
+
+## Comments
+
+2026-07-29 (coordinator): implemented and merged to main in commit 053c64c (branch namespace-workflow-spine-tickets, merged before the candidate 02-07 review round). Status set to done to match.

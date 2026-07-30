@@ -2,12 +2,14 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -265,4 +267,245 @@ func TestContainerAppName(t *testing.T) {
 	t.Run("no ID suffix", func(t *testing.T) {
 		assert.Equal(t, "", ns.containerAppName("once-app-campfire"))
 	})
+}
+
+type mockRestoreClient struct {
+	containers []container.Summary
+	listErr    error
+	startedAt  map[string]string
+	inspectErr map[string]error
+	inspected  []string
+}
+
+func (m *mockRestoreClient) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.containers, nil
+}
+
+// A successful inspect always carries a populated base, as the daemon's does.
+func (m *mockRestoreClient) ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
+	m.inspected = append(m.inspected, containerID)
+	if err := m.inspectErr[containerID]; err != nil {
+		return container.InspectResponse{}, err
+	}
+	return container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			State: &container.State{StartedAt: m.startedAt[containerID]},
+		},
+	}, nil
+}
+
+func TestRestoreStateDecodesApplicationLabels(t *testing.T) {
+	ns := newRestoreTestNamespace()
+	client := &mockRestoreClient{
+		containers: []container.Summary{
+			appSummary("id-blog", "once-app-blog-a1b2c3", 100, "running", appSettings("blog")),
+			appSummary("id-wiki", "once-app-wiki-d4e5f6", 200, "exited", appSettings("wiki")),
+		},
+	}
+
+	require.NoError(t, ns.restoreState(context.Background(), client))
+
+	require.Len(t, ns.Applications(), 2)
+
+	blog := ns.Application("blog")
+	require.NotNil(t, blog)
+	assert.Equal(t, "blog.localhost", blog.Settings.Host)
+	assert.Equal(t, "blog:latest", blog.Settings.Image)
+	assert.True(t, blog.Running)
+
+	wiki := ns.Application("wiki")
+	require.NotNil(t, wiki)
+	assert.False(t, wiki.Running)
+}
+
+func TestRestoreStateKeepsNewestContainerPerApp(t *testing.T) {
+	older := appSettings("blog")
+	older.Image = "blog:1"
+	newer := appSettings("blog")
+	newer.Image = "blog:2"
+
+	restore := func(t *testing.T, containers ...container.Summary) *Application {
+		ns := newRestoreTestNamespace()
+		require.NoError(t, ns.restoreState(context.Background(), &mockRestoreClient{containers: containers}))
+		require.Len(t, ns.Applications(), 1)
+		return ns.Application("blog")
+	}
+
+	oldContainer := appSummary("id-old", "once-app-blog-a1b2c3", 100, "exited", older)
+	newContainer := appSummary("id-new", "once-app-blog-d4e5f6", 200, "running", newer)
+
+	t.Run("newest listed last", func(t *testing.T) {
+		app := restore(t, oldContainer, newContainer)
+		assert.Equal(t, "blog:2", app.Settings.Image)
+		assert.True(t, app.Running)
+	})
+
+	t.Run("newest listed first", func(t *testing.T) {
+		app := restore(t, newContainer, oldContainer)
+		assert.Equal(t, "blog:2", app.Settings.Image)
+		assert.True(t, app.Running)
+	})
+}
+
+func TestRestoreStateDecodesProxyLabel(t *testing.T) {
+	settings := ProxySettings{HTTPPort: 8080, HTTPSPort: 8443, MetricsPort: 9100}
+	ns := newRestoreTestNamespace()
+	client := &mockRestoreClient{
+		containers: []container.Summary{
+			labelledSummary("id-proxy", "once-proxy", 100, "running", settings.Marshal()),
+		},
+	}
+
+	require.NoError(t, ns.restoreState(context.Background(), client))
+
+	require.NotNil(t, ns.Proxy().Settings)
+	assert.Equal(t, settings, *ns.Proxy().Settings)
+}
+
+func TestRestoreStateLeavesProxySettingsUnsetWithoutLabel(t *testing.T) {
+	ns := newRestoreTestNamespace()
+	client := &mockRestoreClient{
+		containers: []container.Summary{
+			labelledSummary("id-proxy", "once-proxy", 100, "running", ""),
+			appSummary("id-blog", "once-app-blog-a1b2c3", 200, "exited", appSettings("blog")),
+		},
+	}
+
+	require.NoError(t, ns.restoreState(context.Background(), client))
+
+	assert.Nil(t, ns.Proxy().Settings)
+	// The app proves the restore did walk the list past the unlabelled proxy.
+	assert.Len(t, ns.Applications(), 1)
+}
+
+func TestRestoreStateFailsWhenListingContainersFails(t *testing.T) {
+	ns := newRestoreTestNamespace()
+	client := &mockRestoreClient{listErr: errors.New("daemon unreachable")}
+
+	assert.ErrorContains(t, ns.restoreState(context.Background(), client), "daemon unreachable")
+}
+
+func TestRestoreStateCapturesRunningSince(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 12, 30, 0, 0, time.UTC)
+	ns := newRestoreTestNamespace()
+	client := &mockRestoreClient{
+		containers: []container.Summary{
+			appSummary("id-blog", "once-app-blog-a1b2c3", 100, "running", appSettings("blog")),
+			appSummary("id-wiki", "once-app-wiki-d4e5f6", 200, "exited", appSettings("wiki")),
+		},
+		startedAt: map[string]string{"id-blog": startedAt.Format(time.RFC3339Nano)},
+	}
+
+	require.NoError(t, ns.restoreState(context.Background(), client))
+
+	assert.Equal(t, startedAt, ns.Application("blog").RunningSince)
+	assert.True(t, ns.Application("wiki").RunningSince.IsZero())
+	// A stopped app has no start time to read, so it is never inspected.
+	assert.Equal(t, []string{"id-blog"}, client.inspected)
+}
+
+// An inspect failure drops only the start time: the app is still restored, and
+// still reported as running. Changing that belongs to the label module work.
+func TestRestoreStateKeepsRunningAppWhenInspectFails(t *testing.T) {
+	ns := newRestoreTestNamespace()
+	client := &mockRestoreClient{
+		containers: []container.Summary{
+			appSummary("id-blog", "once-app-blog-a1b2c3", 100, "running", appSettings("blog")),
+		},
+		inspectErr: map[string]error{"id-blog": errors.New("no such container")},
+	}
+
+	require.NoError(t, ns.restoreState(context.Background(), client))
+
+	blog := ns.Application("blog")
+	require.NotNil(t, blog)
+	assert.True(t, blog.Running)
+	assert.True(t, blog.RunningSince.IsZero())
+}
+
+// A corrupt settings label aborts the whole restore, so apps decoded before it
+// are dropped too. Changing that belongs to the label module work.
+func TestRestoreStateFailsOnCorruptLabel(t *testing.T) {
+	t.Run("app label", func(t *testing.T) {
+		ns := newRestoreTestNamespace()
+		client := &mockRestoreClient{
+			containers: []container.Summary{
+				appSummary("id-blog", "once-app-blog-a1b2c3", 100, "exited", appSettings("blog")),
+				labelledSummary("id-wiki", "once-app-wiki-d4e5f6", 200, "exited", "{not json"),
+			},
+		}
+
+		require.Error(t, ns.restoreState(context.Background(), client))
+		assert.Empty(t, ns.Applications())
+	})
+
+	t.Run("proxy label", func(t *testing.T) {
+		ns := newRestoreTestNamespace()
+		client := &mockRestoreClient{
+			containers: []container.Summary{
+				labelledSummary("id-proxy", "once-proxy", 100, "running", "{not json"),
+			},
+		}
+
+		require.Error(t, ns.restoreState(context.Background(), client))
+		assert.Nil(t, ns.Proxy().Settings)
+	})
+}
+
+func TestRestoreStateIgnoresContainersOutsideNamespace(t *testing.T) {
+	ns := newRestoreTestNamespace()
+	client := &mockRestoreClient{
+		containers: []container.Summary{
+			appSummary("id-blog", "once-app-blog-a1b2c3", 100, "exited", appSettings("blog")),
+			labelledSummary("id-other-app", "other-app-wiki-d4e5f6", 200, "running", "{not json"),
+			labelledSummary("id-other-proxy", "other-proxy", 200, "running", "{not json"),
+			labelledSummary("id-sidecar", "once-tailscale", 200, "running", "{not json"),
+			labelledSummary("id-admin", "once-admin", 200, "running", "{not json"),
+			labelledSummary("id-unnamed", "", 200, "running", "{not json"),
+		},
+	}
+
+	require.NoError(t, ns.restoreState(context.Background(), client))
+
+	require.Len(t, ns.Applications(), 1)
+	assert.Equal(t, "blog", ns.Applications()[0].Settings.Name)
+	assert.Nil(t, ns.Proxy().Settings)
+}
+
+// Helpers
+
+func newRestoreTestNamespace() *Namespace {
+	ns := &Namespace{name: "once"}
+	ns.proxy = NewProxy(ns)
+	return ns
+}
+
+func appSummary(id, name string, created int64, state string, settings ApplicationSettings) container.Summary {
+	return labelledSummary(id, name, created, state, settings.Marshal())
+}
+
+func labelledSummary(id, name string, created int64, state, label string) container.Summary {
+	summary := container.Summary{
+		ID:      id,
+		Created: created,
+		State:   state,
+	}
+	if name != "" {
+		summary.Names = []string{"/" + name}
+	}
+	if label != "" {
+		summary.Labels = map[string]string{labelKey: label}
+	}
+	return summary
+}
+
+func appSettings(name string) ApplicationSettings {
+	settings := DefaultApplicationSettings()
+	settings.Name = name
+	settings.Host = name + ".localhost"
+	settings.Image = name + ":latest"
+	return settings
 }

@@ -19,11 +19,6 @@ const (
 	stageVerifying
 )
 
-type installProgressMsg struct {
-	stage      installStage
-	percentage int
-}
-
 type installDoneMsg struct {
 	app      *docker.Application
 	warnings []string
@@ -46,32 +41,24 @@ type InstallActivity struct {
 	exposure      docker.Exposure
 	width, height int
 	stage         installStage
-	percentage    int
 	progress      Progress
-	progressChan  chan installProgressMsg
-	doneChan      chan installDoneMsg
-	ctx           context.Context
-	cancel        context.CancelFunc
+	stream        *progressStream
 }
 
 func NewInstallActivity(ns *docker.Namespace, imageRef, hostname string, exposure docker.Exposure) *InstallActivity {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &InstallActivity{
-		namespace:    ns,
-		imageRef:     imageRef,
-		hostname:     hostname,
-		exposure:     exposure,
-		stage:        stagePreparing,
-		progress:     NewProgress(0, Colors.Primary),
-		progressChan: make(chan installProgressMsg, 10),
-		doneChan:     make(chan installDoneMsg, 1),
-		ctx:          ctx,
-		cancel:       cancel,
+		namespace: ns,
+		imageRef:  imageRef,
+		hostname:  hostname,
+		exposure:  exposure,
+		stage:     stagePreparing,
+		progress:  NewProgress(0, Colors.Primary),
+		stream:    newProgressStream(),
 	}
 }
 
 func (m *InstallActivity) Init() tea.Cmd {
-	return tea.Batch(m.progress.Init(), m.startInstall(), m.waitForProgress())
+	return tea.Batch(m.progress.Init(), m.stream.Run(m.runInstall), m.stream.Wait())
 }
 
 func (m *InstallActivity) Update(msg tea.Msg) tea.Cmd {
@@ -80,16 +67,10 @@ func (m *InstallActivity) Update(msg tea.Msg) tea.Cmd {
 		m.width, m.height = msg.Width, msg.Height
 		m.progress = m.progress.SetWidth(min(m.width-4, 60))
 
-	case installProgressMsg:
-		m.stage = msg.stage
-		m.percentage = msg.percentage
-		switch msg.stage {
-		case stageDownloading:
-			m.progress = m.progress.SetPercent(msg.percentage)
-		default:
-			m.progress = m.progress.SetPercent(-1)
-		}
-		return m.waitForProgress()
+	case progressUpdateMsg:
+		m.stage = installStageFor(msg.progress.Stage, m.stage)
+		m.progress = m.progress.SetPercent(progressBarPercent(msg.progress))
+		return m.stream.Wait()
 
 	case installDoneMsg:
 		if msg.err != nil {
@@ -127,64 +108,40 @@ func (m *InstallActivity) View() string {
 }
 
 func (m *InstallActivity) Cancel() {
-	if m.cancel != nil {
-		m.cancel()
-	}
+	m.stream.Cancel()
 }
 
 // Private
 
-func (m *InstallActivity) startInstall() tea.Cmd {
-	return func() tea.Msg {
-		go m.runInstall(m.ctx)
-		return nil
-	}
-}
-
-func (m *InstallActivity) waitForProgress() tea.Cmd {
-	return func() tea.Msg {
-		select {
-		case progress, ok := <-m.progressChan:
-			if ok {
-				return progress
-			}
-		case done := <-m.doneChan:
-			return done
-		}
-		return nil
-	}
-}
-
-func (m *InstallActivity) runInstall(ctx context.Context) {
+func (m *InstallActivity) runInstall(ctx context.Context, progress docker.DeployProgressCallback) (msg tea.Msg) {
 	defer func() {
 		if r := recover(); r != nil {
-			m.doneChan <- installDoneMsg{err: fmt.Errorf("install panicked: %v", r)}
+			msg = installDoneMsg{err: fmt.Errorf("install panicked: %v", r)}
 		}
 	}()
 
-	m.progressChan <- installProgressMsg{stage: stagePreparing}
-
-	progress := func(p docker.DeployProgress) {
-		switch p.Stage {
-		case docker.DeployStageDownloading:
-			m.progressChan <- installProgressMsg{stage: stageDownloading, percentage: p.Percentage}
-		case docker.DeployStageStarting:
-			m.progressChan <- installProgressMsg{stage: stageStarting, percentage: 100}
-		case docker.DeployStageWaiting:
-			m.progressChan <- installProgressMsg{stage: stageVerifying}
-		}
-	}
-
 	app, warnings, err := m.namespace.Deploy(ctx, installSettings(m.imageRef, m.hostname, m.exposure), progress)
 	if err != nil {
-		m.doneChan <- installDoneMsg{err: err}
-		return
+		return installDoneMsg{err: err}
 	}
-
-	m.doneChan <- installDoneMsg{app: app, warnings: warnings}
+	return installDoneMsg{app: app, warnings: warnings}
 }
 
 // Helpers
+
+// installStageFor maps a deploy stage onto the install activity's status text,
+// keeping the current stage for stages it does not narrate.
+func installStageFor(stage docker.DeployStage, current installStage) installStage {
+	switch stage {
+	case docker.DeployStageDownloading:
+		return stageDownloading
+	case docker.DeployStageStarting:
+		return stageStarting
+	case docker.DeployStageWaiting:
+		return stageVerifying
+	}
+	return current
+}
 
 // installSettings builds a freshly installed app's settings from the shared
 // defaults, so TUI installs and flagless CLI deploys start life identically.

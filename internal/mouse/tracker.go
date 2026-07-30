@@ -44,6 +44,12 @@ func Resolve(x, y int) string {
 	return defaultTracker.Resolve(x, y)
 }
 
+// Registered reports whether name was marked as a click target in the most
+// recent Sweep, using the default tracker.
+func Registered(name string) bool {
+	return defaultTracker.Registered(name)
+}
+
 // Mark wraps content with a pair of zero-width CSI markers that will be
 // resolved to screen coordinates during Sweep.
 func (mt *Tracker) Mark(name, content string) string {
@@ -148,4 +154,15 @@ func (mt *Tracker) Resolve(x, y int) string {
 		}
 	}
 	return ""
+}
+
+// Registered reports whether name was marked as a click target in the most
+// recent Sweep.
+func (mt *Tracker) Registered(name string) bool {
+	for _, z := range mt.zones {
+		if z.name == name {
+			return true
+		}
+	}
+	return false
 }

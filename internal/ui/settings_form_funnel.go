@@ -12,18 +12,13 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	funnelEnableField = iota
-	funnelDurationField
-)
-
 type SettingsFormFunnel struct {
 	settingsFormBase
 }
 
 // NewSettingsFormFunnel builds the Funnel form. tailscaleEnabled only drives
-// the status line rendered at build time; the submit path checks live inside
-// Namespace.EnableFunnel.
+// the status line rendered at build time; whether Tailscale is live is checked
+// inside Namespace.EnableFunnel.
 func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailscaleEnabled bool) SettingsFormFunnel {
 	enableField := NewCheckboxField("Expose publicly via Funnel", app.Settings.FunnelEnabled())
 	durationField := NewTextField("10m")
@@ -33,8 +28,8 @@ func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailsc
 		settingsFormBase: settingsFormBase{
 			title: "Tailscale Funnel",
 			form: NewForm("Save",
-				FormItem{Label: "Funnel", Field: enableField},
-				FormItem{Label: "Duration (max 24h)", Field: durationField},
+				FormItem{Key: "enable", Label: "Funnel", Field: enableField},
+				FormItem{Key: "duration", Label: "Duration (max 24h)", Field: durationField},
 			),
 		},
 	}
@@ -57,10 +52,16 @@ func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailsc
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
-		enable := f.CheckboxField(funnelEnableField).Checked()
-		duration := f.TextField(funnelDurationField).Value()
+		enable := f.CheckboxField("enable").Checked()
+		duration, err := parseFunnelDuration(f.TextField("duration").Value())
+		// Only an enable spends the duration, which is why the field isn't
+		// Required: a disable must go through whatever the field holds.
+		if enable && err != nil {
+			f.SetError("duration", err.Error())
+			return nil
+		}
 		return func() tea.Msg {
-			return settingsRunActionMsg{action: func() (string, error) {
+			return settingsRunActionMsg{action: func(_ docker.DeployProgressCallback) (string, error) {
 				return applyFunnel(ns, app, enable, duration)
 			}}
 		}
@@ -80,7 +81,7 @@ func (m SettingsFormFunnel) Update(msg tea.Msg) (SettingsSection, tea.Cmd) {
 
 // Helpers
 
-func applyFunnel(ns *docker.Namespace, app *docker.Application, enable bool, durationStr string) (string, error) {
+func applyFunnel(ns *docker.Namespace, app *docker.Application, enable bool, duration time.Duration) (string, error) {
 	ctx := context.Background()
 
 	if !enable {
@@ -93,10 +94,6 @@ func applyFunnel(ns *docker.Namespace, app *docker.Application, enable bool, dur
 		return "Funnel disabled", nil
 	}
 
-	duration, err := time.ParseDuration(strings.TrimSpace(durationStr))
-	if err != nil {
-		return "", fmt.Errorf("invalid duration %q (e.g. 10m, 2h)", durationStr)
-	}
 	url, _, err := ns.EnableFunnel(ctx, app, duration)
 	if err != nil {
 		return "", funnelUserError(err)
@@ -121,6 +118,23 @@ func funnelURLForApp(ts *docker.Tailscale, app *docker.Application) string {
 		return ""
 	}
 	return settings.FunnelURL(app.Settings.ActiveFunnelPort())
+}
+
+// parseFunnelDuration applies the same bounds the Funnel spine applies, so a
+// value that spine would reject never leaves the form.
+func parseFunnelDuration(value string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, errors.New("duration is required (e.g. 10m, 2h)")
+	}
+	duration, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q (e.g. 10m, 2h)", trimmed)
+	}
+	if err := docker.ValidateFunnelDuration(duration); err != nil {
+		return 0, err
+	}
+	return duration, nil
 }
 
 func durationFromExpiry(expiresAt *time.Time, now time.Time) string {

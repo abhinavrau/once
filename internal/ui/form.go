@@ -1,7 +1,7 @@
 package ui
 
 import (
-	"strconv"
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -29,7 +29,6 @@ type FormField interface {
 	Focus() tea.Cmd
 	Blur()
 	SetWidth(int)
-	IsFocusable() bool
 }
 
 type valuer interface {
@@ -105,8 +104,6 @@ func (f *TextField) SetWidth(w int) {
 	f.input.SetWidth(w)
 }
 
-func (f *TextField) IsFocusable() bool { return true }
-
 // CheckboxField
 
 type CheckboxField struct {
@@ -158,10 +155,9 @@ func (f *CheckboxField) View() string {
 	return "[ ] " + f.label
 }
 
-func (f *CheckboxField) Focus() tea.Cmd    { return nil }
-func (f *CheckboxField) Blur()             {}
-func (f *CheckboxField) SetWidth(int)      {}
-func (f *CheckboxField) IsFocusable() bool { return true }
+func (f *CheckboxField) Focus() tea.Cmd { return nil }
+func (f *CheckboxField) Blur()          {}
+func (f *CheckboxField) SetWidth(int)   {}
 
 // RadioField
 
@@ -215,10 +211,9 @@ func (f *RadioField) View() string {
 	return strings.Join(parts, "   ")
 }
 
-func (f *RadioField) Focus() tea.Cmd    { return nil }
-func (f *RadioField) Blur()             {}
-func (f *RadioField) SetWidth(int)      {}
-func (f *RadioField) IsFocusable() bool { return true }
+func (f *RadioField) Focus() tea.Cmd { return nil }
+func (f *RadioField) Blur()          {}
+func (f *RadioField) SetWidth(int)   {}
 
 // Private
 
@@ -232,32 +227,6 @@ func (f *RadioField) choose(i int) {
 	}
 }
 
-// StaticField
-
-type StaticField struct {
-	value   string
-	styleFn func(string) string
-}
-
-func NewStaticField(value string, styleFn func(string) string) *StaticField {
-	return &StaticField{value: value, styleFn: styleFn}
-}
-
-func (f *StaticField) Value() string {
-	return f.value
-}
-
-func (f *StaticField) SetValue(v string) {
-	f.value = v
-}
-
-func (f *StaticField) Update(tea.Msg) tea.Cmd { return nil }
-func (f *StaticField) View() string           { return f.styleFn(f.value) }
-func (f *StaticField) Focus() tea.Cmd         { return nil }
-func (f *StaticField) Blur()                  {}
-func (f *StaticField) SetWidth(int)           {}
-func (f *StaticField) IsFocusable() bool      { return false }
-
 // FormActionButton
 
 type FormActionButton struct {
@@ -267,7 +236,10 @@ type FormActionButton struct {
 
 // Form
 
+// FormItem declares one field of a form. Key addresses the field from the
+// form's own file; it must be unique within the form and non-empty.
 type FormItem struct {
+	Key      string
 	Label    string
 	Field    FormField
 	Required bool
@@ -277,13 +249,21 @@ type FormSubmitMsg struct{}
 type FormCancelMsg struct{}
 type FormActionMsg struct{ Msg tea.Msg }
 
+// FormSubmitRejectedMsg reports a submit attempt that did not go through,
+// naming the errored field and the reason the form renders inline. Nothing in
+// production consumes it; it is here so observers can see a rejection.
+type FormSubmitRejectedMsg struct {
+	Key    string
+	Reason string
+}
+
 type Form struct {
 	items        []FormItem
 	submitLabel  string
 	actionButton *FormActionButton
 	focused      int
 	width        int
-	errorField   int
+	errorKey     string
 	error        string
 	onSubmit     func(f *Form) tea.Cmd
 	onCancel     func(f *Form) tea.Cmd
@@ -291,17 +271,15 @@ type Form struct {
 }
 
 func NewForm(submitLabel string, items ...FormItem) Form {
+	requireUniqueKeys(nil, items)
+
 	f := Form{
 		items:       items,
 		submitLabel: submitLabel,
 	}
 
-	for i, item := range items {
-		if item.Field.IsFocusable() {
-			f.focused = i
-			item.Field.Focus()
-			break
-		}
+	if len(items) > 0 {
+		items[0].Field.Focus()
 	}
 
 	return f
@@ -362,15 +340,11 @@ func (f Form) View() string {
 	errorStyle := lipgloss.NewStyle().Foreground(Colors.Error)
 
 	for i, item := range f.items {
-		if _, isStatic := item.Field.(*StaticField); isStatic {
-			parts = append(parts, item.Field.View())
-			continue
-		}
 		label := Styles.Label.Render(item.Label)
 
-		hasError := f.error != "" && i == f.errorField
+		hasError := f.error != "" && item.Key == f.errorKey
 		inputStyle := Styles.WithError(Styles.Focus(Styles.Input, f.focused == i), hasError)
-		field := mouse.Mark(fieldTarget(i), inputStyle.Render(item.Field.View()))
+		field := mouse.Mark(fieldTarget(item.Key), inputStyle.Render(item.Field.View()))
 
 		if hasError {
 			parts = append(parts, label, field, errorStyle.Render(f.error), "")
@@ -417,6 +391,8 @@ func (f *Form) OnRebuild(fn func(f *Form)) {
 }
 
 func (f *Form) AppendItems(items ...FormItem) {
+	requireUniqueKeys(f.items, items)
+
 	inputWidth := min(f.width-4, 60)
 	for _, item := range items {
 		item.Field.SetWidth(inputWidth)
@@ -432,24 +408,23 @@ func (f Form) Focused() int {
 	return f.focused
 }
 
-func (f Form) Field(i int) FormField {
-	return f.items[i].Field
+func (f Form) TextField(key string) *TextField {
+	return fieldAs[*TextField](f, key, "TextField")
 }
 
-func (f Form) TextField(i int) *TextField {
-	return f.items[i].Field.(*TextField)
+func (f Form) CheckboxField(key string) *CheckboxField {
+	return fieldAs[*CheckboxField](f, key, "CheckboxField")
 }
 
-func (f Form) CheckboxField(i int) *CheckboxField {
-	return f.items[i].Field.(*CheckboxField)
+func (f Form) RadioField(key string) *RadioField {
+	return fieldAs[*RadioField](f, key, "RadioField")
 }
 
-func (f Form) RadioField(i int) *RadioField {
-	return f.items[i].Field.(*RadioField)
-}
-
-func (f *Form) SetError(field int, message string) {
-	f.errorField = field
+// SetError places message under the named field. The key must name a field of
+// this form, so a drifted key dies rather than silently swallowing the error.
+func (f *Form) SetError(key, message string) {
+	_ = f.indexOf(key)
+	f.errorKey = key
 	f.error = message
 }
 
@@ -463,16 +438,27 @@ func (f Form) Error() string {
 
 // Private
 
+// indexOf returns the position of the keyed field, panicking if this form has
+// no field with that key.
+func (f Form) indexOf(key string) int {
+	for i, item := range f.items {
+		if item.Key == key {
+			return i
+		}
+	}
+	panic(fmt.Sprintf("form has no field with key %q", key))
+}
+
 func (f Form) focusNext() (Form, tea.Cmd) {
 	f.blurCurrent()
 	f.focused = (f.focused + 1) % f.totalCount()
-	return f.focusToNextFocusable()
+	return f, f.focusCurrent()
 }
 
 func (f Form) focusPrev() (Form, tea.Cmd) {
 	f.blurCurrent()
 	f.focused = (f.focused - 1 + f.totalCount()) % f.totalCount()
-	return f.focusToNextFocusable()
+	return f, f.focusCurrent()
 }
 
 func (f Form) blurCurrent() {
@@ -486,24 +472,6 @@ func (f Form) focusCurrent() tea.Cmd {
 		return f.items[f.focused].Field.Focus()
 	}
 	return nil
-}
-
-func (f Form) focusToNextFocusable() (Form, tea.Cmd) {
-	start := f.focused
-	for {
-		if f.focused < len(f.items) {
-			if f.items[f.focused].Field.IsFocusable() {
-				return f, f.focusCurrent()
-			}
-			f.focused = (f.focused + 1) % f.totalCount()
-		} else {
-			return f, nil
-		}
-
-		if f.focused == start {
-			return f, nil
-		}
-	}
 }
 
 func (f Form) handleEnter() (Form, tea.Cmd) {
@@ -528,9 +496,9 @@ func (f Form) handleClick(target string) (Form, tea.Cmd) {
 		return f, nil
 	}
 
-	for i := range f.items {
-		if target == fieldTarget(i) {
-			switch field := f.items[i].Field.(type) {
+	for i, item := range f.items {
+		if target == fieldTarget(item.Key) {
+			switch field := item.Field.(type) {
 			case *CheckboxField:
 				field.Toggle()
 			case *RadioField:
@@ -563,7 +531,7 @@ func (f Form) handleClick(target string) (Form, tea.Cmd) {
 }
 
 func (f *Form) clearErrorOnInput() {
-	if f.error != "" && f.focused == f.errorField {
+	if f.error != "" && f.focused < len(f.items) && f.items[f.focused].Key == f.errorKey {
 		f.error = ""
 	}
 }
@@ -571,25 +539,39 @@ func (f *Form) clearErrorOnInput() {
 func (f Form) submitIfValid() (Form, tea.Cmd) {
 	var valid bool
 	f, valid = f.validate()
-	if !valid {
-		return f.focusIndex(f.errorField)
+
+	var cmd tea.Cmd
+	if valid && f.onSubmit != nil {
+		cmd = f.onSubmit(&f)
 	}
-	if f.onSubmit != nil {
-		return f, f.onSubmit(&f)
+
+	// validate cleared any earlier error, so an error still set here is one the
+	// failing path just recorded (required-field validation or an OnSubmit
+	// callback), and the submit did not go through. Either way, focus returns
+	// to the errored field.
+	if f.HasError() {
+		var focusCmd tea.Cmd
+		f, focusCmd = f.focusIndex(f.indexOf(f.errorKey))
+		return f, tea.Batch(f.rejectionCmd(), cmd, focusCmd)
 	}
-	return f, nil
+	return f, cmd
+}
+
+func (f Form) rejectionCmd() tea.Cmd {
+	rejected := FormSubmitRejectedMsg{Key: f.errorKey, Reason: f.error}
+	return func() tea.Msg { return rejected }
 }
 
 func (f Form) validate() (Form, bool) {
 	f.error = ""
 
-	for i, item := range f.items {
-		if !item.Required || !item.Field.IsFocusable() {
+	for _, item := range f.items {
+		if !item.Required {
 			continue
 		}
 		if v, ok := item.Field.(valuer); ok {
 			if strings.TrimSpace(v.Value()) == "" {
-				f.errorField = i
+				f.errorKey = item.Key
 				f.error = item.Label + " is required"
 				return f, false
 			}
@@ -625,8 +607,38 @@ func (f Form) totalCount() int {
 
 // Helpers
 
-func fieldTarget(i int) string {
-	return "field:" + strconv.Itoa(i)
+// requireUniqueKeys panics unless every added item carries a key that is
+// non-empty and unused, so a drifted form declaration dies in the unit tests.
+func requireUniqueKeys(existing, added []FormItem) {
+	seen := make(map[string]bool, len(existing)+len(added))
+	for _, item := range existing {
+		seen[item.Key] = true
+	}
+
+	for i, item := range added {
+		index := len(existing) + i
+		switch {
+		case item.Key == "":
+			panic(fmt.Sprintf("form item %d (%q) has an empty key", index, item.Label))
+		case seen[item.Key]:
+			panic(fmt.Sprintf("form item %d (%q) reuses key %q", index, item.Label, item.Key))
+		}
+		seen[item.Key] = true
+	}
+}
+
+// fieldAs returns the keyed field as T, panicking if the form has no such key
+// or the field is of another type. Both are programmer errors.
+func fieldAs[T FormField](f Form, key, typeName string) T {
+	field, ok := f.items[f.indexOf(key)].Field.(T)
+	if !ok {
+		panic(fmt.Sprintf("form field %q is not a %s", key, typeName))
+	}
+	return field
+}
+
+func fieldTarget(key string) string {
+	return "field:" + key
 }
 
 func isDigitKey(k tea.Key) bool {

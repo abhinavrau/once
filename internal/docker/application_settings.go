@@ -1,10 +1,7 @@
 package docker
 
 import (
-	"encoding/json"
-	"reflect"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -65,10 +62,7 @@ type ApplicationSettings struct {
 	// written before ports were allocated).
 	FunnelPort int `json:"funnelPort,omitempty"`
 
-	// extra preserves label fields written by a newer version of Once, so a
-	// binary that predates a field doesn't destroy it when it rewrites the
-	// label on a container roll (as older daemons once did to "exposure").
-	extra map[string]json.RawMessage
+	labelExtra
 }
 
 // DefaultApplicationSettings is the single source of settings defaults: both
@@ -82,14 +76,9 @@ func DefaultApplicationSettings() ApplicationSettings {
 }
 
 func UnmarshalApplicationSettings(s string) (ApplicationSettings, error) {
-	var settings ApplicationSettings
-	err := json.Unmarshal([]byte(s), &settings)
+	settings, err := decodeLabel[ApplicationSettings](s, removedSettingsFields...)
 	if err != nil {
 		return settings, err
-	}
-	settings.extra = unknownFields([]byte(s), reflect.TypeOf(settings))
-	for _, removed := range removedSettingsFields {
-		delete(settings.extra, removed)
 	}
 	// Backfill apps deployed before the exposure field existed; the derived
 	// value is persisted to the label the next time the container is recreated.
@@ -100,21 +89,7 @@ func UnmarshalApplicationSettings(s string) (ApplicationSettings, error) {
 }
 
 func (s ApplicationSettings) Marshal() string {
-	b, _ := json.Marshal(s)
-	if len(s.extra) == 0 {
-		return string(b)
-	}
-	var merged map[string]json.RawMessage
-	if json.Unmarshal(b, &merged) != nil {
-		return string(b)
-	}
-	for k, v := range s.extra {
-		if _, known := merged[k]; !known {
-			merged[k] = v
-		}
-	}
-	b, _ = json.Marshal(merged)
-	return string(b)
+	return encodeLabel(s)
 }
 
 func (s ApplicationSettings) Validate() error {
@@ -214,27 +189,6 @@ func (s ApplicationSettings) BuildEnv(vol ApplicationVolumeSettings) []string {
 }
 
 // Helpers
-
-// unknownFields returns the JSON object fields of data that no exported field
-// of struct type t claims via its json tag - the fields a newer version of
-// Once wrote that this binary doesn't model.
-func unknownFields(data []byte, t reflect.Type) map[string]json.RawMessage {
-	var all map[string]json.RawMessage
-	if json.Unmarshal(data, &all) != nil {
-		return nil
-	}
-	for _, f := range reflect.VisibleFields(t) {
-		tag, _, _ := strings.Cut(f.Tag.Get("json"), ",")
-		if tag == "" {
-			tag = f.Name
-		}
-		delete(all, tag)
-	}
-	if len(all) == 0 {
-		return nil
-	}
-	return all
-}
 
 func funnelExpiryEqual(a, b *time.Time) bool {
 	if a == nil || b == nil {

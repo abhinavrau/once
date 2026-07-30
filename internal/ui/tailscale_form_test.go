@@ -16,8 +16,8 @@ func TestTailscaleForm_EnableFormShowsCredentialFieldsWithPrefilledTag(t *testin
 	m := NewTailscaleForm(newTestNamespace())
 
 	assert.Equal(t, 4, m.form.ItemCount())
-	assert.Equal(t, "tag:once", m.form.TextField(tailscaleTagField).Value())
-	assert.Equal(t, 0, m.form.RadioField(tailscaleModeField).Selected(), "sidecar should be preselected on a fresh enable")
+	assert.Equal(t, "tag:once", m.form.TextField("tag").Value())
+	assert.Equal(t, 0, m.form.RadioField("mode").Selected(), "sidecar should be preselected on a fresh enable")
 
 	view := m.View()
 	assert.Contains(t, view, "Client ID")
@@ -35,10 +35,10 @@ func TestTailscaleForm_EnabledFormShowsStoredSettingsWithBothActions(t *testing.
 		Mode:         docker.TailscaleModeHost,
 	})
 
-	assert.Equal(t, "K123456CNTRL", m.form.TextField(tailscaleClientIDField).Value())
-	assert.Equal(t, "tskey-client-secret", m.form.TextField(tailscaleClientSecretField).Value())
-	assert.Equal(t, "tag:custom", m.form.TextField(tailscaleTagField).Value())
-	assert.Equal(t, 1, m.form.RadioField(tailscaleModeField).Selected(), "stored host mode should preselect Host")
+	assert.Equal(t, "K123456CNTRL", m.form.TextField("client-id").Value())
+	assert.Equal(t, "tskey-client-secret", m.form.TextField("client-secret").Value())
+	assert.Equal(t, "tag:custom", m.form.TextField("tag").Value())
+	assert.Equal(t, 1, m.form.RadioField("mode").Selected(), "stored host mode should preselect Host")
 
 	view := m.View()
 	assert.Contains(t, view, "Tailscale is enabled")
@@ -55,15 +55,15 @@ func TestTailscaleForm_EnabledFormSubmitReenablesWithEditedMode(t *testing.T) {
 		Tag:          "tag:once",
 		Mode:         docker.TailscaleModeSidecar,
 	})
-	m.form.RadioField(tailscaleModeField).SetSelected(1)
+	m.form.RadioField("mode").SetSelected(1)
 
 	msg := submitAfterTabs(t, m.form, m.form.ItemCount())
 	assert.Equal(t, tailscaleEnableSubmitMsg{id: "id", secret: "secret", tag: "tag:once", mode: docker.TailscaleModeHost}, msg)
 }
 
-func TestTailscaleForm_EnabledFormDisableActionWorksWithEmptySeamSettings(t *testing.T) {
-	// Under the headscale control seam no credentials or tag are stored; the
-	// fields must not be required, or neither action could ever submit.
+func TestTailscaleForm_EnabledFormDisableActionWorksWithBlankStoredSettings(t *testing.T) {
+	// An enabled install's stored credentials may be blank; the fields must not
+	// be required then, or neither action could ever submit.
 	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{Mode: docker.TailscaleModeSidecar})
 
 	msg := submitAfterTabs(t, m.form, m.form.ItemCount()+1) // fields, Enable, → Disable action
@@ -73,9 +73,9 @@ func TestTailscaleForm_EnabledFormDisableActionWorksWithEmptySeamSettings(t *tes
 func TestTailscaleForm_SubmitCarriesSelectedMode(t *testing.T) {
 	submitMode := func(selected int) string {
 		m := NewTailscaleForm(newTestNamespace())
-		m.form.TextField(tailscaleClientIDField).SetValue("id")
-		m.form.TextField(tailscaleClientSecretField).SetValue("secret")
-		m.form.RadioField(tailscaleModeField).SetSelected(selected)
+		m.form.TextField("client-id").SetValue("id")
+		m.form.TextField("client-secret").SetValue("secret")
+		m.form.RadioField("mode").SetSelected(selected)
 
 		msg, ok := submitAfterTabs(t, m.form, m.form.ItemCount()).(tailscaleEnableSubmitMsg)
 		require.True(t, ok)

@@ -59,6 +59,10 @@ _Avoid_: storage volume, data dir.
 
 **`once` label**:
 The Docker label, keyed `once`, that holds a component's Configuration as JSON — app settings on the app container, proxy settings on the proxy, encryption keys on the volume.
+A binary never destroys label fields it does not model: unknown fields are carried through every rewrite, and only fields explicitly deleted from the schema (the removed-field denylist) are shed - the preservation doctrine, established by commit 3e47d59 and generalized by ADR-0008.
+
+**Label Codec**:
+The one module (`internal/docker/label.go`) that round-trips a `…Settings` struct through the `once` label: key, JSON encode/decode, unknown-field preservation, removed-field denylist. Every settings type goes through it; none hand-writes its own marshalling (ADR-0008).
 
 ## Lifecycle operations
 
@@ -108,6 +112,24 @@ _Avoid_: bootstrap credential, policy credential - the minting hierarchy they na
 
 **Tailscale Funnel**:
 A Tailscale feature that routes public internet traffic to a specific port on a tailnet node, enabling temporary public access.
+
+**Mode Resolution**:
+The enable-time rule (ADR-0007) turning a requested Tailscale mode into the effective one - explicit wins, empty keeps the stored mode, fresh enables default to the sidecar. Exists only at enable time; one implementation (ADR-0010).
+
+**Daemon Binding**:
+Mapping a resolved or stored mode to the Tailscale Daemon that serves it - host CLI for host mode, docker exec into the sidecar otherwise. One function; provider-shaped, so it must not be duplicated (ADR-0010).
+
+**Session (Tailscale)**:
+The per-operation resolution every Tailscale read path starts with - load the stored settings, bind the daemon they imply, hand both down. Distinct from Mode Resolution: sessions never see a requested mode.
+
+**Control Seam**:
+The hidden headscale env-var pair (pre-minted auth key + control URL) that replaces SaaS OAuth so integration tests run against headscale (ADR-0002). Read through one accessor only; invisible outside `internal/docker`.
+
+**Daemon Seam**:
+`TailscaleDaemon` - how Once reads state from a local tailscaled (host CLI or sidecar docker exec). One of the Tailscale subsystem's two seams to the outside world.
+
+**SaaS Seam**:
+`tailscaleAPI` - how Once reaches the Tailscale control-plane HTTP API (OAuth exchange, key mint, Service definitions, device lists). Deliberately Tailscale-specific: a second VPN provider gets a sibling seam, not a slot in a generic provider interface (ADR-0011).
 
 ## Interfaces
 

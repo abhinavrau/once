@@ -72,6 +72,21 @@ func TestInstall_SubmitTriggersActivity(t *testing.T) {
 	assert.Equal(t, installStateActivity, m.state)
 }
 
+// App guards its quit key on Busy, so an install running its activity screen
+// must report itself busy the same way a running Settings action does.
+func TestInstall_BusyWhileActivityRuns(t *testing.T) {
+	m := newTestInstall()
+	assert.False(t, m.Busy())
+
+	m, _ = updateInstall(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = updateInstall(m, InstallFormSubmitMsg{ImageRef: "ghcr.io/basecamp/once-campfire:latest", Hostname: "app.example.com", Exposure: docker.ExposurePublic})
+	require.Equal(t, installStateActivity, m.state)
+	assert.True(t, m.Busy())
+
+	m, _ = updateInstall(m, InstallActivityFailedMsg{Err: assert.AnError})
+	assert.False(t, m.Busy())
+}
+
 func TestInstall_SuccessNavigatesToApp(t *testing.T) {
 	m := newTestInstall()
 	app := &docker.Application{}

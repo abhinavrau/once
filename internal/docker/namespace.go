@@ -80,7 +80,7 @@ func RestoreNamespace(ctx context.Context, name string) (*Namespace, error) {
 		return nil, err
 	}
 
-	if err := ns.restoreState(ctx); err != nil {
+	if err := ns.restoreState(ctx, ns.client); err != nil {
 		return nil, err
 	}
 
@@ -263,14 +263,16 @@ func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, pr
 }
 
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
-// validate the exposed app names, the host-mode pre-flight (when the
-// effective mode is host), and the credentials, bring up the network,
-// boot the Docktail topology with the given credentials, boot once-admin so
-// it is exposed as a Service too, then verify every expected service is
-// advertised and approved before reporting success. The returned warnings
-// name any tailnet machines whose Magic DNS entries shadow a service, and
-// lead with the --mode host notice when a fresh enable defaulted to the
-// sidecar alongside a host tailscaled.
+// validate the exposed app names, normalize the settings the topology is built
+// from (the tag, and dropping OAuth credentials the control seam makes unused
+// so they are never stored), resolve the mode once and stamp it in, run the
+// host-mode pre-flight (when the resolved mode is host) and the credential
+// probe, bring up the network, boot the Docktail topology from those settings,
+// boot once-admin so it is exposed as a Service too, then verify
+// every expected service is advertised and approved before reporting success.
+// The returned warnings name any tailnet machines whose Magic DNS entries
+// shadow a service, and lead with the --mode host notice when a fresh enable
+// defaulted to the sidecar alongside a host tailscaled.
 func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings, progress DeployProgressCallback) ([]string, error) {
 	if err := ValidateTailscaleMode(settings.Mode); err != nil {
 		return nil, err
@@ -285,12 +287,15 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 	settings.Tag = settings.normalizeTag()
-	mode, err := n.tailscale.effectiveMode(ctx, settings.Mode)
+	settings = settings.suppressUnusedCredentials()
+	resolved, fresh, err := n.tailscale.resolveMode(ctx, settings.Mode)
 	if err != nil {
 		return nil, err
 	}
-	if mode == TailscaleModeHost {
-		if err := validateHostModePreflight(ctx, tailscaleAPIBaseURL, NewHostTailscaleDaemon(), settings); err != nil {
+	notice := hostModeNotice(settings.Mode, fresh)
+	settings.Mode = resolved
+	if settings.Mode == TailscaleModeHost {
+		if err := validateHostModePreflight(ctx, newTailscaleAPI(settings), n.tailscale.daemonFor(settings.Mode), settings); err != nil {
 			return nil, err
 		}
 	}
@@ -300,8 +305,7 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	if err := n.EnsureNetwork(ctx); err != nil {
 		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
-	notice, err := n.tailscale.Enable(ctx, settings)
-	if err != nil {
+	if err := n.tailscale.Enable(ctx, settings); err != nil {
 		return nil, fmt.Errorf("enabling Tailscale: %w", err)
 	}
 	if err := n.admin.Boot(ctx); err != nil {
@@ -379,12 +383,12 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 
 func (n *Namespace) Refresh(ctx context.Context) error {
 	n.applications = nil
-	return n.restoreState(ctx)
+	return n.restoreState(ctx, n.client)
 }
 
 // RollApplications recreates every running app container (zero-downtime) so they
 // pick up the current docktail.* label state. It refreshes from Docker first so
-// the roll covers apps regardless of whether they were preloaded — the retrofit
+// the roll covers apps regardless of whether they were preloaded - the retrofit
 // behind once tailscale enable/disable.
 func (n *Namespace) RollApplications(ctx context.Context) error {
 	if err := n.Refresh(ctx); err != nil {
@@ -536,8 +540,15 @@ type appCandidate struct {
 	created int64
 }
 
-func (n *Namespace) restoreState(ctx context.Context) error {
-	containers, err := n.client.ContainerList(ctx, container.ListOptions{All: true})
+// restoreClient is the engine surface the restore path reads: the namespace's
+// containers, and the start time of each running app container.
+type restoreClient interface {
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+}
+
+func (n *Namespace) restoreState(ctx context.Context, client restoreClient) error {
+	containers, err := client.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return err
 	}
@@ -574,7 +585,7 @@ func (n *Namespace) restoreState(ctx context.Context) error {
 					app := NewApplication(n, settings)
 					app.Running = c.State == "running"
 					if app.Running {
-						info, err := n.client.ContainerInspect(ctx, c.ID)
+						info, err := client.ContainerInspect(ctx, c.ID)
 						if err == nil && info.State != nil {
 							if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
 								app.RunningSince = t
