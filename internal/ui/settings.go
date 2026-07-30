@@ -135,7 +135,7 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if m.state == settingsStateForm {
 			m.section, _ = m.section.Update(msg)
 		}
-		if m.state == settingsStateDeploying || m.state == settingsStateRunningAction {
+		if m.running() {
 			cmds = append(cmds, m.progress.Init())
 		}
 
@@ -169,17 +169,16 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 			}
 		}
 
-	// Only an idle form may be left. Navigating away mid-run would discard this
-	// model, and with it the drain loop and the handler for the run's result.
+	// A run owns this model until it ends, so only an idle form may start one
+	// or be left: a second run would orphan the first one's stream, and
+	// navigating away mid-run would discard the drain loop and the handler for
+	// the run's result.
 	case SettingsSectionCancelMsg:
 		if m.state != settingsStateForm {
 			return m, nil
 		}
 		return m, m.navigateToDashboard()
 
-	// A run owns the progress channel until it ends, so only an idle form may
-	// start one: starting a second run would orphan the first one's channel and
-	// block its goroutine once the buffer filled.
 	case SettingsSectionSubmitMsg:
 		if m.state != settingsStateForm {
 			return m, nil
@@ -212,13 +211,13 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m.handleActionResult(msg)
 
 	case progressUpdateMsg:
-		if m.state == settingsStateDeploying || m.state == settingsStateRunningAction {
+		if m.running() {
 			m.progress = m.progress.SetPercent(progressBarPercent(msg.progress))
 			cmds = append(cmds, m.stream.Wait())
 		}
 
 	case ProgressTickMsg:
-		if m.state == settingsStateDeploying || m.state == settingsStateRunningAction {
+		if m.running() {
 			var cmd tea.Cmd
 			m.progress, cmd = m.progress.Update(msg)
 			cmds = append(cmds, cmd)
@@ -276,6 +275,11 @@ func (m Settings) View() string {
 }
 
 // Private
+
+// running reports whether a task owns the model's progress stream.
+func (m Settings) running() bool {
+	return m.state == settingsStateDeploying || m.state == settingsStateRunningAction
+}
 
 func (m Settings) navigateToDashboard() tea.Cmd {
 	return func() tea.Msg { return NavigateToDashboardMsg{AppName: m.app.Settings.Name} }

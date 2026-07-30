@@ -12,8 +12,6 @@ import (
 // between two render frames.
 const progressBuffer = 16
 
-// progressUpdateMsg carries one report from a running task to the model that
-// started it.
 type progressUpdateMsg struct {
 	progress docker.DeployProgress
 }
@@ -47,8 +45,6 @@ func newProgressStream() *progressStream {
 	}
 }
 
-// Run performs task, reporting through the stream, and yields whatever message
-// the task returns.
 func (s *progressStream) Run(task func(context.Context, docker.DeployProgressCallback) tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		defer s.cancel()
@@ -61,19 +57,18 @@ func (s *progressStream) Run(task func(context.Context, docker.DeployProgressCal
 // buffered report has been drained, which is how the model's drain loop ends.
 func (s *progressStream) Wait() tea.Cmd {
 	return func() tea.Msg {
-		// Buffered reports come first, so a task that finishes while reports
-		// are still queued does not cut the last frames off the bar.
-		select {
-		case p := <-s.updates:
-			return progressUpdateMsg{progress: p}
-		default:
-		}
-
 		select {
 		case p := <-s.updates:
 			return progressUpdateMsg{progress: p}
 		case <-s.finished:
-			return nil
+			// Reports buffered before the task finished still belong on the
+			// bar, and the outer select would pick between them at random.
+			select {
+			case p := <-s.updates:
+				return progressUpdateMsg{progress: p}
+			default:
+				return nil
+			}
 		}
 	}
 }

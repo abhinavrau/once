@@ -167,13 +167,17 @@ func TestSettings_ViewShowsProgressWhileDeploying(t *testing.T) {
 }
 
 func TestSettings_ProgressMsgMovesBarWhileDeploying(t *testing.T) {
-	s := testSettings()
-	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
-	s.state = settingsStateDeploying
+	s := deployingSettings()
 
 	s, cmd := updateSettings(s, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
 	assert.Equal(t, 42, s.progress.percent)
 	require.NotNil(t, cmd, "expected the wait command to be re-armed")
+
+	s.stream.report(docker.DeployProgress{Stage: docker.DeployStageStarting, Percentage: 7})
+	assert.Equal(t,
+		progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageStarting, Percentage: 7}},
+		runWithin(t, cmd),
+	)
 
 	s, _ = updateSettings(s, progressUpdateMsg{progress: docker.DeployProgress{Stage: docker.DeployStageStarting}})
 	assert.Equal(t, -1, s.progress.percent)
@@ -241,13 +245,27 @@ func TestSettings_IgnoresASecondRunWhileOneIsInFlight(t *testing.T) {
 // and the handler for the run's result with it.
 func TestSettings_CancelIsIgnoredWhileARunIsInFlight(t *testing.T) {
 	for _, state := range []settingsState{settingsStateDeploying, settingsStateRunningAction} {
-		s := testSettings()
+		s := deployingSettings()
 		s.state = state
 
 		s, cmd := updateSettings(s, SettingsSectionCancelMsg{})
 		assert.Nil(t, cmd)
 		assert.Equal(t, state, s.state)
 	}
+}
+
+// The cancel guard exists so the run's completion still has a handler: a
+// discarded model would drop this message, stranding the app with the old
+// container removed and the new one never started.
+func TestSettings_DeployCompletionSurvivesACancel(t *testing.T) {
+	s := deployingSettings()
+
+	s, _ = updateSettings(s, SettingsSectionCancelMsg{})
+	require.Equal(t, settingsStateDeploying, s.state)
+
+	_, cmd := updateSettings(s, settingsDeployFinishedMsg{})
+	require.NotNil(t, cmd)
+	assert.Equal(t, NavigateToAppMsg{App: s.app}, cmd())
 }
 
 func TestSettings_CancelLeavesAnIdleForm(t *testing.T) {
@@ -272,6 +290,14 @@ func testSettings() Settings {
 	}
 
 	return NewSettings(ns, app, SettingsSectionApplication)
+}
+
+// deployingSettings returns a sized model mid-deploy, with the live stream a
+// real run would have opened.
+func deployingSettings() Settings {
+	s, _ := updateSettings(testSettings(), tea.WindowSizeMsg{Width: 80, Height: 24})
+	s.state = settingsStateDeploying
+	return s.startProgress()
 }
 
 func updateSettings(s Settings, msg tea.Msg) (Settings, tea.Cmd) {
