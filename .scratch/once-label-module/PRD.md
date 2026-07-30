@@ -79,8 +79,10 @@ struct happens to have.
    unknown fields belong to a newer binary and this binary cannot judge them;
    the preservation doctrine says never destroy what you do not model.
    Staleness is the newer binary's problem to detect.
-8. **The denylist stays per-type** (only `ApplicationSettings` has an entry,
-   `tailscaleExcluded`); the Exposure backfill stays inside
+8. **The denylist stays per-type** (`ApplicationSettings` sheds
+   `tailscaleExcluded`; ticket 02 found `TailscaleSettings` also needs one,
+   shedding the legacy `apiKey` credential - a pure binding would resurrect
+   it into every rewritten label); the Exposure backfill stays inside
    `UnmarshalApplicationSettings` (type normalization, not label mechanics);
    the `labelKey` const moves into label.go; the read-`Labels[labelKey]`-and-
    check-empty step stays at call sites because the empty-label policy
