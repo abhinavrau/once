@@ -7,11 +7,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	installExposureField = iota
-	installHostField
-)
-
 type InstallHostnameBackMsg struct{}
 
 type InstallHostnameForm struct {
@@ -36,8 +31,8 @@ func NewInstallHostnameForm(imageRef, title string, tailscaleEnabled bool) Insta
 
 	m := InstallHostnameForm{
 		form: NewForm("Install",
-			FormItem{Label: "Exposure", Field: exposureField},
-			FormItem{Label: "Host", Field: hostField, Required: true},
+			FormItem{Key: "exposure", Label: "Exposure", Field: exposureField},
+			FormItem{Key: "host", Label: "Host", Field: hostField, Required: true},
 		),
 		imageRef: imageRef,
 		title:    title,
@@ -47,8 +42,8 @@ func NewInstallHostnameForm(imageRef, title string, tailscaleEnabled bool) Insta
 		return func() tea.Msg {
 			return InstallFormSubmitMsg{
 				ImageRef: imageRef,
-				Hostname: f.TextField(installHostField).Value(),
-				Exposure: exposureAt(f.RadioField(installExposureField).Selected()),
+				Hostname: f.TextField("host").Value(),
+				Exposure: exposureAt(f.RadioField("exposure").Selected()),
 			}
 		}
 	})
@@ -78,9 +73,9 @@ func (m InstallHostnameForm) View() string {
 }
 
 func (m InstallHostnameForm) Hostname() string {
-	return m.form.TextField(installHostField).Value()
+	return m.form.TextField("host").Value()
 }
 
 func (m InstallHostnameForm) Exposure() docker.Exposure {
-	return exposureAt(m.form.RadioField(installExposureField).Selected())
+	return exposureAt(m.form.RadioField("exposure").Selected())
 }

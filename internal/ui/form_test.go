@@ -9,8 +9,8 @@ import (
 
 func TestForm_FocusCycling(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "First", Field: NewTextField("first")},
-		FormItem{Label: "Second", Field: NewTextField("second")},
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second")},
 	)
 	assert.Equal(t, 0, form.Focused())
 
@@ -29,8 +29,8 @@ func TestForm_FocusCycling(t *testing.T) {
 
 func TestForm_ShiftTabCycling(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "First", Field: NewTextField("first")},
-		FormItem{Label: "Second", Field: NewTextField("second")},
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second")},
 	)
 
 	formPressShiftTab(&form)
@@ -48,8 +48,8 @@ func TestForm_ShiftTabCycling(t *testing.T) {
 
 func TestForm_EnterAdvancesFocus(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "First", Field: NewTextField("first")},
-		FormItem{Label: "Second", Field: NewTextField("second")},
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second")},
 	)
 
 	formPressEnter(&form)
@@ -61,7 +61,7 @@ func TestForm_EnterAdvancesFocus(t *testing.T) {
 
 func TestForm_SubmitAction(t *testing.T) {
 	form := NewForm("Done",
-		FormItem{Label: "Field", Field: NewTextField("val")},
+		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
 	)
 	submitted := false
 	form.OnSubmit(func(f *Form) tea.Cmd {
@@ -78,7 +78,7 @@ func TestForm_SubmitAction(t *testing.T) {
 
 func TestForm_CancelAction(t *testing.T) {
 	form := NewForm("Done",
-		FormItem{Label: "Field", Field: NewTextField("val")},
+		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
 	)
 	cancelled := false
 	form.OnCancel(func(f *Form) tea.Cmd {
@@ -195,25 +195,25 @@ func TestRadioField_OnChange(t *testing.T) {
 
 func TestForm_ClickCyclesRadio(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "Exposure", Field: NewRadioField("Local", "Public")},
+		FormItem{Key: "exposure", Label: "Exposure", Field: NewRadioField("Local", "Public")},
 	)
 
-	form = updateForm(form, MouseEvent{IsClick: true, Target: fieldTarget(0)})
-	assert.Equal(t, 1, form.RadioField(0).Selected())
+	form = updateForm(form, MouseEvent{IsClick: true, Target: fieldTarget("exposure")})
+	assert.Equal(t, 1, form.RadioField("exposure").Selected())
 }
 
 func TestForm_FieldValuesAccessible(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "Name", Field: NewTextField("name")},
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name")},
 	)
 
 	formTypeText(&form, "hello")
-	assert.Equal(t, "hello", form.TextField(0).Value())
+	assert.Equal(t, "hello", form.TextField("name").Value())
 }
 
 func TestForm_ValidationBlocksSubmitWhenRequiredEmpty(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "Name", Field: NewTextField("name"), Required: true},
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name"), Required: true},
 	)
 	submitted := false
 	form.OnSubmit(func(f *Form) tea.Cmd {
@@ -231,7 +231,7 @@ func TestForm_ValidationBlocksSubmitWhenRequiredEmpty(t *testing.T) {
 
 func TestForm_ValidationAllowsSubmitWhenRequiredFilled(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "Name", Field: NewTextField("name"), Required: true},
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name"), Required: true},
 	)
 	submitted := false
 	form.OnSubmit(func(f *Form) tea.Cmd {
@@ -249,7 +249,7 @@ func TestForm_ValidationAllowsSubmitWhenRequiredFilled(t *testing.T) {
 
 func TestForm_ValidationTreatsWhitespaceAsEmpty(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "Name", Field: NewTextField("name"), Required: true},
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name"), Required: true},
 	)
 	submitted := false
 	form.OnSubmit(func(f *Form) tea.Cmd {
@@ -267,7 +267,7 @@ func TestForm_ValidationTreatsWhitespaceAsEmpty(t *testing.T) {
 
 func TestForm_ValidationErrorClearsOnInput(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "Name", Field: NewTextField("name"), Required: true},
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name"), Required: true},
 	)
 	form.OnSubmit(func(f *Form) tea.Cmd { return nil })
 
@@ -284,8 +284,8 @@ func TestForm_ValidationErrorClearsOnInput(t *testing.T) {
 
 func TestForm_ValidationNonRequiredDoesNotBlock(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "Optional", Field: NewTextField("opt")},
-		FormItem{Label: "Required", Field: NewTextField("req"), Required: true},
+		FormItem{Key: "optional", Label: "Optional", Field: NewTextField("opt")},
+		FormItem{Key: "required", Label: "Required", Field: NewTextField("req"), Required: true},
 	)
 	submitted := false
 	form.OnSubmit(func(f *Form) tea.Cmd {
@@ -304,7 +304,7 @@ func TestForm_ValidationNonRequiredDoesNotBlock(t *testing.T) {
 
 func TestForm_ValidationOnClickSubmit(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "Name", Field: NewTextField("name"), Required: true},
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name"), Required: true},
 	)
 	submitted := false
 	form.OnSubmit(func(f *Form) tea.Cmd {
@@ -320,9 +320,9 @@ func TestForm_ValidationOnClickSubmit(t *testing.T) {
 
 func TestForm_ValidationFocusesFirstError(t *testing.T) {
 	form := NewForm("Submit",
-		FormItem{Label: "First", Field: NewTextField("first")},
-		FormItem{Label: "Second", Field: NewTextField("second"), Required: true},
-		FormItem{Label: "Third", Field: NewTextField("third"), Required: true},
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second"), Required: true},
+		FormItem{Key: "third", Label: "Third", Field: NewTextField("third"), Required: true},
 	)
 	form.OnSubmit(func(f *Form) tea.Cmd { return nil })
 
@@ -335,7 +335,7 @@ func TestForm_ValidationFocusesFirstError(t *testing.T) {
 
 func TestFormOnRebuild_CalledOnKeyPress(t *testing.T) {
 	form := NewForm("Done",
-		FormItem{Label: "Field", Field: NewTextField("val")},
+		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
 	)
 	called := false
 	form.OnRebuild(func(f *Form) { called = true })
@@ -346,8 +346,8 @@ func TestFormOnRebuild_CalledOnKeyPress(t *testing.T) {
 
 func TestFormOnRebuild_NotCalledOnTab(t *testing.T) {
 	form := NewForm("Done",
-		FormItem{Label: "First", Field: NewTextField("first")},
-		FormItem{Label: "Second", Field: NewTextField("second")},
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second")},
 	)
 	called := false
 	form.OnRebuild(func(f *Form) { called = true })
@@ -358,7 +358,7 @@ func TestFormOnRebuild_NotCalledOnTab(t *testing.T) {
 
 func TestFormOnRebuild_NotCalledOnWindowSize(t *testing.T) {
 	form := NewForm("Done",
-		FormItem{Label: "Field", Field: NewTextField("val")},
+		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
 	)
 	called := false
 	form.OnRebuild(func(f *Form) { called = true })
@@ -369,29 +369,80 @@ func TestFormOnRebuild_NotCalledOnWindowSize(t *testing.T) {
 
 func TestFormAppendItems(t *testing.T) {
 	form := NewForm("Done",
-		FormItem{Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
 	)
 	assert.Equal(t, 1, form.ItemCount())
 
 	form.AppendItems(
-		FormItem{Label: "Second", Field: NewTextField("second")},
-		FormItem{Label: "Third", Field: NewTextField("third")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second")},
+		FormItem{Key: "third", Label: "Third", Field: NewTextField("third")},
 	)
 	assert.Equal(t, 3, form.ItemCount())
-	assert.Equal(t, "", form.TextField(1).Value())
-	assert.Equal(t, "", form.TextField(2).Value())
+	assert.Equal(t, "", form.TextField("second").Value())
+	assert.Equal(t, "", form.TextField("third").Value())
 }
 
 func TestFormAppendItems_FocusStability(t *testing.T) {
 	form := NewForm("Done",
-		FormItem{Label: "First", Field: NewTextField("first")},
-		FormItem{Label: "Second", Field: NewTextField("second")},
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second")},
 	)
 	formPressTab(&form)
 	assert.Equal(t, 1, form.Focused())
 
-	form.AppendItems(FormItem{Label: "Third", Field: NewTextField("third")})
+	form.AppendItems(FormItem{Key: "third", Label: "Third", Field: NewTextField("third")})
 	assert.Equal(t, 1, form.Focused(), "focus unchanged after append")
+}
+
+func TestForm_PanicsOnEmptyKey(t *testing.T) {
+	assert.PanicsWithValue(t, `form item 1 ("Second") has an empty key`, func() {
+		NewForm("Submit",
+			FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+			FormItem{Label: "Second", Field: NewTextField("second")},
+		)
+	})
+}
+
+func TestForm_PanicsOnDuplicateKey(t *testing.T) {
+	assert.PanicsWithValue(t, `form item 1 ("Second") reuses key "name"`, func() {
+		NewForm("Submit",
+			FormItem{Key: "name", Label: "First", Field: NewTextField("first")},
+			FormItem{Key: "name", Label: "Second", Field: NewTextField("second")},
+		)
+	})
+}
+
+func TestForm_PanicsOnUnknownKey(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name")},
+	)
+
+	assert.PanicsWithValue(t, `form has no field with key "nickname"`, func() {
+		form.TextField("nickname")
+	})
+}
+
+func TestForm_PanicsOnWrongFieldType(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name")},
+	)
+
+	assert.PanicsWithValue(t, `form field "name" is not a CheckboxField`, func() {
+		form.CheckboxField("name")
+	})
+	assert.PanicsWithValue(t, `form field "name" is not a RadioField`, func() {
+		form.RadioField("name")
+	})
+}
+
+func TestFormAppendItems_PanicsOnDuplicateKey(t *testing.T) {
+	form := NewForm("Done",
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+	)
+
+	assert.PanicsWithValue(t, `form item 1 ("Again") reuses key "first"`, func() {
+		form.AppendItems(FormItem{Key: "first", Label: "Again", Field: NewTextField("again")})
+	})
 }
 
 // Helpers

@@ -6,14 +6,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	emailServerField = iota
-	emailPortField
-	emailUsernameField
-	emailPasswordField
-	emailFromField
-)
-
 type SettingsFormEmail struct {
 	settingsFormBase
 }
@@ -40,22 +32,22 @@ func NewSettingsFormEmail(settings docker.ApplicationSettings) SettingsFormEmail
 		settingsFormBase: settingsFormBase{
 			title: "Email",
 			form: NewForm("Done",
-				FormItem{Label: "SMTP Server", Field: serverField},
-				FormItem{Label: "SMTP Port", Field: portField},
-				FormItem{Label: "SMTP Username", Field: usernameField},
-				FormItem{Label: "SMTP Password", Field: passwordField},
-				FormItem{Label: "SMTP From", Field: fromField},
+				FormItem{Key: "server", Label: "SMTP Server", Field: serverField},
+				FormItem{Key: "port", Label: "SMTP Port", Field: portField},
+				FormItem{Key: "username", Label: "SMTP Username", Field: usernameField},
+				FormItem{Key: "password", Label: "SMTP Password", Field: passwordField},
+				FormItem{Key: "from", Label: "SMTP From", Field: fromField},
 			),
 		},
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		s := settings
-		s.SMTP.Server = f.TextField(emailServerField).Value()
-		s.SMTP.Port = f.TextField(emailPortField).Value()
-		s.SMTP.Username = f.TextField(emailUsernameField).Value()
-		s.SMTP.Password = f.TextField(emailPasswordField).Value()
-		s.SMTP.From = f.TextField(emailFromField).Value()
+		s.SMTP.Server = f.TextField("server").Value()
+		s.SMTP.Port = f.TextField("port").Value()
+		s.SMTP.Username = f.TextField("username").Value()
+		s.SMTP.Password = f.TextField("password").Value()
+		s.SMTP.From = f.TextField("from").Value()
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})
 	m.form.OnCancel(func(f *Form) tea.Cmd {

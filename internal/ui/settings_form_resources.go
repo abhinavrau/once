@@ -8,11 +8,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	resourcesCPUField = iota
-	resourcesMemoryField
-)
-
 type SettingsFormResources struct {
 	settingsFormBase
 }
@@ -36,16 +31,16 @@ func NewSettingsFormResources(settings docker.ApplicationSettings) SettingsFormR
 		settingsFormBase: settingsFormBase{
 			title: "Resources",
 			form: NewForm("Done",
-				FormItem{Label: "CPU Limit", Field: cpuField},
-				FormItem{Label: "Memory Limit (MB)", Field: memoryField},
+				FormItem{Key: "cpu", Label: "CPU Limit", Field: cpuField},
+				FormItem{Key: "memory", Label: "Memory Limit (MB)", Field: memoryField},
 			),
 		},
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		s := settings
-		s.Resources.CPUs, _ = strconv.Atoi(f.TextField(resourcesCPUField).Value())
-		s.Resources.MemoryMB, _ = strconv.Atoi(f.TextField(resourcesMemoryField).Value())
+		s.Resources.CPUs, _ = strconv.Atoi(f.TextField("cpu").Value())
+		s.Resources.MemoryMB, _ = strconv.Atoi(f.TextField("memory").Value())
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})
 	m.form.OnCancel(func(f *Form) tea.Cmd {

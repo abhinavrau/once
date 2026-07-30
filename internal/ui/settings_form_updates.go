@@ -8,8 +8,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const updatesAutoUpdateField = 0
-
 type SettingsFormUpdates struct {
 	settingsFormBase
 }
@@ -21,7 +19,7 @@ func NewSettingsFormUpdates(app *docker.Application, lastResult *docker.Operatio
 		settingsFormBase: settingsFormBase{
 			title: "Updates",
 			form: NewForm("Done",
-				FormItem{Label: "Updates", Field: autoUpdateField},
+				FormItem{Key: "auto-update", Label: "Updates", Field: autoUpdateField},
 			),
 		},
 	}
@@ -44,7 +42,7 @@ func NewSettingsFormUpdates(app *docker.Application, lastResult *docker.Operatio
 	})
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		s := app.Settings
-		s.AutoUpdate = f.CheckboxField(updatesAutoUpdateField).Checked()
+		s.AutoUpdate = f.CheckboxField("auto-update").Checked()
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})
 	m.form.OnCancel(func(f *Form) tea.Cmd {

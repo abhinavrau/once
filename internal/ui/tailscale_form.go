@@ -13,13 +13,6 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-const (
-	tailscaleClientIDField = iota
-	tailscaleClientSecretField
-	tailscaleTagField
-	tailscaleModeField
-)
-
 // tailscaleModeChoices maps the mode radio's option order to settings values;
 // sidecar first so a fresh enable defaults to it (ADR-0007).
 var tailscaleModeChoices = []string{docker.TailscaleModeSidecar, docker.TailscaleModeHost}
@@ -94,7 +87,7 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
 		}
 		if key.Matches(msg, tailscaleCopyKey) {
-			return m, tea.SetClipboard(docker.PolicySnippet(m.form.TextField(tailscaleTagField).Value()))
+			return m, tea.SetClipboard(docker.PolicySnippet(m.form.TextField("tag").Value()))
 		}
 		m.err = nil
 		m.warnings = nil
@@ -262,18 +255,18 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 	}
 
 	m.form = NewForm("Enable",
-		FormItem{Label: "Client ID", Field: clientIDField, Required: !enabled},
-		FormItem{Label: "Client Secret", Field: clientSecretField, Required: !enabled},
-		FormItem{Label: "Tag", Field: tagField, Required: !enabled},
-		FormItem{Label: "Mode", Field: modeField},
+		FormItem{Key: "client-id", Label: "Client ID", Field: clientIDField, Required: !enabled},
+		FormItem{Key: "client-secret", Label: "Client Secret", Field: clientSecretField, Required: !enabled},
+		FormItem{Key: "tag", Label: "Tag", Field: tagField, Required: !enabled},
+		FormItem{Key: "mode", Label: "Mode", Field: modeField},
 	)
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		return func() tea.Msg {
 			return tailscaleEnableSubmitMsg{
-				id:     f.TextField(tailscaleClientIDField).Value(),
-				secret: f.TextField(tailscaleClientSecretField).Value(),
-				tag:    f.TextField(tailscaleTagField).Value(),
-				mode:   tailscaleModeChoices[f.RadioField(tailscaleModeField).Selected()],
+				id:     f.TextField("client-id").Value(),
+				secret: f.TextField("client-secret").Value(),
+				tag:    f.TextField("tag").Value(),
+				mode:   tailscaleModeChoices[f.RadioField("mode").Selected()],
 			}
 		}
 	})
