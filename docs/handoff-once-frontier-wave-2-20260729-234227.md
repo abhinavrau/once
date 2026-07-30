@@ -22,14 +22,48 @@ worked for wave 1.
   call in `internal/docker/namespace.go`); tight per-agent scope guards are
   why. Keep writing them.
 
-## Wave 2 frontier - 4 tickets, all blockers done, all independent
+## All remaining review tickets - 7, across 4 features
 
-| Ticket | Ground it touches |
-|---|---|
-| `.scratch/once-label-module/issues/01-label-codec-module.md` | new `internal/docker/label.go`, `application_settings.go`. Governing ADR-0008. |
-| `.scratch/tailscale-mode-daemon/issues/02-control-seam-single-door.md` | `tailscale.go` control-seam reads, `EnableTailscale` credential suppression, deletes the `command/tailscale.go` and `ui/tailscale_form.go` copies and the `TailscaleControlSeamActive` export. Governing ADR-0010. |
-| `.scratch/tailscale-api-adapter/issues/02-one-fake-for-the-saas-flows.md` | test-side: one fake `tailscaleAPI` replacing the three hand-rolled httptest servers in `internal/docker` tests. Governing ADR-0011. |
-| `.scratch/form-fields-by-key/issues/02-form-submit-rejection-message.md` | `internal/ui/form.go` submit paths, `FormSubmitRejectedMsg`. |
+Complete ledger of what is left from architecture-review candidates 02-07.
+Everything not listed here is done (docker-client-seam and progress-adapter
+are complete; so are ticket 01 of tailscale-mode-daemon, tailscale-api-adapter,
+and form-fields-by-key). All paths under `.scratch/`.
+
+**once-label-module** (candidate 02, ADR-0008):
+- `once-label-module/issues/01-label-codec-module.md` - **wave 2**, unblocked
+  (its blocker docker-client-seam/01 is done). New `internal/docker/label.go`
+  generic codec + `ApplicationSettings` moved onto it; `application_settings.go`.
+- `once-label-module/issues/02-protect-remaining-labels.md` - **wave 3**,
+  blocked by its 01. Moves Proxy/Volume/Tailscale settings onto the codec and
+  grafts unknown fields on `Enable`'s rebuild - closes the live
+  `TailscaleSettings` field-destruction bug, the review's highest-value fix.
+
+**tailscale-mode-daemon** (candidate 04, ADR-0010):
+- `tailscale-mode-daemon/issues/02-control-seam-single-door.md` - **wave 2**,
+  unblocked (its blocker, ticket 01, is done). `tailscale.go` control-seam
+  reads behind one accessor, credential suppression absorbed into
+  `EnableTailscale`, deletes the `command/tailscale.go` and
+  `ui/tailscale_form.go` copies and the `TailscaleControlSeamActive` export.
+- `tailscale-mode-daemon/issues/03-session-binder.md` - **wave 4**, blocked by
+  once-label-module/02 (both rewrite the `DomainSuffix`/`WaitForFunnelActive`
+  persist call sites). One session function replacing the five
+  `LoadSettings`+`daemonFor` binder pairs.
+
+**tailscale-api-adapter** (candidate 05, ADR-0011):
+- `tailscale-api-adapter/issues/02-one-fake-for-the-saas-flows.md` - **wave 2**,
+  unblocked (its blocker, ticket 01, is done). Test-side: one fake
+  `tailscaleAPI` routing canned JSON through production parsers, replacing the
+  three hand-rolled httptest servers. Feature complete after this.
+
+**form-fields-by-key** (candidate 06, no ADR):
+- `form-fields-by-key/issues/02-form-submit-rejection-message.md` - **wave 2**,
+  unblocked (its blocker, ticket 01, is done). `internal/ui/form.go` submit
+  paths emit `FormSubmitRejectedMsg{Key, Reason}` on both rejection paths.
+- `form-fields-by-key/issues/03-drivers-click-by-key.md` - **wave 3**, blocked
+  by its 02. Integration drivers switch to clicking `field:<key>` targets and
+  fail fast on the rejection message; rewrites the AGENTS.md TUI-form hazard
+  note. Touches `integration/ui_test.go`, so the post-merge integration run is
+  mandatory for its wave.
 
 Read each feature's `PRD.md` alongside the ticket - the grilling decisions
 live there.
@@ -68,14 +102,16 @@ registry sanity check, `make integration` once (10-minute budget; wave-1
 took 437s), flip tickets to done citing merge hashes, `git worktree remove
 --force` the agent worktrees (branches keep the commits), fast-forward main.
 
-## After wave 2
+## Wave plan summary
 
-- Wave 3: `once-label-module/02` (blocked by its 01) - closes the live
-  `TailscaleSettings` field-destruction bug.
-- Wave 4: `tailscale-mode-daemon/03` (blocked by once-label-module/02) and
-  `form-fields-by-key/03` (blocked by its 01+02; rewrites the AGENTS.md
-  TUI-form hazard note - integration drivers change, so run the suite for it).
-- tailscale-api-adapter is complete after wave 2.
+- **Wave 2** (now, 4 parallel): once-label-module/01, tailscale-mode-daemon/02,
+  tailscale-api-adapter/02, form-fields-by-key/02.
+- **Wave 3** (after wave 2 merges, 2 parallel): once-label-module/02,
+  form-fields-by-key/03.
+- **Wave 4** (after wave 3 merges, 1): tailscale-mode-daemon/03.
+- After wave 4, every ticket from architecture-review candidates 02-07 is
+  done. Each wave repeats the same recipe: fan out, merge, verify, flip
+  tickets, remove worktrees, fast-forward main.
 
 ## Decisions that constrain (do not re-argue)
 
