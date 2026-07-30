@@ -166,12 +166,12 @@ func TestSettings_ViewShowsProgressWhileDeploying(t *testing.T) {
 	assert.NotEmpty(t, view)
 }
 
-func TestSettings_DownloadStageDrivesBarPercent(t *testing.T) {
+func TestProgressBarPercent_DownloadStageDrivesThePercent(t *testing.T) {
 	assert.Equal(t, 42, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}))
 }
 
-func TestSettings_NonDownloadStagesAreIndeterminate(t *testing.T) {
-	indeterminate := -1
+func TestProgressBarPercent_NonDownloadStagesAreIndeterminate(t *testing.T) {
+	const indeterminate = -1
 	assert.Equal(t, indeterminate, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageStarting}))
 	assert.Equal(t, indeterminate, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageWaiting, Status: "verifying"}))
 	assert.Equal(t, indeterminate, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageFinished}))
@@ -213,6 +213,39 @@ func TestSettings_ActionReportsProgressThroughItsCallback(t *testing.T) {
 	msgs := runBatch(t, cmd)
 	assert.Contains(t, msgs, settingsProgressMsg{progress: docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}})
 	assert.Contains(t, msgs, settingsActionFinishedMsg{message: "Update complete"})
+}
+
+// The apply path reports through the same plumbing; this pins the end of it, so
+// a finished apply can never leave the wait command blocked on the channel.
+func TestSettings_ApplyEndsTheProgressWait(t *testing.T) {
+	s := testSettings()
+	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// An invalid Configuration fails inside ApplySettings before it needs
+	// Docker, which keeps this a unit test.
+	invalid := s.app.Settings
+	invalid.Image = ""
+
+	s, cmd := updateSettings(s, SettingsSectionSubmitMsg{Settings: invalid})
+	require.Equal(t, settingsStateDeploying, s.state)
+
+	msgs := runBatch(t, cmd)
+	assert.Contains(t, msgs, settingsDeployFinishedMsg{err: docker.ErrImageRequired})
+	assert.Contains(t, msgs, nil, "expected the wait command to end when the channel closed")
+}
+
+func TestSettings_IgnoresASecondRunWhileOneIsInFlight(t *testing.T) {
+	s := testSettings()
+	s, _ = updateSettings(s, tea.WindowSizeMsg{Width: 80, Height: 24})
+	s.state = settingsStateRunningAction
+	inFlight := make(chan docker.DeployProgress)
+	s.progressChan = inFlight
+
+	s, cmd := updateSettings(s, settingsRunActionMsg{action: func(docker.DeployProgressCallback) (string, error) {
+		return "", nil
+	}})
+	assert.Nil(t, cmd)
+	assert.Equal(t, inFlight, s.progressChan)
 }
 
 // Helpers

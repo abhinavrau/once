@@ -38,16 +38,16 @@ var settingsKeys = struct {
 
 type settingsState int
 
-// settingsProgressBuffer keeps the pulling goroutine from stalling on the
-// frequent per-layer updates between two render frames.
-const settingsProgressBuffer = 16
-
 const (
 	settingsStateForm settingsState = iota
 	settingsStateDeploying
 	settingsStateRunningAction
 	settingsStateActionComplete
 )
+
+// settingsProgressBuffer keeps the pulling goroutine from stalling on the
+// frequent per-layer updates between two render frames.
+const settingsProgressBuffer = 16
 
 type Settings struct {
 	namespace            *docker.Namespace
@@ -180,10 +180,19 @@ func (m Settings) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case SettingsSectionCancelMsg:
 		return m, m.navigateToDashboard()
 
+	// A run owns the progress channel until it ends, so only an idle form may
+	// start one: starting a second run would orphan the first one's channel and
+	// block its goroutine once the buffer filled.
 	case SettingsSectionSubmitMsg:
+		if m.state != settingsStateForm {
+			return m, nil
+		}
 		return m.handleFormSubmit(msg)
 
 	case settingsRunActionMsg:
+		if m.state != settingsStateForm {
+			return m, nil
+		}
 		m.state = settingsStateRunningAction
 		m = m.startProgress()
 		return m, tea.Batch(m.progress.Init(), m.runAction(msg.action), m.waitForProgress())
@@ -332,33 +341,31 @@ func (m Settings) waitForProgress() tea.Cmd {
 
 func (m Settings) runApplySettings(settings docker.ApplicationSettings) tea.Cmd {
 	ns, app := m.namespace, m.app
-	updates := m.progressChan
-	return func() tea.Msg {
-		defer close(updates)
-		warnings, err := ns.ApplySettings(context.Background(), app, settings, reportTo(updates))
+	return m.reporting(func(progress docker.DeployProgressCallback) tea.Msg {
+		warnings, err := ns.ApplySettings(context.Background(), app, settings, progress)
 		return settingsDeployFinishedMsg{warnings: warnings, err: err}
-	}
+	})
 }
 
 func (m Settings) runAction(action settingsAction) tea.Cmd {
+	return m.reporting(func(progress docker.DeployProgressCallback) tea.Msg {
+		message, err := action(progress)
+		return settingsActionFinishedMsg{err: err, message: message}
+	})
+}
+
+// reporting runs a task with the callback the docker layer reports through,
+// closing the channel afterwards so the wait command stops. A report blocks
+// until the wait command drains it, which it keeps doing until the task ends.
+func (m Settings) reporting(task func(docker.DeployProgressCallback) tea.Msg) tea.Cmd {
 	updates := m.progressChan
 	return func() tea.Msg {
 		defer close(updates)
-		message, err := action(reportTo(updates))
-		return settingsActionFinishedMsg{err: err, message: message}
+		return task(func(p docker.DeployProgress) { updates <- p })
 	}
 }
 
 // Helpers
-
-// reportTo builds the callback the docker layer reports through. Sends block
-// only until the wait command drains, which it keeps doing for as long as the
-// run is on screen.
-func reportTo(updates chan docker.DeployProgress) docker.DeployProgressCallback {
-	return func(p docker.DeployProgress) {
-		updates <- p
-	}
-}
 
 // progressBarPercent maps a deploy stage onto the progress bar: only a
 // download has a meaningful percentage, so every other stage falls back to the
