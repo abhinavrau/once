@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const (
@@ -16,9 +17,23 @@ const (
 	// place it appears.
 	tailscaleAPIBaseURL = "https://api.tailscale.com/api/v2"
 
+	// tokenPath is the OAuth client-credentials endpoint, the one path the
+	// adapter builds itself.
+	tokenPath = "/oauth/token"
+
 	// tailscaleAPIMaxResponse bounds how much of a response body is read, so a
-	// broken or hostile API cannot exhaust memory.
-	tailscaleAPIMaxResponse = 1 << 16
+	// broken or hostile API cannot exhaust memory. It sits far above any real
+	// response - the largest, a full tailnet device list, runs roughly a
+	// kilobyte per device - and a body that reaches it is reported as too
+	// large rather than parsed from truncated bytes.
+	tailscaleAPIMaxResponse = 8 << 20
+
+	// tailscaleAPIRequestTimeout bounds one request, so an endpoint that
+	// accepts the connection and then never answers (captive portal,
+	// blackholed egress) cannot hang an enable forever. It is deliberately
+	// shorter than the poll budgets that drive repeated calls, so those
+	// budgets still govern their loops.
+	tailscaleAPIRequestTimeout = 30 * time.Second
 )
 
 // tailscaleAPI is Once's seam to the Tailscale SaaS control-plane HTTP API
@@ -43,6 +58,7 @@ type httpTailscaleAPI struct {
 	baseURL      string
 	clientID     string
 	clientSecret string
+	client       *http.Client
 
 	token string
 }
@@ -54,12 +70,16 @@ func newTailscaleAPI(settings TailscaleSettings) *httpTailscaleAPI {
 }
 
 // newTailscaleAPIAt builds the adapter against an explicit base URL; only the
-// production constructor and the adapter's own tests call it.
+// production constructor and the adapter's own tests call it. The client is the
+// adapter's own - http.DefaultClient has no timeout - but its transport is left
+// nil so requests still go through http.DefaultTransport, which main wraps in
+// the metadata-only logging RoundTripper (ADR-0005).
 func newTailscaleAPIAt(baseURL string, settings TailscaleSettings) *httpTailscaleAPI {
 	return &httpTailscaleAPI{
 		baseURL:      baseURL,
 		clientID:     settings.ClientID,
 		clientSecret: settings.ClientSecret,
+		client:       &http.Client{Timeout: tailscaleAPIRequestTimeout},
 	}
 }
 
@@ -82,13 +102,13 @@ func (a *httpTailscaleAPI) Call(ctx context.Context, method, path string, payloa
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := a.client.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("contacting the Tailscale API: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := readBoundedBody(resp)
+	body, err := readBoundedBody(resp.Body, method+" "+path)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -109,23 +129,23 @@ func (a *httpTailscaleAPI) accessToken(ctx context.Context) (string, error) {
 		"client_id":     {a.clientID},
 		"client_secret": {a.clientSecret},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/oauth/token", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+tokenPath, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := a.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("contacting the Tailscale API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Tailscale rejected the OAuth credentials (%s); check the client ID and secret are correct and not revoked", resp.Status)
+		return "", tokenExchangeError(resp)
 	}
 
-	body, err := readBoundedBody(resp)
+	body, err := readBoundedBody(resp.Body, http.MethodPost+" "+tokenPath)
 	if err != nil {
 		return "", err
 	}
@@ -145,12 +165,34 @@ func (a *httpTailscaleAPI) accessToken(ctx context.Context) (string, error) {
 
 // Helpers
 
-// readBoundedBody reads a response body up to the adapter's bound, so no
-// Tailscale API response - token exchange included - can exhaust memory.
-func readBoundedBody(resp *http.Response) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, tailscaleAPIMaxResponse))
-	if err != nil {
-		return nil, fmt.Errorf("reading Tailscale API response: %w", err)
+// tokenExchangeError turns a non-200 from the OAuth token endpoint into an
+// error that names the real problem. Only a refusal of the credentials
+// themselves sends the user off to check their client ID and secret: a
+// throttled or broken API never judged them.
+func tokenExchangeError(resp *http.Response) error {
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return fmt.Errorf("Tailscale rate-limited the OAuth token request (%s); the credentials were not rejected - wait a minute and try again", resp.Status)
+	case resp.StatusCode >= http.StatusInternalServerError:
+		return fmt.Errorf("the OAuth token request failed with a server error (%s); the credentials were not rejected - try again shortly", resp.Status)
+	case resp.StatusCode == http.StatusBadRequest, resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+		return fmt.Errorf("Tailscale rejected the OAuth credentials (%s); check the client ID and secret are correct and not revoked", resp.Status)
+	default:
+		return fmt.Errorf("unexpected response from the Tailscale OAuth token endpoint (%s)", resp.Status)
 	}
-	return body, nil
+}
+
+// readBoundedBody reads a response body up to the adapter's bound, so no
+// Tailscale API response - the token exchange included - can exhaust memory. A
+// body that reaches the bound fails naming the request it answered, because
+// parsing the truncated bytes would report a bogus syntax error instead.
+func readBoundedBody(body io.Reader, request string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, tailscaleAPIMaxResponse+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading the Tailscale API response to %s: %w", request, err)
+	}
+	if len(data) > tailscaleAPIMaxResponse {
+		return nil, fmt.Errorf("the Tailscale API response to %s is larger than the %d bytes Once will read", request, tailscaleAPIMaxResponse)
+	}
+	return data, nil
 }
