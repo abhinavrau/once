@@ -541,17 +541,18 @@ func (f Form) submitIfValid() (Form, tea.Cmd) {
 	f, valid = f.validate()
 
 	var cmd tea.Cmd
-	switch {
-	case !valid:
-		f, cmd = f.focusIndex(f.indexOf(f.errorKey))
-	case f.onSubmit != nil:
+	if valid && f.onSubmit != nil {
 		cmd = f.onSubmit(&f)
 	}
 
 	// validate cleared any earlier error, so an error still set here is one the
-	// failing path just recorded, and the submit did not go through.
+	// failing path just recorded (required-field validation or an OnSubmit
+	// callback), and the submit did not go through. Either way, focus returns
+	// to the errored field.
 	if f.HasError() {
-		return f, tea.Batch(f.rejectionCmd(), cmd)
+		var focusCmd tea.Cmd
+		f, focusCmd = f.focusIndex(f.indexOf(f.errorKey))
+		return f, tea.Batch(f.rejectionCmd(), cmd, focusCmd)
 	}
 	return f, cmd
 }

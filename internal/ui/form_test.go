@@ -370,6 +370,42 @@ func TestForm_CallbackErrorEmitsRejection(t *testing.T) {
 	require.True(t, ok, "expected a FormSubmitRejectedMsg")
 	assert.Equal(t, FormSubmitRejectedMsg{Key: "name", Reason: "that name is taken"}, rejected)
 	assert.Equal(t, "that name is taken", form.Error())
+	assert.Equal(t, 0, form.Focused(), "refocuses the errored field")
+}
+
+func TestForm_CallbackErrorRefocusesSecondField(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second")},
+	)
+	form.OnSubmit(func(f *Form) tea.Cmd {
+		f.SetError("second", "that value is taken")
+		return nil
+	})
+
+	formFocusSubmit(&form)
+	formPressEnter(&form)
+
+	assert.Equal(t, 1, form.Focused(), "refocuses the errored field, not just the first")
+}
+
+func TestForm_CallbackErrorClearsOnInputAfterRefocus(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("name")},
+	)
+	form.OnSubmit(func(f *Form) tea.Cmd {
+		f.SetError("name", "that name is taken")
+		return nil
+	})
+
+	formFocusSubmit(&form)
+	formPressEnter(&form)
+	require.True(t, form.HasError())
+	require.Equal(t, 0, form.Focused())
+
+	formTypeText(&form, "x")
+
+	assert.False(t, form.HasError(), "typing in the refocused field clears the inline error")
 }
 
 func TestForm_SuccessfulSubmitEmitsNoRejection(t *testing.T) {

@@ -85,11 +85,15 @@ func TestSettingsFormFunnel_EnableRejectsUnusableDuration(t *testing.T) {
 
 		require.True(t, form.form.HasError())
 		assert.Contains(t, form.form.Error(), wantError)
+		assert.Equal(t, 1, form.form.Focused(), "refocuses the duration field")
 
 		rejected, ok := findFormRejection(cmd)
 		require.True(t, ok, "expected a FormSubmitRejectedMsg")
 		assert.Equal(t, "duration", rejected.Key)
 		assert.Equal(t, form.form.Error(), rejected.Reason)
+
+		updateSettingsForm(&form, keyPressMsg("x"))
+		assert.False(t, form.form.HasError(), "typing in the refocused field clears the inline error")
 	}
 
 	t.Run("empty", func(t *testing.T) { assertRejected(t, "", "duration is required") })

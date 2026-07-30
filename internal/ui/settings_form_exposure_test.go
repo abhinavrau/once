@@ -91,11 +91,15 @@ func TestSettingsFormExposure_TailnetBlockedWithoutTailscale(t *testing.T) {
 	form = result.(SettingsFormExposure)
 	assert.True(t, form.form.HasError())
 	assert.Contains(t, form.form.Error(), "Tailscale")
+	assert.Equal(t, 0, form.form.Focused(), "refocuses the exposure field")
 
 	rejected, ok := findFormRejection(cmd)
 	require.True(t, ok, "expected a FormSubmitRejectedMsg")
 	assert.Equal(t, "exposure", rejected.Key)
 	assert.Equal(t, form.form.Error(), rejected.Reason)
+
+	exposurePressKey(&form, "left")
+	assert.False(t, form.form.HasError(), "typing in the refocused field clears the inline error")
 }
 
 func TestSettingsFormExposure_Cancel(t *testing.T) {
