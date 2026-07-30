@@ -33,20 +33,50 @@ open through; do not build more than the accessor now.
 **Blocked by:** 01 - Resolve the Tailscale mode once per enable (both rewrite
 the Enable Tailscale workflow's settings preamble).
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] Exactly one function reads the control-seam env vars; the active-check
+- [x] Exactly one function reads the control-seam env vars; the active-check
       helper and the sidecar boot both go through it (unit-tested with the
       existing Setenv pattern)
-- [ ] Enabling under the seam from either frontend stores no OAuth
+- [x] Enabling under the seam from either frontend stores no OAuth
       credentials in the once label, with the suppression living in the
       Enable Tailscale workflow, not the frontends
-- [ ] The exported seam predicate is gone and no code outside the Docker
+- [x] The exported seam predicate is gone and no code outside the Docker
       package mentions the seam
-- [ ] The TUI control-seam integration test still passes with the form's
+- [x] The TUI control-seam integration test still passes with the form's
       suppression branch deleted, and gains an assert that the stored label
       carries no credentials
-- [ ] The four SaaS-skip branch sites are textually untouched apart from what
+- [x] The four SaaS-skip branch sites are textually untouched apart from what
       the accessor rename forces (they belong to tailscale-api-adapter)
-- [ ] The settings Tag doc comment no longer claims the tag is empty under
+- [x] The settings Tag doc comment no longer claims the tag is empty under
       the seam
+
+## Comments
+
+**2026-07-30** - branch `tailscale-mode-daemon-02-control-seam-single-door`,
+worktree `/home/arau/code/once/.claude/worktrees/agent-afd50be72ab73d630`.
+
+`controlSeam() (authKey, controlURL, ok)` is now the only reader of
+`ONCE_TAILSCALE_AUTH_KEY`/`ONCE_TAILSCALE_CONTROL_URL`; `controlSeamActive`
+delegates to it and the sidecar boot's raw `os.Getenv` pair goes through it.
+Credential suppression moved into `EnableTailscale` as
+`settings.suppressUnusedCredentials()`, beside the tag normalization and before
+the only label write, so both frontends now always pass what they collected and
+`TailscaleControlSeamActive` is deleted. Zero seam mentions remain in
+`internal/ui` and `internal/command` (the integration package still sets the env
+vars to drive the headscale harness). The four SaaS-skip sites
+(`tailscale_validate.go:51`, `:118`, `tailscale_status.go:42`,
+`tailscale_verify.go:30`) are untouched - no rename was forced.
+
+Review turned up one real defect and fixed it: the Tag doc comment's replacement
+claim ("unused on the seam, but docktail stamps it") was false in both halves -
+under the seam `create` leaves docktail's env nil so `DEFAULT_SERVICE_TAGS` is
+never passed, while `validateHostModePreflight` reads `settings.Tag` at
+`tailscale_validate.go:110`, *before* its seam skip. The comment now says the tag
+is stored on the seam too, where only the host-mode pre-flight reads it. Also
+fixed two comments the change had made self-contradictory (`EnableTailscale`
+still claiming it boots "with the given credentials"; the TUI's `runEnable`
+claiming the credential probe always runs).
+
+`make test` and `make lint` pass; the integration suite was not run locally (the
+coordinator runs it) but compiles and vets clean.

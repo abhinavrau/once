@@ -255,7 +255,8 @@ func plantModelessDocktail(t *testing.T, ctx context.Context, cli *client.Client
 }
 
 // controlSeamSettings are the TailscaleSettings used with the control seam,
-// where OAuth credentials are never exercised.
+// where OAuth credentials are never exercised - EnableTailscale drops them
+// before they reach the label, so they are set here to prove exactly that.
 func controlSeamSettings() docker.TailscaleSettings {
 	return docker.TailscaleSettings{
 		ClientID:     "unused-with-control-seam",
@@ -332,7 +333,10 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	settings, err := docker.UnmarshalTailscaleSettings(info.Config.Labels["once"])
 	require.NoError(t, err)
 	assert.Equal(t, docker.TailscaleModeSidecar, settings.Mode)
-	assert.Equal(t, "unused-with-control-seam", settings.ClientID)
+	// Under the control seam the OAuth credentials are unused, so the enable
+	// lifecycle drops them rather than storing what was passed in.
+	assert.Empty(t, settings.ClientID)
+	assert.Empty(t, settings.ClientSecret)
 	assert.Contains(t, info.HostConfig.Binds, "/var/run/docker.sock:/var/run/docker.sock:ro")
 
 	// The sidecar runs unprivileged userspace networking: no TUN device, no

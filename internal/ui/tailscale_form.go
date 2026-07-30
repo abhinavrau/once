@@ -176,15 +176,17 @@ func (m TailscaleForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
 	return m, tea.Batch(m.progress.Init(), cmd)
 }
 
-// runEnable runs the enable lifecycle in the background: the credential probe
-// enforces the scopes and the tailnet policy before anything boots. Under the
-// headscale control seam there is no SaaS OAuth, so the credentials are unused.
+// runEnable runs the enable lifecycle in the background, forwarding its waiting
+// stages to the status channel. The form passes on exactly what was collected -
+// validating and normalizing the settings is the lifecycle's job.
 func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 	ns, statuses := m.namespace, m.statusChan
 	return func() tea.Msg {
-		settings := docker.TailscaleSettings{Tag: msg.tag, Mode: msg.mode}
-		if !docker.TailscaleControlSeamActive() {
-			settings.ClientID, settings.ClientSecret = msg.id, msg.secret
+		settings := docker.TailscaleSettings{
+			ClientID:     msg.id,
+			ClientSecret: msg.secret,
+			Tag:          msg.tag,
+			Mode:         msg.mode,
 		}
 		progress := func(p docker.DeployProgress) {
 			if p.Stage == docker.DeployStageWaiting {
@@ -223,9 +225,9 @@ func (m TailscaleForm) setupView() string {
 // newTailscaleForm builds the overlay for a known enabled state. On an enabled
 // install the fields show the stored settings and submitting re-enables (the
 // same lifecycle the CLI runs: unchanged settings are a no-op, changed ones
-// rebuild the topology), with Disable as a secondary action. The fields are
-// not required there because the headscale control seam stores no credentials
-// or tag.
+// rebuild the topology), with Disable as a secondary action. The fields are not
+// required there because an enabled install's stored credentials may be blank;
+// requiring them would leave neither action able to submit.
 func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.TailscaleSettings) TailscaleForm {
 	m := TailscaleForm{
 		namespace: ns,

@@ -263,15 +263,16 @@ func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, pr
 }
 
 // EnableTailscale is the full enable lifecycle shared by the CLI and TUI:
-// validate the exposed app names, resolve the mode once and stamp it into the
-// settings the topology is built from, run the host-mode pre-flight (when the
-// resolved mode is host) and the credential probe, bring up the network,
-// boot the Docktail topology with the given credentials, boot once-admin so
-// it is exposed as a Service too, then verify every expected service is
-// advertised and approved before reporting success. The returned warnings
-// name any tailnet machines whose Magic DNS entries shadow a service, and
-// lead with the --mode host notice when a fresh enable defaulted to the
-// sidecar alongside a host tailscaled.
+// validate the exposed app names, normalize the settings the topology is built
+// from (the tag, and dropping OAuth credentials the control seam makes unused
+// so they are never stored), resolve the mode once and stamp it in, run the
+// host-mode pre-flight (when the resolved mode is host) and the credential
+// probe, bring up the network, boot the Docktail topology from those settings,
+// boot once-admin so it is exposed as a Service too, then verify
+// every expected service is advertised and approved before reporting success.
+// The returned warnings name any tailnet machines whose Magic DNS entries
+// shadow a service, and lead with the --mode host notice when a fresh enable
+// defaulted to the sidecar alongside a host tailscaled.
 func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings, progress DeployProgressCallback) ([]string, error) {
 	if err := ValidateTailscaleMode(settings.Mode); err != nil {
 		return nil, err
@@ -286,6 +287,7 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 	settings.Tag = settings.normalizeTag()
+	settings = settings.suppressUnusedCredentials()
 	resolved, fresh, err := n.tailscale.resolveMode(ctx, settings.Mode)
 	if err != nil {
 		return nil, err
