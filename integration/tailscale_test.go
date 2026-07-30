@@ -225,6 +225,20 @@ func plantHostTailscaledSocket(t *testing.T) string {
 	return hostDir
 }
 
+// plantModelessDocktail replaces the once-docktail container with a stopped
+// stand-in whose once label carries the given settings without a mode, faking a
+// corrupt or legacy install for the self-heal path. whoamiImage stands in for
+// the docktail image: nothing runs it, the next enable rebuilds the topology.
+func plantModelessDocktail(t *testing.T, ctx context.Context, cli *client.Client, name string, settings docker.TailscaleSettings) {
+	t.Helper()
+	settings.Mode = ""
+	require.NoError(t, cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}))
+	_, err := cli.ContainerCreate(ctx,
+		&container.Config{Image: whoamiImage, Labels: map[string]string{"once": settings.Marshal()}},
+		nil, nil, nil, name)
+	require.NoError(t, err)
+}
+
 // controlSeamSettings are the TailscaleSettings used with the control seam,
 // where OAuth credentials are never exercised.
 func controlSeamSettings() docker.TailscaleSettings {
@@ -262,9 +276,20 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	useControlSeam(t, ctx, cp)
 
 	// A host tailscaled must no longer decide the mode (ADR-0007): plant its
-	// socket and a fresh enable still defaults to the sidecar, returning the
-	// one-line notice that points at --mode host.
+	// socket and a fresh enable still defaults to the sidecar, leading its
+	// warnings with the one-line notice that points at --mode host.
 	plantHostTailscaledSocket(t)
+
+	// The enable lifecycle boots once-admin, which bind-mounts the daemon's Unix
+	// socket; run the admin server in-process and wait for the socket.
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
+	adminCtx, stopAdmin := context.WithCancel(ctx)
+	t.Cleanup(stopAdmin)
+	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
+	require.Eventually(t, func() bool {
+		_, err := net.Dial("unix", docker.AdminSocketPath())
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
 
 	proxyRoutes := func() string {
 		out, err := ns.Proxy().ExecOutput(ctx, []string{"kamal-proxy", "list"})
@@ -288,9 +313,10 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	})
 	require.ErrorIs(t, blocked.Deploy(ctx, nil), docker.ErrTailscaleNotEnabled)
 
-	notice, err := ns.Tailscale().Enable(ctx, controlSeamSettings())
+	warnings, err := ns.EnableTailscale(ctx, controlSeamSettings(), nil)
 	require.NoError(t, err)
-	assert.Contains(t, notice, "--mode host", "defaulting to sidecar over a host socket must surface the notice")
+	require.NotEmpty(t, warnings)
+	assert.Contains(t, warnings[0], "--mode host", "defaulting to sidecar over a host socket must lead the warnings with the notice")
 
 	docktailName := ns.Name() + "-docktail"
 	sidecarName := ns.Name() + "-tailscale"
@@ -329,6 +355,20 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	persisted, err := ns.Tailscale().LoadSettings(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, magicDNSBaseDom, persisted.DomainSuffix, "suffix should be persisted on the container label")
+
+	// A stored label carrying no mode (a corrupt or legacy install) self-heals on
+	// any re-enable: the mode resolves to the sidecar, which differs from the
+	// stored one, so the topology is rebuilt with the mode stamped in - and a
+	// re-enable is not a fresh enable, so it earns no --mode host notice.
+	plantModelessDocktail(t, ctx, cli, docktailName, persisted)
+	warnings, err = ns.EnableTailscale(ctx, controlSeamSettings(), nil)
+	require.NoError(t, err)
+	for _, warning := range warnings {
+		assert.NotContains(t, warning, "--mode host")
+	}
+	healed, err := ns.Tailscale().LoadSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, docker.TailscaleModeSidecar, healed.Mode, "the rebuilt label must record the resolved mode")
 
 	// `deploy --expose tailnet` works now that Tailscale is up: the app is
 	// advertised as a Service named from the App Name (its Host); the local
@@ -423,11 +463,10 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	assertAppLabels(t, ctx, cli, ns, whoamiName, noDocktailLabels)
 }
 
-// TestTailscaleEnableUsesHostTailscaled proves explicit host mode and the
-// mode lifecycle: `--mode host` boots only once-docktail (no sidecar) with
-// the host socket directory mounted, a re-enable with the mode unset keeps
-// the stored host mode without a rebuild, and an explicit differing mode
-// rebuilds the topology like changed credentials do.
+// TestTailscaleEnableUsesHostTailscaled proves host mode and the mode
+// lifecycle: host mode boots only once-docktail (no sidecar) with the host
+// socket directory mounted, re-enabling with the same mode keeps the topology
+// as it is, and a differing mode rebuilds it like changed credentials do.
 func TestTailscaleEnableUsesHostTailscaled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -451,9 +490,7 @@ func TestTailscaleEnableUsesHostTailscaled(t *testing.T) {
 
 	hostSettings := controlSeamSettings()
 	hostSettings.Mode = docker.TailscaleModeHost
-	notice, err := ns.Tailscale().Enable(ctx, hostSettings)
-	require.NoError(t, err)
-	assert.Empty(t, notice, "explicit --mode host must not produce the sidecar notice")
+	require.NoError(t, ns.Tailscale().Enable(ctx, hostSettings))
 
 	info, err := cli.ContainerInspect(ctx, ns.Name()+"-docktail")
 	require.NoError(t, err)
@@ -465,10 +502,9 @@ func TestTailscaleEnableUsesHostTailscaled(t *testing.T) {
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-tailscale")
 	assert.True(t, errdefs.IsNotFound(err), "no sidecar should boot in host mode")
 
-	// Re-enable with the mode unset keeps the stored host mode, no rebuild.
-	notice, err = ns.Tailscale().Enable(ctx, controlSeamSettings())
-	require.NoError(t, err)
-	assert.Empty(t, notice, "the notice never fires on re-enables")
+	// Re-enable with the same resolved mode is sticky: no rebuild. (Resolving an
+	// unset mode to the stored one happens above Enable now, in EnableTailscale.)
+	require.NoError(t, ns.Tailscale().Enable(ctx, hostSettings))
 	again, err := cli.ContainerInspect(ctx, ns.Name()+"-docktail")
 	require.NoError(t, err)
 	assert.Equal(t, info.ID, again.ID, "sticky re-enable must not recreate docktail")
@@ -480,8 +516,7 @@ func TestTailscaleEnableUsesHostTailscaled(t *testing.T) {
 	// on the changed-credentials path) and boots the sidecar this time.
 	sidecarSettings := controlSeamSettings()
 	sidecarSettings.Mode = docker.TailscaleModeSidecar
-	_, err = ns.Tailscale().Enable(ctx, sidecarSettings)
-	require.NoError(t, err)
+	require.NoError(t, ns.Tailscale().Enable(ctx, sidecarSettings))
 	rebuilt, err := cli.ContainerInspect(ctx, ns.Name()+"-docktail")
 	require.NoError(t, err)
 	assert.NotEqual(t, info.ID, rebuilt.ID, "a mode change must rebuild docktail")
@@ -529,9 +564,9 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 		return err == nil
 	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
 
-	notice, err := ns.Tailscale().Enable(ctx, controlSeamSettings())
-	require.NoError(t, err)
-	assert.Empty(t, notice, "no host socket, so no --mode host notice")
+	sidecarSettings := controlSeamSettings()
+	sidecarSettings.Mode = docker.TailscaleModeSidecar
+	require.NoError(t, ns.Tailscale().Enable(ctx, sidecarSettings))
 	require.NoError(t, ns.Admin().Boot(ctx))
 
 	docktailName := ns.Name() + "-docktail"
