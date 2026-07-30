@@ -29,7 +29,7 @@ exists for observers - the integration driver picks it up in the next ticket.
 **Blocked by:** 01 - Key-addressed Form fields (the message carries the field
 key).
 
-**Status:** in-review
+**Status:** done
 
 - [x] Submitting with a required field empty emits the rejection message with
       that field's key and the rendered reason, covered by a unit test
@@ -69,3 +69,5 @@ must not depend on the rejection arriving before the callback's own command.
 
 `make test` green, `make lint` clean. Integration suite not run (wave 3 owns
 the drivers).
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-2-tickets at e884ede (fast-forward). go vet, make test, make lint, and the full integration suite (489s) green on the merged tree. Done.

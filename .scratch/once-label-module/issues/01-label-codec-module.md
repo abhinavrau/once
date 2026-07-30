@@ -34,7 +34,7 @@ that on `labelExtra`.
 round-trip tests pin the label decode behavior this codec move must not
 change - the review sequenced candidate 02 downstream of that seam).
 
-**Status:** in-review
+**Status:** done
 
 - [x] `internal/docker/label.go` owns `labelKey`, `labelExtra`, `decodeLabel`,
       `encodeLabel`, and `unknownFields`
@@ -84,3 +84,5 @@ fronts (decode never captures a key the struct claims), kept as-is because the
 ticket requires the merge semantics "as today"; its doc comment now says so.
 The `labelExtra` doc no longer claims every settings type embeds it - true only
 after ticket 02. `make test` and `make lint` green; integration suite not run.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-2-tickets at 93036ec. go vet, make test, make lint, and the full integration suite (489s) green on the merged tree. Done.

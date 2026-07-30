@@ -18,7 +18,7 @@ Tailscale tests is the one exercising the HTTP adapter itself.
 
 **Blocked by:** 01 - The Tailscale SaaS seam is a type, not a string.
 
-**Status:** in-review
+**Status:** done
 
 - [x] One fake adapter serves every SaaS-touching flow test; the three hand-rolled flow servers are deleted
 - [x] Canned responses are parsed by the production code paths, not by test-local parsing
@@ -51,3 +51,5 @@ self-tests. `make test` green, `make lint` clean.
 Left for a production-side ticket (scope guard): the comment at
 `internal/docker/tailscale_validate.go:99` still says tests "can use an httptest
 server and the canned-JSON fake" - the preflight tests now use only the fake.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-2-tickets at 79e1eaf. go vet, make test, make lint, and the full integration suite (489s) green on the merged tree. Done.

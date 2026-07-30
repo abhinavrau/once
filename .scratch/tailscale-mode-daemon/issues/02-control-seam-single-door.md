@@ -33,7 +33,7 @@ open through; do not build more than the accessor now.
 **Blocked by:** 01 - Resolve the Tailscale mode once per enable (both rewrite
 the Enable Tailscale workflow's settings preamble).
 
-**Status:** in-review
+**Status:** done
 
 - [x] Exactly one function reads the control-seam env vars; the active-check
       helper and the sidecar boot both go through it (unit-tested with the
@@ -80,3 +80,5 @@ claiming the credential probe always runs).
 
 `make test` and `make lint` pass; the integration suite was not run locally (the
 coordinator runs it) but compiles and vets clean.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-2-tickets at ec83fc0. go vet, make test, make lint, and the full integration suite (489s) green on the merged tree. Done.
