@@ -18,10 +18,7 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
-const (
-	proxyImage = "basecamp/kamal-proxy:once-01"
-	labelKey   = "once"
-)
+const proxyImage = "basecamp/kamal-proxy:once-01"
 
 const (
 	stateFileDir  = "/home/kamal-proxy/.config/kamal-proxy"
