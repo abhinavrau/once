@@ -14,7 +14,7 @@ fail fast when it is not. Then shorten the AGENTS.md caveat accordingly.
 
 **Blocked by:** None - can start immediately (ticket 03 is done).
 
-**Status:** in-review
+**Status:** done
 
 - [x] A driver click on an unregistered target fails the test naming the
       target, demonstrated during development with a renamed key (not left in
@@ -43,3 +43,5 @@ assert-before-send behavior instead of "rename a key and its driver
 together". `make test`, `make lint`, and both UI integration tests
 (`TestUIInstallAndManageApp`, `TestUITailscaleFormEnablesViaControlSeam`) are
 green.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-4-tickets at ee7d37c. go vet, make test, make lint, and the full integration suite (444s) green on the merged tree. Done.

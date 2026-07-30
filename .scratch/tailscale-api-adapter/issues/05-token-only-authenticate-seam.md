@@ -16,7 +16,7 @@ business) must survive unchanged.
 
 **Blocked by:** None - can start immediately (tickets 03 and 04 are done).
 
-**Status:** in-review
+**Status:** done
 
 - [x] The seam offers a token-only credential operation; status's up-front
       check uses it and no longer issues the devices read
@@ -69,3 +69,5 @@ duplication in the first draft).
 
 ADR-0011 updated: the seam description said "a one-method interface", now
 describes both `Call` and `Authenticate`.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-4-tickets at d6c6d6c. go vet, make test, make lint, and the full integration suite (444s) green on the merged tree. Done.

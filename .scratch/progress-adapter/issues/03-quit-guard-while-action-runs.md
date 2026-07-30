@@ -14,7 +14,7 @@ so the two guards cannot drift apart.
 
 **Blocked by:** None - can start immediately (ticket 02 is done).
 
-**Status:** in-review
+**Status:** done
 
 - [x] Quit during a running settings action defers or requires confirmation;
       the in-flight action's completion is not lost, unit-tested
@@ -64,3 +64,5 @@ test.
 main; the one real finding (`QuitMsg` wasn't guarded, only ctrl+c was) is
 fixed via the shared `screenIsBusy` helper. Integration suite not run per
 instructions.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-4-tickets at bc67a16. go vet, make test, make lint, and the full integration suite (444s) green on the merged tree. Done.

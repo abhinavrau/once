@@ -14,7 +14,7 @@ form that rejects from its callback, present and future.
 
 **Blocked by:** None - can start immediately (tickets 02 and 04 are done).
 
-**Status:** in-review
+**Status:** done
 
 - [x] A callback rejection moves focus to the errored field, unit-tested on
       the exposure form's tailnet-without-Tailscale path and the funnel
@@ -51,3 +51,5 @@ existing convention in the same files, so left as is.
 
 `make test` green, `PATH="$HOME/go/bin:$PATH" make lint` clean. Integration
 suite not run (out of scope for this ticket per task instructions).
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-4-tickets at fe40ae0 (fast-forward). go vet, make test, make lint, and the full integration suite (444s) green on the merged tree. Done.

@@ -24,7 +24,7 @@ why this ticket is blocked on it - both rewrite the same call sites.
 funnel-wait call sites this ticket touches are the write-through persist
 paths that ticket moves onto the label codec).
 
-**Status:** in-review
+**Status:** done
 
 - [x] One private session function owns the stored-settings-to-daemon
       binding; no read path calls the settings load and the daemon binder as
@@ -33,7 +33,7 @@ paths that ticket moves onto the label codec).
 - [x] Shadow warnings remain best-effort and the domain-suffix cache and
       write-through behavior are unchanged (existing unit tests keep passing
       unmodified)
-- [ ] Integration suite passes
+- [x] Integration suite passes
 
 ## Comments
 
@@ -49,3 +49,5 @@ paths that ticket moves onto the label codec).
   against main) - both came back clean, no findings. The "Integration suite
   passes" checkbox is left unchecked here; pending the coordinator's
   post-merge integration run per instructions.
+
+- 2026-07-30 (coordinator): merged into arch-review-wave-4-tickets at 3e027ec. go vet, make test, make lint, and the full integration suite (444s) green on the merged tree. Done.
