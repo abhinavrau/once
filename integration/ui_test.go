@@ -302,10 +302,9 @@ func (d *appDriver) typeText(text string) {
 	}
 }
 
-// click delivers a click on a named target down the same path a real click
-// takes once App has resolved its coordinates: App forwards the event to the
-// current screen, the screen to any open overlay, and the component resolves
-// the target itself.
+// click enters the update chain where a real click does once App has resolved
+// coordinates to a target name: App hands the event to the current screen, the
+// screen to any open overlay, and the component resolves the target itself.
 func (d *appDriver) click(target string) {
 	d.send(ui.MouseEvent{Target: target, IsClick: true})
 }
@@ -317,23 +316,29 @@ func (d *appDriver) clickField(key string) {
 	d.click("field:" + key)
 }
 
-// fillField focuses the keyed text field and types text into it.
 func (d *appDriver) fillField(key, text string) {
 	d.clickField(key)
 	d.typeText(text)
 }
 
+// maxRadioClicks bounds selectRadioOption so a label that never appears fails
+// with a view dump instead of spinning.
+const maxRadioClicks = 8
+
 // selectRadioOption clicks the keyed radio field until label is the selected
 // option. One click cycles one option, so a full cycle is the worst case.
 func (d *appDriver) selectRadioOption(key, label string) {
 	d.t.Helper()
-	for range maxRadioOptions {
-		if strings.Contains(d.viewContent(), "(•) "+label) {
+	selected := func() bool { return strings.Contains(d.viewContent(), "(•) "+label) }
+	for range maxRadioClicks {
+		if selected() {
 			return
 		}
 		d.clickField(key)
 	}
-	d.t.Fatalf("radio %q never selected %q\n\nView:\n%s", key, label, d.viewContent())
+	if !selected() {
+		d.t.Fatalf("radio %q never selected %q\n\nView:\n%s", key, label, d.viewContent())
+	}
 }
 
 func (d *appDriver) viewContent() string {
@@ -423,10 +428,6 @@ func (d *appDriver) enqueueCmd(cmd tea.Cmd) {
 		}
 	}()
 }
-
-// maxRadioOptions bounds selectRadioOption's cycling so a label that never
-// appears fails with a view dump instead of spinning.
-const maxRadioOptions = 8
 
 func keyMsg(s string) tea.KeyPressMsg {
 	k := tea.Key{Text: s}

@@ -72,8 +72,9 @@ make lint        # Run golangci-lint
 - TUI forms are integration-tested in `integration/ui_test.go` by clicking named
   targets - `field:<key>` for a field, `submit`/`action`/`cancel` for the buttons -
   so adding, removing, or reordering a field does not break the drivers. Renaming
-  a field's key does: the click lands nowhere and the submit that follows is
-  rejected. The driver's message pump fails the test the moment a form emits
+  a key still does, and quietly: an unrecognized target is a no-op click, so the
+  driver goes on typing into whatever was focused. Rename a key and its driver
+  together. The driver's message pump fails the test the moment a form emits
   `ui.FormSubmitRejectedMsg`, naming the field key and reason, so a rejected submit
   is an immediate assertion rather than a `waitUntil` timeout.
 - Integration tests pull images from Docker Hub even when they are cached locally
