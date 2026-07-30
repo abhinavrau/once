@@ -3,12 +3,15 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,6 +144,42 @@ func TestTailscaleAPIRejectedCredentials(t *testing.T) {
 	assert.Empty(t, s.calls, "a rejected exchange must not send the request")
 }
 
+func TestTailscaleAPIRateLimitedTokenExchange(t *testing.T) {
+	s := newAPIServer(t)
+	s.tokenStatus = http.StatusTooManyRequests
+	s.tokenBody = ""
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate-limited the OAuth token request (429 Too Many Requests)")
+	assert.NotContains(t, err.Error(), "rejected the OAuth credentials")
+	assert.Empty(t, s.calls)
+}
+
+func TestTailscaleAPIServerErrorTokenExchange(t *testing.T) {
+	s := newAPIServer(t)
+	s.tokenStatus = http.StatusBadGateway
+	s.tokenBody = ""
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not issue an OAuth token (502 Bad Gateway)")
+	assert.Contains(t, err.Error(), "error on Tailscale's side")
+	assert.NotContains(t, err.Error(), "rejected the OAuth credentials")
+	assert.Empty(t, s.calls)
+}
+
+func TestTailscaleAPIUnexpectedTokenStatus(t *testing.T) {
+	s := newAPIServer(t)
+	s.tokenStatus = http.StatusNotFound
+	s.tokenBody = ""
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected response from the Tailscale OAuth token endpoint (404 Not Found)")
+	assert.NotContains(t, err.Error(), "rejected the OAuth credentials")
+}
+
 func TestTailscaleAPITokenResponseWithoutAccessToken(t *testing.T) {
 	s := newAPIServer(t)
 	s.tokenBody = `{"token_type":"bearer"}`
@@ -176,23 +215,34 @@ func TestTailscaleAPIReusesTokenAcrossCalls(t *testing.T) {
 	}
 }
 
-func TestTailscaleAPIBoundsResponseBody(t *testing.T) {
+func TestTailscaleAPIRejectsAnOversizedResponse(t *testing.T) {
 	s := newAPIServer(t)
-	s.callBody = strings.Repeat("x", tailscaleAPIMaxResponse+4096)
-
-	_, body, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.NoError(t, err)
-	assert.Len(t, body, tailscaleAPIMaxResponse)
-}
-
-func TestTailscaleAPIBoundsTokenResponse(t *testing.T) {
-	s := newAPIServer(t)
-	// The access token sits past the bound, so only an unbounded read reaches it.
-	s.tokenBody = `{"padding":"` + strings.Repeat("x", tailscaleAPIMaxResponse) + `","access_token":"tskey-api-test"}`
+	s.callBody = `{"devices":[` + strings.Repeat("x", tailscaleAPIMaxResponse)
 
 	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decoding Tailscale OAuth token response")
+	assert.Contains(t, err.Error(), "GET /tailnet/-/devices is larger than")
+	assert.NotContains(t, err.Error(), "unexpected end of JSON input")
+}
+
+// A tailnet big enough to have crossed the adapter's original 64KiB bound must
+// come back whole and parse, rather than failing enable with a JSON error that
+// scales in with tailnet size.
+func TestTailscaleAPIReadsALargeTailnetDeviceList(t *testing.T) {
+	s := newAPIServer(t)
+	s.callBody = devicesListJSON(80, "nodekey:host")
+	require.Greater(t, len(s.callBody), 1<<16)
+
+	require.NoError(t, validateHostInTailnet(context.Background(), s.api(), "nodekey:host"))
+}
+
+func TestTailscaleAPIRejectsAnOversizedTokenResponse(t *testing.T) {
+	s := newAPIServer(t)
+	s.tokenBody = `{"access_token":"` + strings.Repeat("x", tailscaleAPIMaxResponse)
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the OAuth token exchange is larger than")
 	assert.Empty(t, s.calls)
 }
 
@@ -233,6 +283,34 @@ func TestTailscaleAPILogsNothing(t *testing.T) {
 	assert.Empty(t, logged.String())
 }
 
+// An endpoint that accepts the connection and then never answers must fail the
+// call, not hang the enable that made it.
+func TestTailscaleAPIFailsWhenTheAPINeverResponds(t *testing.T) {
+	api := apiAgainst(stalledServerURL(t))
+	api.client.Timeout = 50 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := api.Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "contacting the Tailscale API")
+	case <-time.After(10 * time.Second):
+		t.Fatal("a stalled Tailscale API hung the call")
+	}
+}
+
+func TestTailscaleAPIBoundsEveryRequestWithItsOwnClient(t *testing.T) {
+	api := newTailscaleAPI(TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+	assert.Equal(t, tailscaleAPIRequestTimeout, api.client.Timeout)
+	assert.Nil(t, api.client.Transport, "the transport stays default so ADR-0005 metadata logging still applies")
+	assert.Less(t, tailscaleAPIRequestTimeout, serviceVerifyTimeout, "the poll budget, not one call, must govern the verify loop")
+}
+
 // Helpers
 
 // apiAgainst builds the production adapter against a test server. Only these
@@ -240,4 +318,67 @@ func TestTailscaleAPILogsNothing(t *testing.T) {
 // this file holds the last httptest server in the Tailscale tests.
 func apiAgainst(baseURL string) *httpTailscaleAPI {
 	return newTailscaleAPIAt(baseURL, TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+}
+
+// stalledServerURL serves an endpoint that accepts the connection and holds it
+// open without ever responding, until the test ends.
+func stalledServerURL(t *testing.T) string {
+	t.Helper()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	return srv.URL
+}
+
+// devicesListJSON builds a devices-list response of realistically sized device
+// records, the last of which carries nodeKey.
+func devicesListJSON(count int, nodeKey string) string {
+	devices := make([]map[string]any, 0, count)
+	for i := range count {
+		devices = append(devices, map[string]any{
+			"id":                 fmt.Sprintf("%d", 100000000000000+i),
+			"nodeId":             fmt.Sprintf("nodeid-%d", i),
+			"nodeKey":            fmt.Sprintf("nodekey:%064d", i),
+			"name":               fmt.Sprintf("device-%d.tailnet-abcd.ts.net", i),
+			"hostname":           fmt.Sprintf("device-%d", i),
+			"user":               "someone@example.com",
+			"os":                 "linux",
+			"clientVersion":      "1.88.4-t1234abcdef",
+			"created":            "2026-01-02T03:04:05Z",
+			"lastSeen":           "2026-07-30T03:04:05Z",
+			"addresses":          []string{"100.64.0.1", "fd7a:115c:a1e0::1"},
+			"tags":               []string{"tag:once"},
+			"machineKey":         fmt.Sprintf("mkey:%064d", i),
+			"keyExpiryDisabled":  false,
+			"updateAvailable":    false,
+			"blocksIncomingConn": false,
+			"expires":            "2027-01-02T03:04:05Z",
+			"authorized":         true,
+			"isExternal":         false,
+			"advertisedRoutes":   []string{},
+			"enabledRoutes":      []string{},
+			"clientConnectivity": map[string]any{
+				"endpoints":             []string{"192.0.2.10:41641", "[2001:db8::10]:41641"},
+				"mappingVariesByDestIP": false,
+				"latency": map[string]any{
+					"Chicago":  map[string]any{"latencyMs": 12.34},
+					"Dallas":   map[string]any{"preferred": true, "latencyMs": 7.65},
+					"New York": map[string]any{"latencyMs": 21.09},
+				},
+				"clientSupports": map[string]bool{
+					"hairPinning": false, "ipv6": true, "pcp": false, "pmp": false, "udp": true, "upnp": false,
+				},
+			},
+		})
+	}
+	devices[count-1]["nodeKey"] = nodeKey
+
+	body, err := json.Marshal(map[string]any{"devices": devices})
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
 }
