@@ -18,10 +18,42 @@ it is (settled in the mode-daemon feature).
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** in-review
 
-- [ ] With revoked credentials, status reports the credential error before any
+- [x] With revoked credentials, status reports the credential error before any
       per-service output and exits non-zero, unit-tested through the fake
-- [ ] On the control seam, status behavior is unchanged
-- [ ] Healthy-credential output is unchanged
-- [ ] `make test` and `make lint` green
+- [x] On the control seam, status behavior is unchanged
+- [x] Healthy-credential output is unchanged
+- [x] `make test` and `make lint` green
+
+## Comments
+
+**2026-07-30** - branch `tailscale-api-adapter-04-status-surfaces-rejected-credentials`
+
+`serviceStatuses` now proves the credentials once, inside the existing
+`cloudChecked := !controlSeamActive()` guard and before the per-service loop,
+so the ADR-0010 branch point is untouched and the control seam still makes no
+cloud call at all (asserted by the unchanged control-seam test).
+
+The adapter exchanges the OAuth token lazily on its first call, and
+`tailscaleAPI` has only `Call`, so forcing that exchange means making a call.
+The precise fit would be a token-only seam method (e.g. `Authenticate(ctx)`)
+on `tailscaleAPI`, which would let status prove the credentials without
+touching the tailnet at all; `tailscale_api.go` was out of scope here, so
+`checkOAuthCredentials` uses the closest existing call - the
+`GET /tailnet/-/devices` read `validateHostInTailnet` already sends, needing
+no scope beyond the one the per-service checks need. Worth folding into the
+seam if a later ticket reopens the adapter. The path stays inline per
+ADR-0011 ("paths ... stay in the flows").
+
+Only a rejected credential is fatal there: 401 and 403 (403 naming the
+devices scope, as the enable-time probe does), everything else left to the
+per-service checks, so a rate-limited or briefly unwell tailnet cannot turn a
+working listing into a hard failure blamed on the operator's credentials.
+That boundary came out of the code review, which flagged the first cut's
+blanket non-200 abort.
+
+Healthy output is unchanged; the extra call shows up only in the call-order
+assertion, which now also pins the check as running first. Also moved this
+test file's helpers under a `// Helpers` section - commit 091a683's
+convention sweep had missed it.
