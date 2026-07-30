@@ -3,12 +3,11 @@ package docker
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -133,51 +132,25 @@ func TestTailscaleAPIBodylessCallSendsNoContentType(t *testing.T) {
 }
 
 func TestTailscaleAPIRejectedCredentials(t *testing.T) {
-	s := newAPIServer(t)
-	s.tokenStatus = http.StatusUnauthorized
-	s.tokenBody = ""
-
-	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Tailscale rejected the OAuth credentials (401 Unauthorized)")
-	assert.Contains(t, err.Error(), "check the client ID and secret are correct and not revoked")
-	assert.Empty(t, s.calls, "a rejected exchange must not send the request")
+	rejected := tokenStatusError(t, http.StatusUnauthorized)
+	assert.Contains(t, rejected, "Tailscale rejected the OAuth credentials (401 Unauthorized)")
+	assert.Contains(t, rejected, "check the client ID and secret are correct and not revoked")
 }
 
-func TestTailscaleAPIRateLimitedTokenExchange(t *testing.T) {
-	s := newAPIServer(t)
-	s.tokenStatus = http.StatusTooManyRequests
-	s.tokenBody = ""
+// A throttled or broken token endpoint never judged the credentials, so it must
+// not send the user off to rotate a working secret.
+func TestTailscaleAPIThrottledOrBrokenTokenExchange(t *testing.T) {
+	rateLimited := tokenStatusError(t, http.StatusTooManyRequests)
+	assert.Contains(t, rateLimited, "rate-limited the OAuth token request (429 Too Many Requests)")
+	assert.NotContains(t, rateLimited, "rejected the OAuth credentials")
 
-	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rate-limited the OAuth token request (429 Too Many Requests)")
-	assert.NotContains(t, err.Error(), "rejected the OAuth credentials")
-	assert.Empty(t, s.calls)
-}
+	serverError := tokenStatusError(t, http.StatusBadGateway)
+	assert.Contains(t, serverError, "server error (502 Bad Gateway)")
+	assert.NotContains(t, serverError, "rejected the OAuth credentials")
 
-func TestTailscaleAPIServerErrorTokenExchange(t *testing.T) {
-	s := newAPIServer(t)
-	s.tokenStatus = http.StatusBadGateway
-	s.tokenBody = ""
-
-	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "could not issue an OAuth token (502 Bad Gateway)")
-	assert.Contains(t, err.Error(), "error on Tailscale's side")
-	assert.NotContains(t, err.Error(), "rejected the OAuth credentials")
-	assert.Empty(t, s.calls)
-}
-
-func TestTailscaleAPIUnexpectedTokenStatus(t *testing.T) {
-	s := newAPIServer(t)
-	s.tokenStatus = http.StatusNotFound
-	s.tokenBody = ""
-
-	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unexpected response from the Tailscale OAuth token endpoint (404 Not Found)")
-	assert.NotContains(t, err.Error(), "rejected the OAuth credentials")
+	unexpected := tokenStatusError(t, http.StatusNotFound)
+	assert.Contains(t, unexpected, "unexpected response from the Tailscale OAuth token endpoint (404 Not Found)")
+	assert.NotContains(t, unexpected, "rejected the OAuth credentials")
 }
 
 func TestTailscaleAPITokenResponseWithoutAccessToken(t *testing.T) {
@@ -242,7 +215,7 @@ func TestTailscaleAPIRejectsAnOversizedTokenResponse(t *testing.T) {
 
 	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "the OAuth token exchange is larger than")
+	assert.Contains(t, err.Error(), "POST /oauth/token is larger than")
 	assert.Empty(t, s.calls)
 }
 
@@ -284,9 +257,85 @@ func TestTailscaleAPILogsNothing(t *testing.T) {
 }
 
 // An endpoint that accepts the connection and then never answers must fail the
-// call, not hang the enable that made it.
-func TestTailscaleAPIFailsWhenTheAPINeverResponds(t *testing.T) {
-	api := apiAgainst(stalledServerURL(t))
+// call, not hang the enable that made it - on either leg, the token exchange
+// (a captive portal swallowing the first contact) or the request it authorizes.
+func TestTailscaleAPIFailsWhenTheTokenExchangeNeverResponds(t *testing.T) {
+	assertStalledCallFails(t, stalledAPIServer(t, false))
+}
+
+func TestTailscaleAPIFailsWhenARequestNeverResponds(t *testing.T) {
+	assertStalledCallFails(t, stalledAPIServer(t, true))
+}
+
+func TestTailscaleAPIBoundsEveryRequest(t *testing.T) {
+	api := newTailscaleAPI(TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+	assert.Equal(t, tailscaleAPIRequestTimeout, api.client.Timeout)
+	assert.Less(t, tailscaleAPIRequestTimeout, serviceVerifyTimeout, "the poll budget, not one call, must govern the verify loop")
+}
+
+// The adapter's own client must still ride http.DefaultTransport, which main
+// wraps in the metadata-only logging RoundTripper (ADR-0005).
+func TestTailscaleAPIRequestsRideTheDefaultTransport(t *testing.T) {
+	s := newAPIServer(t)
+	wrapped := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = wrapped })
+	tripped := 0
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		tripped++
+		return wrapped.RoundTrip(req)
+	})
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 2, tripped, "the token exchange and the request both go through the default transport")
+}
+
+// Helpers
+
+// apiAgainst builds the production adapter against a test server. Only these
+// tests use it: the flows are tested through fakeTailscaleAPI, which is why
+// this file holds the last httptest server in the Tailscale tests.
+func apiAgainst(baseURL string) *httpTailscaleAPI {
+	return newTailscaleAPIAt(baseURL, TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
+}
+
+// tokenStatusError returns the error the adapter reports when the OAuth token
+// endpoint answers with status.
+func tokenStatusError(t *testing.T, status int) string {
+	t.Helper()
+	s := newAPIServer(t)
+	s.tokenStatus = status
+	s.tokenBody = ""
+
+	_, _, err := s.api().Call(context.Background(), http.MethodGet, "/tailnet/-/devices", nil)
+	require.Error(t, err)
+	assert.Empty(t, s.calls, "a failed exchange must not send the request")
+	return err.Error()
+}
+
+// stalledAPIServer serves an endpoint that accepts the connection and holds it
+// open without ever responding, until the test ends. With serveToken the OAuth
+// exchange succeeds, so the stall lands on the request it authorizes instead.
+func stalledAPIServer(t *testing.T, serveToken bool) string {
+	t.Helper()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveToken && r.URL.Path == tokenPath {
+			_, _ = w.Write([]byte(`{"access_token":"tskey-api-test"}`))
+			return
+		}
+		<-release
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	return srv.URL
+}
+
+// assertStalledCallFails fails the test unless a call against a stalled server
+// returns rather than hanging.
+func assertStalledCallFails(t *testing.T, baseURL string) {
+	t.Helper()
+	api := apiAgainst(baseURL)
 	api.client.Timeout = 50 * time.Millisecond
 
 	done := make(chan error, 1)
@@ -304,81 +353,36 @@ func TestTailscaleAPIFailsWhenTheAPINeverResponds(t *testing.T) {
 	}
 }
 
-func TestTailscaleAPIBoundsEveryRequestWithItsOwnClient(t *testing.T) {
-	api := newTailscaleAPI(TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
-	assert.Equal(t, tailscaleAPIRequestTimeout, api.client.Timeout)
-	assert.Nil(t, api.client.Transport, "the transport stays default so ADR-0005 metadata logging still applies")
-	assert.Less(t, tailscaleAPIRequestTimeout, serviceVerifyTimeout, "the poll budget, not one call, must govern the verify loop")
-}
+// devicesListJSON builds a devices-list response of count device records, each
+// the shape and size of a real one, the last carrying hostKey. Size is the
+// point: how many devices fit in a given number of bytes is what put real
+// tailnets over the adapter's original bound.
+func devicesListJSON(count int, hostKey string) string {
+	const record = `{"addresses":["100.64.0.$N","fd7a:115c:a1e0:ab12:4843:cd96:6249:$N"],` +
+		`"id":"92233720368547750$N","nodeId":"n0$NCNTRL","user":"someone@example.com",` +
+		`"name":"device-$N.tailnet-abcd.ts.net","hostname":"device-$N","clientVersion":"1.88.4-t1234abcdef",` +
+		`"updateAvailable":false,"os":"linux","created":"2026-01-02T03:04:05Z","lastSeen":"2026-07-30T03:04:05Z",` +
+		`"keyExpiryDisabled":false,"expires":"2027-01-02T03:04:05Z","authorized":true,"isExternal":false,` +
+		`"machineKey":"mkey:5a7f3b2c9e1d4f6a8b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e0$N",` +
+		`"nodeKey":"$K","blocksIncomingConnections":false,"enabledRoutes":[],"advertisedRoutes":[],` +
+		`"clientConnectivity":{"endpoints":["192.0.2.$N:41641","[2001:db8::$N]:41641"],` +
+		`"mappingVariesByDestIP":false,"latency":{"Chicago":{"latencyMs":12.34},` +
+		`"Dallas":{"preferred":true,"latencyMs":7.65},"New York":{"latencyMs":21.09}},` +
+		`"clientSupports":{"hairPinning":false,"ipv6":true,"pcp":false,"pmp":false,"udp":true,"upnp":false}},` +
+		`"tags":["tag:once"],"tailnetLockError":"","tailnetLockKey":""}`
 
-// Helpers
-
-// apiAgainst builds the production adapter against a test server. Only these
-// tests use it: the flows are tested through fakeTailscaleAPI, which is why
-// this file holds the last httptest server in the Tailscale tests.
-func apiAgainst(baseURL string) *httpTailscaleAPI {
-	return newTailscaleAPIAt(baseURL, TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
-}
-
-// stalledServerURL serves an endpoint that accepts the connection and holds it
-// open without ever responding, until the test ends.
-func stalledServerURL(t *testing.T) string {
-	t.Helper()
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-release
-	}))
-	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(release) })
-	return srv.URL
-}
-
-// devicesListJSON builds a devices-list response of realistically sized device
-// records, the last of which carries nodeKey.
-func devicesListJSON(count int, nodeKey string) string {
-	devices := make([]map[string]any, 0, count)
-	for i := range count {
-		devices = append(devices, map[string]any{
-			"id":                 fmt.Sprintf("%d", 100000000000000+i),
-			"nodeId":             fmt.Sprintf("nodeid-%d", i),
-			"nodeKey":            fmt.Sprintf("nodekey:%064d", i),
-			"name":               fmt.Sprintf("device-%d.tailnet-abcd.ts.net", i),
-			"hostname":           fmt.Sprintf("device-%d", i),
-			"user":               "someone@example.com",
-			"os":                 "linux",
-			"clientVersion":      "1.88.4-t1234abcdef",
-			"created":            "2026-01-02T03:04:05Z",
-			"lastSeen":           "2026-07-30T03:04:05Z",
-			"addresses":          []string{"100.64.0.1", "fd7a:115c:a1e0::1"},
-			"tags":               []string{"tag:once"},
-			"machineKey":         fmt.Sprintf("mkey:%064d", i),
-			"keyExpiryDisabled":  false,
-			"updateAvailable":    false,
-			"blocksIncomingConn": false,
-			"expires":            "2027-01-02T03:04:05Z",
-			"authorized":         true,
-			"isExternal":         false,
-			"advertisedRoutes":   []string{},
-			"enabledRoutes":      []string{},
-			"clientConnectivity": map[string]any{
-				"endpoints":             []string{"192.0.2.10:41641", "[2001:db8::10]:41641"},
-				"mappingVariesByDestIP": false,
-				"latency": map[string]any{
-					"Chicago":  map[string]any{"latencyMs": 12.34},
-					"Dallas":   map[string]any{"preferred": true, "latencyMs": 7.65},
-					"New York": map[string]any{"latencyMs": 21.09},
-				},
-				"clientSupports": map[string]bool{
-					"hairPinning": false, "ipv6": true, "pcp": false, "pmp": false, "udp": true, "upnp": false,
-				},
-			},
-		})
+	device := func(i int, nodeKey string) string {
+		return strings.NewReplacer("$N", strconv.Itoa(i), "$K", nodeKey).Replace(record)
 	}
-	devices[count-1]["nodeKey"] = nodeKey
-
-	body, err := json.Marshal(map[string]any{"devices": devices})
-	if err != nil {
-		panic(err)
+	devices := make([]string, count)
+	for i := range devices {
+		devices[i] = device(i, "nodekey:9f1a3b5c7d9e1f3a5b7c9d1e3f5a7b9c1d3e5f7a9b1c3d5e7f9a1b3c5d7e0"+strconv.Itoa(i))
 	}
-	return string(body)
+	devices[count-1] = device(count-1, hostKey)
+	return `{"devices":[` + strings.Join(devices, ",") + `]}`
 }
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
