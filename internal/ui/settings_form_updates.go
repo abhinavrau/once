@@ -29,8 +29,8 @@ func NewSettingsFormUpdates(app *docker.Application, lastResult *docker.Operatio
 	}
 
 	m.form.SetActionButton("Check for updates", func() tea.Msg {
-		return settingsRunActionMsg{action: func() (string, error) {
-			changed, err := app.Update(context.Background(), nil)
+		return settingsRunActionMsg{action: func(progress docker.DeployProgressCallback) (string, error) {
+			changed, err := app.Update(context.Background(), progress)
 			if err != nil {
 				return "", err
 			}
