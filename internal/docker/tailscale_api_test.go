@@ -235,8 +235,9 @@ func TestTailscaleAPILogsNothing(t *testing.T) {
 
 // Helpers
 
-// apiAgainst builds the production adapter against a test server, so the flow
-// tests that reach the SaaS API construct the seam in exactly one place.
+// apiAgainst builds the production adapter against a test server. Only these
+// tests use it: the flows are tested through fakeTailscaleAPI, which is why
+// this file holds the last httptest server in the Tailscale tests.
 func apiAgainst(baseURL string) *httpTailscaleAPI {
 	return newTailscaleAPIAt(baseURL, TailscaleSettings{ClientID: "id", ClientSecret: "secret"})
 }
