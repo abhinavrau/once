@@ -25,7 +25,7 @@ ADR draft.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** in-review
+**Status:** done
 
 - [x] Applying a settings change that carries a new image shows the download percentage on the settings progress bar, then goes indeterminate for starting/verifying
 - [x] "Check for updates" shows the download percentage while a new image downloads
@@ -49,3 +49,5 @@ share one `reporting` runner that closes the channel when the run ends, and a
 run can only start from an idle form, so no docker goroutine can be left
 blocked on an orphaned channel. No form fields changed; `make test` (plus
 `-race -count=5` on `internal/ui`) and `golangci-lint` pass.
+
+2026-07-29 (coordinator): merged into arch-review-frontier-tickets in 6b041dd; unit tests, lint, and the full integration suite green on the merged branch (437s, all pass). Status set to done.

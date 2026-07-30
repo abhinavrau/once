@@ -32,7 +32,7 @@ enable, not just on rebuilds.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** in-review
+**Status:** done
 
 - [x] The ADR-0007 rule (explicit wins, empty keeps stored, fresh defaults to
       sidecar, corrupt stored mode reads as sidecar, real inspect failure is
@@ -76,3 +76,5 @@ and the sticky unset-mode re-enable; the host-mode test dropped its notice
 asserts and passes resolved modes. `make test` and `make lint` pass; the
 integration suite was not run locally (the coordinator runs it) but compiles and
 vets clean.
+
+2026-07-29 (coordinator): merged into arch-review-frontier-tickets in dfbfb0e; unit tests, lint, and the full integration suite green on the merged branch (437s, all pass). Status set to done.

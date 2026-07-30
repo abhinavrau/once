@@ -24,7 +24,7 @@ centralize the construction); replacing those servers with a fake is ticket 02.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** in-review
+**Status:** done
 
 - [x] One unexported single-method interface is the only path from the flows to the Tailscale SaaS API; no raw http client use remains in the flows
 - [x] No function signature carries a base URL or a bearer token; the production base URL exists in exactly one place
@@ -54,3 +54,5 @@ fails eagerly on bad credentials when nothing is advertised (it reports the
 local not-advertised truth instead; a credential failure still surfaces
 verbatim as soon as an advertised service is checked). Code comments cite
 ADR-0011, which lands with the coordinator's uncommitted ADR file.
+
+2026-07-29 (coordinator): merged into arch-review-frontier-tickets in ff51122; unit tests, lint, and the full integration suite green on the merged branch (437s, all pass). Status set to done.

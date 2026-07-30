@@ -24,7 +24,7 @@ module work (candidate 02), which these tests exist to make safe.
 
 **Blocked by:** nothing - the namespace-workflow-spine tickets this was sequenced after all landed on main before this feature was ticketed (merges 6d61e24, 6176528, eb7039f, e1e756c; commits aee4f6c, d648ebf).
 
-**Status:** in-review
+**Status:** done
 
 - [x] A restore over canned containers decodes app settings from the `once` label and marks running apps, without a Docker daemon
 - [x] Two containers for the same app restore as one Application, keeping the most recently created container's settings
@@ -52,3 +52,5 @@ inspect failure, the abort on a corrupt app or proxy label, list-error
 propagation, and the ignoring of out-of-namespace containers. `make test` and
 `make lint` are green; the integration suite is left to the coordinator's
 post-merge run per the process notes (no exported signature changed).
+
+2026-07-29 (coordinator): merged into arch-review-frontier-tickets in c93fc91; unit tests, lint, and the full integration suite green on the merged branch (437s, all pass). Status set to done.

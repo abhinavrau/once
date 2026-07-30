@@ -23,7 +23,7 @@ boot path already honors, so no SaaS key minting or HTTP faking is involved.
 
 **Blocked by:** nothing - the namespace-workflow-spine tickets this was sequenced after all landed on main before this feature was ticketed (merges 6d61e24, 6176528, eb7039f, e1e756c; commits aee4f6c, d648ebf).
 
-**Status:** in-review
+**Status:** done
 
 - [x] A crash-looping sidecar (restarting, or exited nonzero) is removed and a new one created and started, then the login wait runs - all without a daemon
 - [x] A stopped sidecar is started, not recreated
@@ -50,3 +50,5 @@ the inspect-failure, remove-failure and failed-start paths against a fake, with
 the headscale control-seam env vars set so no key is minted and no tailnet or
 daemon is touched. `make test` and `golangci-lint` pass; the integration suite
 is left to the coordinator.
+
+2026-07-29 (coordinator): merged into arch-review-frontier-tickets in 3cb5714; unit tests, lint, and the full integration suite green on the merged branch (437s, all pass). Status set to done.

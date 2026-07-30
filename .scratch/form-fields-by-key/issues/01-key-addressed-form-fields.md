@@ -27,7 +27,7 @@ untouched; this ticket is unit-scope only.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** in-review
+**Status:** done
 
 - [x] Every form item is declared with a key, and no per-form field-index
       constant block remains in the ui package
@@ -57,3 +57,5 @@ walk, and the constructor's find-first-focusable loop are deleted. `make test`
 and `golangci-lint` are clean, and the diff touches only `internal/ui`, so tab
 order, rendered text, and submit behavior - and therefore the integration
 drivers - are unchanged.
+
+2026-07-29 (coordinator): merged into arch-review-frontier-tickets in 0512f40; unit tests, lint, and the full integration suite green on the merged branch (437s, all pass). Status set to done.
