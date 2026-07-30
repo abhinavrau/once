@@ -330,7 +330,7 @@ func TestSettingsFormBackups_ActionReadsCurrentFieldValue(t *testing.T) {
 	require.True(t, ok, "expected settingsRunActionMsg, got %T", msg)
 
 	// Run the action — it will fail (no Docker) but should use the new path
-	_, err := actionMsg.action()
+	_, err := actionMsg.action(nil)
 	require.Error(t, err)
 	// The error should NOT be "backup location is required", proving it read "/new/path"
 	assert.NotContains(t, err.Error(), "backup location is required")

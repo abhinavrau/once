@@ -60,7 +60,7 @@ func NewSettingsFormFunnel(ns *docker.Namespace, app *docker.Application, tailsc
 		enable := f.CheckboxField(funnelEnableField).Checked()
 		duration := f.TextField(funnelDurationField).Value()
 		return func() tea.Msg {
-			return settingsRunActionMsg{action: func() (string, error) {
+			return settingsRunActionMsg{action: func(_ docker.DeployProgressCallback) (string, error) {
 				return applyFunnel(ns, app, enable, duration)
 			}}
 		}
