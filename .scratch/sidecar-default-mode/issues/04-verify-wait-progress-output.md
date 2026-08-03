@@ -10,9 +10,13 @@ never looks hung. Outside ADR-0007's scope; independent of the mode work.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** in-review
+**Status:** done
 
 - [x] When the advertise wait begins, enable prints a line naming the services being waited on and the time bound
 - [x] When the approval wait begins, enable prints a corresponding line
 - [x] Waits that resolve immediately do not spam extra output beyond the single line per phase
 - [x] Success and failure messages are unchanged; timeout errors still name the still-missing services and point at the docktail container logs
+
+## Comments
+
+- 2026-08-03 (coordinator): verified implemented on main - feature present in code and its integration tests green in the 2026-07-30 wave-4 runs. Done.

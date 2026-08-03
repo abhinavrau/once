@@ -13,7 +13,7 @@ driver must be updated in the same change.
 
 **Blocked by:** 01 - `--mode` flag with sidecar default and sticky re-enable.
 
-**Status:** in-review
+**Status:** done
 
 - [x] Enable form shows a mode selector with sidecar preselected on a fresh enable
 - ~~On an already-enabled install the selector pre-populates with the stored mode~~ - moved to ticket 05 (structurally unsatisfiable here; needs the enabled-overlay restructure)
@@ -43,3 +43,5 @@ Related parity note: the TUI always submits an explicit mode (the radio has no
 host-tailscaled-present notice - never trigger from the TUI. Defensible: the
 notice exists because the CLI default is invisible, while the radio makes the
 choice visible; sticky re-enable becomes reachable from the TUI via ticket 06.
+
+- 2026-08-03 (coordinator): verified implemented on main - feature present in code and its integration tests green in the 2026-07-30 wave-4 runs. Done.

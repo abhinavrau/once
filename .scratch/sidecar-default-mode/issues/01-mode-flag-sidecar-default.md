@@ -12,7 +12,7 @@ re-enables).
 
 **Blocked by:** None - can start immediately.
 
-**Status:** in-review
+**Status:** done
 
 - [x] Fresh enable with no `--mode` boots the sidecar even when a host tailscaled socket is present, and prints the one-line `--mode host` notice in that case
 - [x] Fresh enable with no host socket boots the sidecar with no notice
@@ -21,3 +21,7 @@ re-enables).
 - [x] `--mode` rejects values other than `host` and `sidecar`
 - [x] Host-daemon auto-detection no longer decides the mode anywhere
 - [x] Integration suite (headscale control seam) still passes - the seam always ran the sidecar, so the default aligns
+
+## Comments
+
+- 2026-08-03 (coordinator): verified implemented on main - feature present in code and its integration tests green in the 2026-07-30 wave-4 runs. Done.
