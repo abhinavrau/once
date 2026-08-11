@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -33,19 +34,18 @@ func newListCommand() *listCommand {
 // Private
 
 func (l *listCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
+	apps := ns.Applications()
 	tailnet := tailnetURLs(ctx, ns)
 
 	if l.json {
-		reports := make([]appReport, 0, len(ns.Applications()))
-		for _, app := range ns.Applications() {
+		reports := make([]appReport, 0, len(apps))
+		for _, app := range apps {
 			reports = append(reports, newAppReport(app, tailnet[app.Settings.Name]))
 		}
 		return printJSON(reports)
 	}
 
-	for _, app := range ns.Applications() {
-		fmt.Println(appLine(app, tailnet[app.Settings.Name]))
-	}
+	printAppLines(ctx, apps, tailnet)
 	return nil
 }
 
@@ -72,6 +72,28 @@ func newAppReport(app *docker.Application, tailnetURL string) appReport {
 		URL:             app.URL(),
 		TailnetURL:      tailnetURL,
 		FunnelExpiresAt: app.Settings.FunnelExpiresAt,
+	}
+}
+
+// printAppLines prints each application's line, followed by the warn-only note
+// when its tailnet service name does not resolve from this machine. The names
+// are resolved up front and in parallel, so a wedged resolver costs the command
+// one timeout rather than one per application.
+func printAppLines(ctx context.Context, apps []*docker.Application, tailnet map[string]string) {
+	warnings := make([]string, len(apps))
+	var wg sync.WaitGroup
+	for i, app := range apps {
+		wg.Go(func() {
+			warnings[i] = docker.TailnetDNSWarning(ctx, app, tailnet[app.Settings.Name])
+		})
+	}
+	wg.Wait()
+
+	for i, app := range apps {
+		fmt.Println(appLine(app, tailnet[app.Settings.Name]))
+		if warnings[i] != "" {
+			printWarnings([]string{warnings[i]})
+		}
 	}
 }
 
