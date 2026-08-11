@@ -63,6 +63,30 @@ func TestWaitForAdvertisedEmptyServeConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "whoami")
 }
 
+func TestRequireServeEnabledSurfacesTheEnablementLink(t *testing.T) {
+	daemon := &FakeTailscaleDaemon{ProbeOutput: serveDisabledOutput}
+
+	err := requireServeEnabled(context.Background(), daemon)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Tailscale Serve is not enabled on this tailnet")
+	assert.Contains(t, err.Error(), "https://login.tailscale.com/f/serve?node=nodeIDabc123CNTRL")
+	assert.Contains(t, err.Error(), "once tailscale enable")
+}
+
+func TestRequireServeEnabledPassesWhenServeIsEnabled(t *testing.T) {
+	daemon := &FakeTailscaleDaemon{ProbeOutput: serveEnabledOutput}
+
+	require.NoError(t, requireServeEnabled(context.Background(), daemon))
+}
+
+// An unrunnable probe says nothing about the tailnet, so it must not block the
+// enable with a diagnosis it cannot support.
+func TestRequireServeEnabledIgnoresProbeFailures(t *testing.T) {
+	daemon := &FakeTailscaleDaemon{ProbeErr: errors.New("no tailscaled socket")}
+
+	require.NoError(t, requireServeEnabled(context.Background(), daemon))
+}
+
 func TestWaitForApprovedAnnouncesPhaseOnce(t *testing.T) {
 	api := approvalAPI(t, map[string]string{
 		"whoami": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`,
