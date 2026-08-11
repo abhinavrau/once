@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -167,6 +168,42 @@ func TestFakeTailscaleDaemonServeStatusErrors(t *testing.T) {
 	require.ErrorIs(t, err, assert.AnError)
 }
 
+func TestFakeTailscaleDaemonServeEnablementURL(t *testing.T) {
+	url, err := (&FakeTailscaleDaemon{ProbeOutput: serveDisabledOutput}).ServeEnablementURL(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "https://login.tailscale.com/f/serve?node=nodeIDabc123CNTRL", url)
+
+	url, err = (&FakeTailscaleDaemon{}).ServeEnablementURL(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, url)
+
+	_, err = (&FakeTailscaleDaemon{ProbeErr: assert.AnError}).ServeEnablementURL(t.Context())
+	require.ErrorIs(t, err, assert.AnError)
+}
+
+// serveDisabledOutput is what `tailscale serve --https=443 <target>` prints on
+// a tailnet that has never enabled Serve, before it blocks polling for someone
+// to click the link.
+const serveDisabledOutput = `
+Tailscale Serve is not enabled on your tailnet.
+To enable, visit:
+
+         https://login.tailscale.com/f/serve?node=nodeIDabc123CNTRL
+
+`
+
+// serveEnabledOutput is what the probe's deliberately unservable target earns
+// once Serve is enabled: the CLI rejects it and exits, having written nothing.
+// The usage text it prints carries a tailscale.com link, which must not read as
+// an enablement link.
+const serveEnabledOutput = `error: failed apply web serve: must be a URL starting with one of the supported schemes: [http https https+insecure unix]
+
+USAGE
+  serve [flags] <target>
+
+For more information, see https://tailscale.com/kb/1242/tailscale-serve
+`
+
 func TestCLITailscaleDaemon(t *testing.T) {
 	daemon := func(res ExecResult, err error) *cliTailscaleDaemon {
 		return &cliTailscaleDaemon{run: func(ctx context.Context, args ...string) (ExecResult, error) {
@@ -223,14 +260,64 @@ func TestCLITailscaleDaemon(t *testing.T) {
 	})
 }
 
-func TestRunHostTailscale(t *testing.T) {
-	stub := func(script string) {
-		t.Helper()
-		dir := t.TempDir()
-		err := os.WriteFile(filepath.Join(dir, "tailscale"), []byte("#!/bin/sh\n"+script), 0o755)
-		require.NoError(t, err)
-		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+func TestCLITailscaleDaemonServeEnablementURL(t *testing.T) {
+	type probeCall struct {
+		timeout time.Duration
+		args    []string
 	}
+	daemon := func(called *probeCall, res ExecResult, err error) *cliTailscaleDaemon {
+		return &cliTailscaleDaemon{probe: func(ctx context.Context, timeout time.Duration, args ...string) (ExecResult, error) {
+			*called = probeCall{timeout: timeout, args: args}
+			return res, err
+		}}
+	}
+
+	t.Run("reports the link the CLI printed", func(t *testing.T) {
+		var called probeCall
+		url, err := daemon(&called, ExecResult{Stdout: serveDisabledOutput, ExitCode: 143}, nil).ServeEnablementURL(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, "https://login.tailscale.com/f/serve?node=nodeIDabc123CNTRL", url)
+
+		// The probe must ask for an HTTPS serve (the type the enablement check
+		// gates on) with a target the CLI rejects before writing any config, and
+		// must be bounded so a blocked CLI cannot hold the enable open.
+		assert.Equal(t, []string{"serve", "--bg", "--https=443", "once-serve-probe://invalid"}, called.args)
+		assert.Equal(t, serveProbeTimeout, called.timeout)
+	})
+
+	t.Run("reads the link from stderr too", func(t *testing.T) {
+		var called probeCall
+		url, err := daemon(&called, ExecResult{Stderr: serveDisabledOutput}, nil).ServeEnablementURL(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, "https://login.tailscale.com/f/serve?node=nodeIDabc123CNTRL", url)
+	})
+
+	t.Run("an enabled tailnet reports no link", func(t *testing.T) {
+		var called probeCall
+		url, err := daemon(&called, ExecResult{Stderr: serveEnabledOutput, ExitCode: 1}, nil).ServeEnablementURL(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, url)
+	})
+
+	t.Run("probe failures propagate", func(t *testing.T) {
+		var called probeCall
+		_, err := daemon(&called, ExecResult{}, assert.AnError).ServeEnablementURL(t.Context())
+		require.ErrorIs(t, err, assert.AnError)
+	})
+}
+
+func TestBoundedTailscaleCommand(t *testing.T) {
+	assert.Equal(t, []string{"timeout", "5", "tailscale", "serve", "--bg"},
+		boundedTailscaleCommand(5*time.Second, []string{"serve", "--bg"}))
+
+	// busybox reads a 0 timeout as "no timeout", which would restore the hang
+	// the probe exists to avoid.
+	assert.Equal(t, []string{"timeout", "1", "tailscale", "serve"},
+		boundedTailscaleCommand(100*time.Millisecond, []string{"serve"}))
+}
+
+func TestRunHostTailscale(t *testing.T) {
+	stub := func(script string) { stubHostTailscale(t, script) }
 
 	stub(`echo '{"MagicDNSSuffix":"tail1234.ts.net"}'`)
 	res, err := runHostTailscale(t.Context(), "status", "--json")
@@ -247,4 +334,28 @@ func TestRunHostTailscale(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	_, err = runHostTailscale(t.Context(), "status", "--json")
 	require.ErrorContains(t, err, "running tailscale CLI")
+}
+
+// A host CLI blocked on the enablement link is the whole reason the probe
+// exists: killing it at the timeout must still hand back what it printed, and
+// must not wait on a child that outlives it.
+func TestRunHostTailscaleBoundedKeepsOutputOfAKilledCommand(t *testing.T) {
+	stubHostTailscale(t, "printf '%s' \""+serveDisabledOutput+"\"\nsleep 60\n")
+
+	start := time.Now()
+	res, err := runHostTailscaleBounded(t.Context(), 100*time.Millisecond, serveProbeArgs...)
+	require.NoError(t, err)
+	assert.Less(t, time.Since(start), 5*time.Second)
+	assert.Equal(t, "https://login.tailscale.com/f/serve?node=nodeIDabc123CNTRL", parseServeEnablementURL(res.Stdout))
+}
+
+// Helpers
+
+// stubHostTailscale puts a shell-script tailscale on PATH, so the host runner
+// can be driven without a real CLI.
+func stubHostTailscale(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tailscale"), []byte("#!/bin/sh\n"+script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
