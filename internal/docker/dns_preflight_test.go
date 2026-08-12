@@ -33,21 +33,14 @@ func TestPublicDNSWarning(t *testing.T) {
 func TestTailnetDNSWarning(t *testing.T) {
 	const serviceURL = "https://writebook.tail1234.ts.net"
 
-	runningApp := func() *Application {
-		return &Application{
-			Settings: ApplicationSettings{Name: "writebook", Host: "writebook", Exposure: ExposureTailnet},
-			Running:  true,
-		}
-	}
-
 	t.Run("resolvable service name warns about nothing", func(t *testing.T) {
 		stubLookupHost(t, []string{"100.64.0.1"}, nil)
-		assert.Empty(t, TailnetDNSWarning(context.Background(), runningApp(), serviceURL))
+		assert.Empty(t, TailnetDNSWarning(context.Background(), serviceURL))
 	})
 
 	t.Run("unresolvable service name warns conditionally with the accept-dns hint", func(t *testing.T) {
 		stubLookupHost(t, nil, errors.New("server misbehaving"))
-		msg := TailnetDNSWarning(context.Background(), runningApp(), serviceURL)
+		msg := TailnetDNSWarning(context.Background(), serviceURL)
 		assert.Contains(t, msg, "writebook.tail1234.ts.net does not resolve from this machine")
 		assert.Contains(t, msg, "may still be registering")
 		assert.Contains(t, msg, "if this machine is on the tailnet")
@@ -58,25 +51,12 @@ func TestTailnetDNSWarning(t *testing.T) {
 
 	t.Run("an empty answer counts as unresolvable", func(t *testing.T) {
 		stubLookupHost(t, nil, nil)
-		assert.Contains(t, TailnetDNSWarning(context.Background(), runningApp(), serviceURL), "does not resolve from this machine")
+		assert.Contains(t, TailnetDNSWarning(context.Background(), serviceURL), "does not resolve from this machine")
 	})
 
-	t.Run("a stopped app skips the lookup", func(t *testing.T) {
+	t.Run("a missing URL skips the lookup", func(t *testing.T) {
 		failOnLookup(t)
-
-		app := runningApp()
-		app.Running = false
-		assert.Empty(t, TailnetDNSWarning(context.Background(), app, serviceURL))
-	})
-
-	t.Run("non-tailnet apps and missing URLs skip the lookup", func(t *testing.T) {
-		failOnLookup(t)
-
-		assert.Empty(t, TailnetDNSWarning(context.Background(), runningApp(), ""))
-
-		local := runningApp()
-		local.Settings.Exposure = ExposureLocal
-		assert.Empty(t, TailnetDNSWarning(context.Background(), local, serviceURL))
+		assert.Empty(t, TailnetDNSWarning(context.Background(), ""))
 	})
 }
 

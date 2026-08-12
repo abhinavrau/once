@@ -29,12 +29,12 @@ URL is expected to be dead and a warning would be noise.
 ticket 07 also edits `internal/command/tailscale.go`; sequence after it lands to
 avoid a conflict.)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Each `once tailscale status` row whose service hostname does not resolve locally shows the ticket 09 warning next to it, including the once-admin row
-- [ ] Rows whose state already means the service is absent ("not running") are skipped, not warned about
-- [ ] The warning wording and timeout match ticket 09's exactly - one shared implementation, not a second copy
-- [ ] The app-shaped gate moves out of the shared helper into its callers, and `once list` / `once status` behaviour is unchanged
-- [ ] `--json` output is untouched: `tailscaleStatusReport` keeps its stable shape and the JSON path performs no lookup
-- [ ] Lookup failure never blocks or errors the command; a short timeout bounds the check
-- [ ] Unit tests cover resolve-ok, resolve-fail, and the skipped states via the existing injectable resolver seam
+- [x] Each `once tailscale status` row whose service hostname does not resolve locally shows the ticket 09 warning next to it, including the once-admin row
+- [x] Rows whose state already means the service is absent ("not running") are skipped, not warned about
+- [x] The warning wording and timeout match ticket 09's exactly - one shared implementation, not a second copy
+- [x] The app-shaped gate moves out of the shared helper into its callers, and `once list` / `once status` behaviour is unchanged
+- [x] `--json` output is untouched: `tailscaleStatusReport` keeps its stable shape and the JSON path performs no lookup
+- [x] Lookup failure never blocks or errors the command; a short timeout bounds the check
+- [x] Unit tests cover resolve-ok, resolve-fail, and the skipped states via the existing injectable resolver seam

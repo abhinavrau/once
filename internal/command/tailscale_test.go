@@ -6,6 +6,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/basecamp/once/internal/docker"
 )
 
 func TestEnableTakesDirectCredentialFlags(t *testing.T) {
@@ -27,6 +29,20 @@ func TestPolicyCommandNeedsNoDockerNamespace(t *testing.T) {
 	policy := tailscaleSubcommand(t, "policy")
 	require.NotNil(t, policy.Flags().Lookup("tag"))
 	assert.NotNil(t, policy.Run, "policy must not need a Docker namespace")
+}
+
+func TestResolvableServiceURLsSkipsRowsWithNothingToResolve(t *testing.T) {
+	urls := resolvableServiceURLs([]docker.ServiceStatus{
+		{Name: "once-admin", URL: "https://once-admin.tail1234.ts.net", State: "approved"},
+		{Name: "writebook", URL: "https://writebook.tail1234.ts.net", State: "pending approval"},
+		{Name: "campfire", URL: "https://campfire.tail1234.ts.net", State: stateNotRunning},
+	})
+
+	assert.Equal(t, []string{
+		"https://once-admin.tail1234.ts.net",
+		"https://writebook.tail1234.ts.net",
+		"",
+	}, urls)
 }
 
 // Helpers

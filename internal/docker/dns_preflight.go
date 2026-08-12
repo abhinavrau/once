@@ -46,11 +46,12 @@ func PublicDNSWarning(ctx context.Context, exposure Exposure, host string) strin
 // TailnetDNSWarning is the warn-only check behind a tailnet service URL that
 // once is about to show, so a user whose local resolver is wedged learns why
 // the printed URL is dead instead of concluding the deploy failed. It never
-// blocks and never errors. A stopped app is skipped because its service is
-// deregistered, and every cause the warning names stays conditional: this
-// machine is not required to be on the tailnet at all.
-func TailnetDNSWarning(ctx context.Context, app *Application, serviceURL string) string {
-	if serviceURL == "" || !app.Running || app.Settings.Exposure != ExposureTailnet {
+// blocks and never errors. Every cause the warning names stays conditional:
+// this machine is not required to be on the tailnet at all. Callers decide
+// which URLs are worth resolving - a service that is known to be absent should
+// be passed as an empty URL, which skips the lookup.
+func TailnetDNSWarning(ctx context.Context, serviceURL string) string {
+	if serviceURL == "" {
 		return ""
 	}
 

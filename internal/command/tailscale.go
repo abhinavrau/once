@@ -135,6 +135,10 @@ func (t *tailscaleCommand) disable(ctx context.Context, ns *docker.Namespace, cm
 	return nil
 }
 
+// stateNotRunning is the row state of a stopped app: its service is
+// deregistered, so its URL is expected not to resolve.
+const stateNotRunning = "not running"
+
 // tailscaleStatusReport is the stable JSON shape of `tailscale status --json`.
 // An empty DomainSuffix on an enabled tailnet means Magic DNS is not known yet
 // and no service states could be read.
@@ -164,7 +168,8 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 		fmt.Println("The tailnet's Magic DNS suffix is not known yet (the tailnet may still be spinning up); re-run in a moment")
 		return nil
 	}
-	for _, s := range report.Services {
+	warnings := tailnetDNSWarnings(ctx, resolvableServiceURLs(report.Services))
+	for i, s := range report.Services {
 		fmt.Printf("%s\t%s\t%s\n", s.Name, s.URL, s.State)
 		if s.FunnelExpiresAt != nil {
 			funnel := s.FunnelURL
@@ -172,6 +177,9 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 				funnel = "public (URL not known yet; re-run in a moment)"
 			}
 			fmt.Printf("\tFunnel: %s (expires %s)\n", funnel, s.FunnelExpiresAt.Format(time.RFC3339))
+		}
+		if warnings[i] != "" {
+			printWarnings([]string{warnings[i]})
 		}
 	}
 	return nil
@@ -216,7 +224,7 @@ func (t *tailscaleCommand) statusReport(ctx context.Context, ns *docker.Namespac
 		return report, err
 	}
 	for _, name := range stopped {
-		statuses = append(statuses, docker.ServiceStatus{Name: name, URL: settings.TailnetURL(name), State: "not running"})
+		statuses = append(statuses, docker.ServiceStatus{Name: name, URL: settings.TailnetURL(name), State: stateNotRunning})
 	}
 
 	funnelApps := map[string]*docker.Application{}
@@ -272,6 +280,19 @@ func (t *tailscaleCommand) funnelDisable(ctx context.Context, ns *docker.Namespa
 }
 
 // Helpers
+
+// resolvableServiceURLs gives each row's service URL, empty for a row whose
+// state already says the service is not there to resolve - warning about those
+// would be noise.
+func resolvableServiceURLs(services []docker.ServiceStatus) []string {
+	urls := make([]string, len(services))
+	for i, s := range services {
+		if s.State != stateNotRunning {
+			urls[i] = s.URL
+		}
+	}
+	return urls
+}
 
 // withLegacyTSDProxyWarning runs a tailscale subcommand after surfacing the
 // pre-Docktail upgrade message when a legacy once-tsdproxy container is still
