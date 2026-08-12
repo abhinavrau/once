@@ -10,8 +10,10 @@ import (
 	"time"
 )
 
-// lookupHost is the injectable resolver seam for the DNS preflights.
-var lookupHost = net.DefaultResolver.LookupHost
+// LookupHost is the injectable resolver seam for the DNS preflights. It is
+// exported so tests in other packages can swap it as well, rather than
+// duplicating the check or resolving for real.
+var LookupHost = net.DefaultResolver.LookupHost
 
 const (
 	publicLookupTimeout = 5 * time.Second
@@ -33,7 +35,7 @@ func PublicDNSWarning(ctx context.Context, exposure Exposure, host string) strin
 	ctx, cancel := context.WithTimeout(ctx, publicLookupTimeout)
 	defer cancel()
 
-	addrs, err := lookupHost(ctx, host)
+	addrs, err := LookupHost(ctx, host)
 	if err == nil && len(addrs) == 0 {
 		err = errors.New("no addresses returned")
 	}
@@ -63,7 +65,7 @@ func TailnetDNSWarning(ctx context.Context, serviceURL string) string {
 	ctx, cancel := context.WithTimeout(ctx, tailnetLookupTimeout)
 	defer cancel()
 
-	if addrs, err := lookupHost(ctx, host); err == nil && len(addrs) > 0 {
+	if addrs, err := LookupHost(ctx, host); err == nil && len(addrs) > 0 {
 		return ""
 	}
 

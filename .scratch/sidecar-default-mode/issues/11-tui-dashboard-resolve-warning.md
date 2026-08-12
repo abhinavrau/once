@@ -27,11 +27,11 @@ must never render as a warning.
 **Blocked by:** 10 - it extracts the URL-and-resolver core out from behind the
 app-shaped gate, which this ticket calls from the async refresh.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A panel whose tailnet hostname does not resolve locally shows a marker on the Tailnet URL row, with the conditional explanation readable in full somewhere in the UI
-- [ ] The panel's View performs no DNS lookup and no blocking work; the verdict is cached on the model and refreshed asynchronously
-- [ ] The check rides the existing 5s Tailscale refresh, not a new timer, and a wedged resolver never stalls a frame or delays the 1s dashboard tick
-- [ ] Before the first check completes, and for apps that are not tailnet-exposed, no marker renders
-- [ ] The warning wording stays consistent with tickets 09 and 10 rather than being reworded independently
-- [ ] Covered by unit tests in the `ui` package via the injectable resolver seam: resolve-ok renders no marker, resolve-fail renders one, unknown renders none
+- [x] A panel whose tailnet hostname does not resolve locally shows a marker on the Tailnet URL row, with the conditional explanation readable in full somewhere in the UI
+- [x] The panel's View performs no DNS lookup and no blocking work; the verdict is cached on the model and refreshed asynchronously
+- [x] The check rides the existing 5s Tailscale refresh, not a new timer, and a wedged resolver never stalls a frame or delays the 1s dashboard tick
+- [x] Before the first check completes, and for apps that are not tailnet-exposed, no marker renders
+- [x] The warning wording stays consistent with tickets 09 and 10 rather than being reworded independently
+- [x] Covered by unit tests in the `ui` package via the injectable resolver seam: resolve-ok renders no marker, resolve-fail renders one, unknown renders none

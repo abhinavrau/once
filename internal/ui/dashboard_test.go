@@ -1,11 +1,15 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -232,7 +236,101 @@ func TestDashboard_VerboseHintInFooter(t *testing.T) {
 	assert.Contains(t, view, "once.log")
 }
 
+func TestDashboard_UnresolvableTailnetURLIsMarkedAndExplained(t *testing.T) {
+	stubLookupHost(t, nil, errors.New("server misbehaving"))
+
+	d := tailnetDashboard(t)
+	view := ansi.Strip(d.View())
+
+	assert.Contains(t, view, "https://app-0.example.com.tailnet.ts.net ⚠")
+	assert.Contains(t, view, "app-0.example.com.tailnet.ts.net does not resolve from this machine")
+	assert.Contains(t, view, "try `tailscale set --accept-dns=false`")
+}
+
+func TestDashboard_ResolvableTailnetURLIsNotMarked(t *testing.T) {
+	stubLookupHost(t, []string{"100.64.0.1"}, nil)
+
+	d := tailnetDashboard(t)
+	view := ansi.Strip(d.View())
+
+	assert.Contains(t, view, "https://app-0.example.com.tailnet.ts.net")
+	assert.NotContains(t, view, "⚠")
+	assert.NotContains(t, view, "does not resolve from this machine")
+}
+
+func TestDashboard_UncheckedTailnetURLIsNotMarked(t *testing.T) {
+	failOnLookup(t)
+
+	// Tailscale info that arrives before any check has completed carries no
+	// verdicts; an unknown one must not read as a warning.
+	d := testDashboard(1)
+	d.apps[0].Settings.Exposure = docker.ExposureTailnet
+	d.buildPanels()
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
+	d, _ = updateDashboard(d, tailscaleInfoMsg{enabled: true, suffix: "tailnet.ts.net"})
+
+	view := ansi.Strip(d.View())
+	assert.Contains(t, view, "https://app-0.example.com.tailnet.ts.net")
+	assert.NotContains(t, view, "⚠")
+}
+
+func TestDashboard_TailnetWarningNoteShrinksTheViewport(t *testing.T) {
+	stubLookupHost(t, nil, errors.New("server misbehaving"))
+
+	plain := testDashboard(1)
+	plain, _ = updateDashboard(plain, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	warned := tailnetDashboard(t)
+	noteHeight := lipgloss.Height(warned.tailnetWarningNote())
+
+	assert.Positive(t, noteHeight)
+	assert.Equal(t, plain.viewport.Height()-noteHeight, warned.viewport.Height())
+	assert.Equal(t, lipgloss.Height(plain.View()), lipgloss.Height(warned.View()))
+}
+
+func TestDashboardTailnetDNSWarningsSkipsHostsThatResolve(t *testing.T) {
+	stubLookupHost(t, nil, errors.New("server misbehaving"))
+
+	warnings := tailnetDNSWarnings(context.Background(), []string{"books", "chat"}, "tailnet.ts.net")
+
+	assert.Len(t, warnings, 2)
+	assert.Contains(t, warnings["https://books.tailnet.ts.net"], "books.tailnet.ts.net does not resolve")
+	assert.Contains(t, warnings["https://chat.tailnet.ts.net"], "chat.tailnet.ts.net does not resolve")
+
+	stubLookupHost(t, []string{"100.64.0.1"}, nil)
+	assert.Empty(t, tailnetDNSWarnings(context.Background(), []string{"books"}, "tailnet.ts.net"))
+}
+
+func TestDashboardResolvableTailnetHostsSkipsStoppedAndNonTailnetApps(t *testing.T) {
+	d := testDashboard(3)
+	d.apps[0].Settings.Exposure = docker.ExposureTailnet
+	d.apps[1].Settings.Exposure = docker.ExposureTailnet
+	d.apps[1].Running = false
+	d.apps[2].Settings.Exposure = docker.ExposureLocal
+
+	assert.Equal(t, []string{"app-0.example.com"}, d.resolvableTailnetHosts())
+}
+
 // Helpers
+
+// tailnetDashboard is a sized dashboard with one running tailnet-exposed app
+// whose service URL has been checked against the stubbed resolver.
+func tailnetDashboard(t *testing.T) Dashboard {
+	t.Helper()
+
+	d := testDashboard(1)
+	d.apps[0].Settings.Exposure = docker.ExposureTailnet
+	d.buildPanels()
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	const suffix = "tailnet.ts.net"
+	d, _ = updateDashboard(d, tailscaleInfoMsg{
+		enabled:  true,
+		suffix:   suffix,
+		warnings: tailnetDNSWarnings(context.Background(), d.resolvableTailnetHosts(), suffix),
+	})
+	return d
+}
 
 func testDashboard(numApps int) Dashboard {
 	apps := make([]*docker.Application, numApps)

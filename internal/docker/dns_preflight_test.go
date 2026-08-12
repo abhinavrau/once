@@ -80,7 +80,7 @@ func failOnLookup(t *testing.T) {
 }
 
 func swapLookupHost(t *testing.T, fn func(context.Context, string) ([]string, error)) {
-	orig := lookupHost
-	lookupHost = fn
-	t.Cleanup(func() { lookupHost = orig })
+	orig := LookupHost
+	LookupHost = fn
+	t.Cleanup(func() { LookupHost = orig })
 }
