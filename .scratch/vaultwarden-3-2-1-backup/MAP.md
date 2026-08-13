@@ -1,0 +1,148 @@
+# Wayfinder map: Vaultwarden on Once, with 3-2-1 restic backups
+
+Labels: wayfinder:map
+
+## Destination
+
+A build-ready PRD (PRD.md in this directory) for an MVP in which a self-hoster
+can deploy Vaultwarden on Once, have it backed up automatically under the 3-2-1
+rule via the restic CLI, and restore it onto a brand new install after the
+original host is gone. Implementation is a separate effort; this map ends at
+the spec.
+
+## Notes
+
+- Domain vocabulary: CONTEXT.md. New concepts this effort introduces (Backup
+  Repo, Offsite Copy, App Profile) must land in the glossary as part of the PRD.
+- Existing backup code: internal/docker/application_backup.go,
+  internal/command/backup.go, internal/command/restore.go,
+  BackupSettings in internal/docker/application_settings.go:34.
+- Catalog: internal/catalog/catalog.go (3 Basecamp Rails apps today).
+- Relevant ADRs: 0009 (consumer-side docker client interfaces - constrains how
+  restic gets invoked), 0012 (progress rendering per frontend), 0013 (secrets
+  reach Once through the environment, never argv - the restic password must
+  follow this).
+- Skills: /grilling and /domain-modeling for HITL tickets; /research for AFK
+  research tickets.
+
+### Established facts (verified during charting, do not re-derive)
+
+- `once deploy vaultwarden/server:latest` today **hard-fails and destroys the
+  volume**. Two gates: kamal-proxy's readiness probe, then `VerifyHTTPOrRemove`
+  which demands 2xx from `/up` and calls `Remove(ctx, true)` otherwise
+  (application.go:46, 254-263, 490-513; namespace.go:248-253).
+- `AppVolumeMountTargets = ["/storage", "/rails/storage"]` is a package `var`
+  with no settings field, flag, or override (application.go:50-52, 536-546).
+  Vaultwarden writes `/data`, so its DB would live in the container's writable
+  layer and backups would archive an empty directory.
+- `NameFromImageRef("vaultwarden/server:latest")` yields `server`, so the host
+  becomes `server.localhost` (helpers.go:18-26).
+- Vaultwarden: port **80** (`ROCKET_PORT=80` in the official image), health path
+  **`/alive`** (unauthenticated, and it checks the DB connection), data at
+  `/data`. `DOMAIN` unset silently disables WebAuthn 2FA and makes attachment
+  links get guessed from request headers. `config.json` and `rsa_key.pem` hold
+  plaintext admin token and SMTP credentials.
+- Vaultwarden's image has **no `sqlite3` binary**. Its built-in
+  `/vaultwarden backup` (SIGUSR1, `VACUUM INTO`) can only write into the DB's own
+  directory and never rotates, so it would litter the data volume.
+- Once's existing pause-and-copy is **already safe** for SQLite: `ContainerPause`
+  freezes the container before `CopyFromContainer` walks the whole directory, so
+  `db.sqlite3` and `db.sqlite3-wal` come out as a coherent pair - the condition
+  SQLite's corruption doc requires.
+- Once has **zero** stdin plumbing: no `AttachStdin`, no `ContainerAttach`
+  anywhere. `execInContainer` (container.go:33-64) takes the concrete client and
+  buffers output. ADR-0009 names exec-over-hijacked-connection as unfakeable at
+  the client seam.
+- `once restore <filename>` already does bare-metal recovery: it calls
+  `ns.Setup` (boots network + proxy itself) then `ns.Restore(io.Reader)`, which
+  creates a brand new app from the archive's `once.application.json`. It needs
+  only a Docker daemon (restore.go; namespace.go:446-478).
+
+### Decisions locked during charting (not tickets)
+
+- Destination is a PRD, not shipped code.
+- Per-app non-defaults (data path, health path, URL env var) live as new columns
+  on the existing `catalog.App` struct, copied into `ApplicationSettings` at
+  deploy so they persist in the `once` label. Settable by flag for arbitrary
+  images. No app-manifest subsystem.
+- restic **wraps** the existing archive stream rather than snapshotting the file
+  tree, so every snapshot carries `once.application.json` and
+  `once.volume.json` and feeds the existing `ns.Restore` unchanged.
+- Bytes reach restic via a **staging file**, not stdin: write the archive to a
+  staging dir, run the restic container with bind mounts for staging + repo,
+  delete the staging file after. Ceiling: needs free disk equal to one backup.
+- restic runs in a **container** (`restic/restic` image), never as a host binary.
+- **One repo per install**, snapshots tagged `app:<name>`. Local repo on host
+  disk is copy 2; a remote repo is copy 3 (offsite).
+- **The offsite leg backs up twice, once to each repo - not `restic copy`.**
+  Originally locked as `copy`; changed on ticket 03's evidence that `copy` makes
+  the offsite repo structurally downstream of the local one (shared locks, shared
+  disk), while the cost that justified `copy` was illusory - with staging, the
+  pause window is 1x either way and only off-critical-path CPU doubles. The two
+  repos are fully independent. Still `init` the remote with
+  `--copy-chunker-params` so `copy` remains available as a one-shot backfill when
+  a remote is enrolled late.
+- Offsite target is **any restic repo URL + env vars**. No backend picker UI.
+- Repo password is **user-held**: generated at first backup, printed once with a
+  hard "store this off this machine" prompt, cached in a label so unattended
+  backups run. Lose it, lose the backups, by design. Bare-metal restore takes it
+  by prompt or env.
+- Backup settings live on the **proxy container's label**, as a sibling struct
+  through the existing label codec. Needs an ADR line.
+- Retention: fixed `--keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune`.
+  Not configurable in the MVP. `TrimBackups` and scheduled tarball dumps retire.
+- `once backup <host> <file>` manual export survives unchanged.
+- Offsite `restic copy` runs after each successful local backup in the same run.
+  Its failure logs but does not fail the backup - **but offsite staleness must be
+  surfaced** ("offsite copy is 6 days old") in status and the dashboard.
+- Quiesce stays pause-and-copy. No catalog-declared backup command.
+- `restic check` (metadata only, no `--read-data`) after each backup; result
+  surfaced alongside the staleness signal.
+- `AutoUpdate` stays on by default for Vaultwarden.
+- Acceptance test: deploy the real `vaultwarden/server` image, write data, back
+  up to a local repo, `restic copy` to a second local directory standing in for
+  offsite, restore from that second repo into a clean namespace, assert the vault
+  is intact.
+
+## Decisions so far
+
+<!-- one line per closed ticket: gist + link -->
+
+- [Research: configuring kamal-proxy's health check path](issues/01-research-kamal-proxy-health-check.md) - **Gate clears.** The pinned `once-01` image accepts `--health-check-path` (default `/up`), verified empirically against a real Vaultwarden container: default deploy fails on `/up` 404, `--health-check-path /alive` succeeds. Also has `--health-check-interval/-timeout/-port/-host`, and `--target host:port` (bare host means port 80). Three consequences beyond the question: kamal-proxy **stops health-checking a single target once healthy and never resumes**, so `kamal-proxy list` is not a liveness signal; redirects are followed and judged on the final status, so a 302 to a 200 login page passes; and `verifyHTTP` is a second, independent kill switch that deletes the app *and its volume*, so fixing the proxy flag alone still destroys Vaultwarden
+- [Research: restic CLI operations and the official container image](issues/02-research-restic-cli-operations.md) - Verified against restic 0.19.1. Workable, with four traps that must be designed around: **`forget --group-by` defaults to `host,paths`**, so a random container hostname or a date-stamped staging filename puts every run in its own group and retention silently keeps everything forever (pin the staging path, always pass `--host`); **`init` is not idempotent** and has no distinct exit code, so probe with `cat config` (10 = init, 0 = skip, 12 = wrong password); **stale locks cannot self-heal under Docker** in either hostname configuration, so `unlock --remove-all` must be an explicit recovery step; **`check` takes an exclusive lock** and has no distinct exit code for corruption, so Once must read `num_errors` from `--json`. Also: `prune` ignores `--json`, `--json` emits ~10 status lines/sec so Once must take the *last* `summary` line, and bind-mount uid is a one-way door - pick it once
+- [Research: `restic copy` and the two-repo offsite topology](issues/03-research-restic-copy-offsite.md) - **Recommends backing up twice instead of `restic copy`**, contradicting the charting decision (see the amended entry above). `copy` makes the offsite leg structurally downstream of the local repo, so a wedged lock or a full disk takes both copies down - the exact dependency 3-2-1 exists to remove - and the assumed cost of backing up twice was wrong: with staging, the pause window is 1x either way, only off-critical-path CPU doubles. Still `init` the remote with `--copy-chunker-params`, which keeps `copy` available as a one-shot backfill when a remote is enrolled late. Also measured the archive-format question outright (see ticket 05), found `RESTIC_FROM_PASSWORD` works but is undocumented in `restic help copy`, that neither `backup` nor `copy` resumes under ~10 min, and that SIGKILL leaves `-tmp-` files invisible to both `prune` and `check`
+- [Design: the App Profile seam - catalog columns to app settings](issues/04-app-profile-seam.md) - **App Profile** is a four-field comparable struct (`BaseName`, `DataPath`, `HealthPath`, `URLEnvVar`) in `internal/docker`, nested on both `catalog.App` and `ApplicationSettings`. **The zero value means Once's built-in behaviour**, so `DefaultApplicationSettings` keeps its single-source-of-defaults role and **no backfill is needed** - an old label with no `profile` key behaves exactly as today. A custom `DataPath` **replaces** both Rails mount targets rather than adding a third. `Resolve` returns the `catalog.App`, since a string cannot carry a Profile. Three findings changed the ticket's own framing: the **URL env var is computed, never stored** (`BuildEnv` always has the Application in hand, and Host/Exposure changes already roll the container), using the tailnet URL under Tailnet exposure plus a Deploy warning when it resolves empty; **restore needs no change at all** because `populateVolume`'s `/data` is paired with `BackupDataDir`, not the app's data path; and **user stats filter the Proxy's source address**, not the health path, which needs no per-app lookup table. The App Name had to move into the Profile too - `ns.Deploy` and `ns.Restore` overwrite `settings.Name` from the image ref, so `vaultwarden/server` would deploy as `server`; setting `BaseName` from `Alias` on every catalog entry also fixes Campfire, which deploys as `once-campfire` today
+- [Decision: does the restic-wrapped archive stay gzipped?](issues/05-archive-format-compression.md) - **No. Drop gzip; the archive becomes plain `.tar`.** gzip makes restic re-add the whole archive every run (19.085 MiB/day against 981 KiB for plain tar), which would grow the repo by a full vault per day. The manual export changes format too, so only one format and one code path exist. `parseBackup` must sniff the gzip magic bytes so archives written by current Once stay restorable - without that, every existing backup breaks on upgrade. Staging path fixed at `/staging/<app>.tar`; `RESTIC_COMPRESSION` left at `auto` so restic compresses at chunk granularity
+
+## Not yet specified
+
+- Progress reporting for long backup/restore runs through the ADR-0012 progress
+  adapter. Backups of a real vault are fast; this sharpens once repo sizes and
+  restic's `--json` output shape are known.
+- Streaming rework. `parseBackup` buffers the entire volume payload into a
+  `[]byte` (namespace.go:623) and the staging-file design adds a full-size disk
+  copy, so Once is bound by backup size in both memory and disk. Pre-existing,
+  but the ceiling gets lower once repos hold more than one app.
+- How the TUI confirms the user actually stored the repo password, and whether
+  it nags until they do.
+- Restoring into an existing app in place (rollback) rather than always creating
+  a new one.
+
+## Out of scope
+
+- Whole-install recovery in one command (every app plus proxy and namespace
+  config). Today's backup captures no proxy or namespace settings, and a
+  "restore everything" that silently drops them is worse than an honest per-app
+  flow. Per-app restore only.
+- Backend-specific configuration UI for S3, B2, and friends. restic already
+  speaks them; a picker is UI maintained for nothing.
+- Configurable retention policy.
+- Migrating existing directories of tar.gz backups into a restic repo.
+- Vaultwarden on MySQL or Postgres, and installs that point `DATABASE_URL` or
+  `ATTACHMENTS_FOLDER` outside `DATA_FOLDER`. A volume-only backup is not
+  sufficient for those.
+- Tailscale Funnel's dual origin. A funnelled Application is reachable at both
+  its tailnet URL and its per-node Funnel URL, and WebAuthn is origin-bound, so
+  one `DOMAIN` value cannot serve both. No App Profile field shape fixes one
+  variable against two origins ([ticket 04](issues/04-app-profile-seam.md)).
+- Implementation of the feature itself - this map ends at the PRD.
