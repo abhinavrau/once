@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -901,12 +903,27 @@ func deployApp(t *testing.T, ctx context.Context, ns *docker.Namespace, settings
 	return ns.Application(settings.Name)
 }
 
+// freePortCounter walks a fixed block below the ephemeral range. Binding :0
+// hands back an ephemeral port, which the kernel and dockerd keep handing out
+// to other sockets in the window between our close and the container's bind -
+// the container then fails with "port is already allocated". A dedicated block
+// plus a never-reused counter takes both the host and this process out of the
+// race.
+var freePortCounter = int32(20000 + rand.IntN(8000))
+
 func getFreePort(t *testing.T) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
+	for range 100 {
+		port := int(atomic.AddInt32(&freePortCounter, 1))
+		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			continue
+		}
+		listener.Close()
+		return port
+	}
+	require.FailNow(t, "no free port in the test port block")
+	return 0
 }
 
 func getProxyPorts(t *testing.T) docker.ProxySettings {
