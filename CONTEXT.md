@@ -107,7 +107,7 @@ A single utility container (`once-docktail`) that watches Docker labels and adve
 _Avoid_: TSDProxy, Tailscale Docker Proxy.
 
 **Runtime Credential**:
-The single minimal-scope, tagged OAuth client the user creates directly in the Tailscale admin console and supplies when enabling Tailscale - the only Tailscale credential that ever exists. Stored and used for ongoing Tailscale operations.
+The single minimal-scope, tagged OAuth client the user creates directly in the Tailscale admin console and supplies when enabling Tailscale - the only Tailscale credential that ever exists. Stored and used for ongoing Tailscale operations. Its secret reaches Once only through the environment, never on the command line (ADR-0013); Once does not protect it at rest.
 _Avoid_: bootstrap credential, policy credential - the minting hierarchy they named was removed by ADR-0006.
 
 **Tailscale Funnel**:
@@ -123,7 +123,7 @@ Mapping a resolved or stored mode to the Tailscale Daemon that serves it - host 
 The per-operation resolution every Tailscale read path starts with - load the stored settings, bind the daemon they imply, hand both down. Distinct from Mode Resolution: sessions never see a requested mode.
 
 **Control Seam**:
-The hidden headscale env-var pair (pre-minted auth key + control URL) that replaces SaaS OAuth so integration tests run against headscale (ADR-0002). Read through one accessor only; invisible outside `internal/docker`.
+The hidden headscale env-var pair (pre-minted auth key + control URL) that replaces SaaS OAuth so integration tests run against headscale (ADR-0002). Read through one accessor only; invisible outside `internal/docker`. Its `ONCE_TAILSCALE_` prefix is shared with one public variable (ADR-0013), so the prefix alone does not mark a variable as seam-only.
 
 **Daemon Seam**:
 `TailscaleDaemon` - how Once reads state from a local tailscaled (host CLI or sidecar docker exec). One of the Tailscale subsystem's two seams to the outside world.

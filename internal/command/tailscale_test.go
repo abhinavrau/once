@@ -1,6 +1,7 @@
 package command
 
 import (
+	"os"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -10,11 +11,17 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-func TestEnableTakesDirectCredentialFlags(t *testing.T) {
-	enable := tailscaleSubcommand(t, "enable")
+func TestEnableTakesTheClientIDFlagAndHidesTheSecretFlag(t *testing.T) {
+	_, enable := tailscaleSubcommand(t, "enable")
 
 	assert.NotNil(t, enable.Flags().Lookup("client-id"))
-	assert.NotNil(t, enable.Flags().Lookup("client-secret"))
+
+	// The secret has no usable flag: it is registered only to reject an older
+	// command line, so help must not advertise it.
+	secret := enable.Flags().Lookup("client-secret")
+	require.NotNil(t, secret)
+	assert.True(t, secret.Hidden)
+	assert.Contains(t, enable.Example, envClientSecret)
 
 	tag := enable.Flags().Lookup("tag")
 	require.NotNil(t, tag)
@@ -25,8 +32,57 @@ func TestEnableTakesDirectCredentialFlags(t *testing.T) {
 	assert.Nil(t, enable.Flags().Lookup("no-policy-write"))
 }
 
+// The secret is resolved in PreRunE, so these drive the command the way cobra
+// does: it must fail before enable's RunE reaches Docker at all.
+func TestEnableRejectsTheClientSecretFlag(t *testing.T) {
+	t.Setenv(envClientSecret, "s3cret")
+	_, enable := tailscaleSubcommand(t, "enable")
+	require.NoError(t, enable.ParseFlags([]string{"--client-secret", "s3cret"}))
+
+	err := enable.PreRunE(enable, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), envClientSecret)
+	assert.Contains(t, err.Error(), "--client-secret")
+}
+
+func TestEnableRequiresTheClientSecretEnvVar(t *testing.T) {
+	assertMissing := func(t *testing.T) {
+		t.Helper()
+		_, enable := tailscaleSubcommand(t, "enable")
+
+		err := enable.PreRunE(enable, nil)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), envClientSecret)
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv(envClientSecret, "")
+		require.NoError(t, os.Unsetenv(envClientSecret))
+		assertMissing(t)
+	})
+	t.Run("empty", func(t *testing.T) {
+		t.Setenv(envClientSecret, "")
+		assertMissing(t)
+	})
+	t.Run("whitespace only", func(t *testing.T) {
+		t.Setenv(envClientSecret, "  \n")
+		assertMissing(t)
+	})
+}
+
+func TestEnableTrimsTheClientSecretEnvVar(t *testing.T) {
+	t.Setenv(envClientSecret, "  s3cret\n")
+	ts, enable := tailscaleSubcommand(t, "enable")
+
+	require.NoError(t, enable.PreRunE(enable, nil))
+
+	assert.Equal(t, "s3cret", ts.clientSecret)
+}
+
 func TestPolicyCommandNeedsNoDockerNamespace(t *testing.T) {
-	policy := tailscaleSubcommand(t, "policy")
+	_, policy := tailscaleSubcommand(t, "policy")
 	require.NotNil(t, policy.Flags().Lookup("tag"))
 	assert.NotNil(t, policy.Run, "policy must not need a Docker namespace")
 }
@@ -47,13 +103,14 @@ func TestResolvableServiceURLsSkipsRowsWithNothingToResolve(t *testing.T) {
 
 // Helpers
 
-func tailscaleSubcommand(t *testing.T, name string) *cobra.Command {
+func tailscaleSubcommand(t *testing.T, name string) (*tailscaleCommand, *cobra.Command) {
 	t.Helper()
-	for _, sub := range newTailscaleCommand().cmd.Commands() {
+	ts := newTailscaleCommand()
+	for _, sub := range ts.cmd.Commands() {
 		if sub.Name() == name {
-			return sub
+			return ts, sub
 		}
 	}
 	t.Fatalf("no %q subcommand", name)
-	return nil
+	return nil, nil
 }

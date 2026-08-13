@@ -15,8 +15,13 @@ the most powerful Tailscale credential that ever exists in this design.
 The enable flow (`internal/command/tailscale.go`) takes:
 
 ```sh
-once tailscale enable --client-id <id> --client-secret <secret> [--tag tag:once]
+read -rs ONCE_TAILSCALE_CLIENT_SECRET && export ONCE_TAILSCALE_CLIENT_SECRET
+once tailscale enable --client-id <id> [--tag tag:once]
 ```
+
+The secret arrives only in the environment; `--client-secret` is refused
+(ADR-0013). Reading it with `read -rs` keeps it out of shell history too, which
+an inline `VAR=... once ...` would not.
 
 or the same three values in the TUI form ("Client ID", "Client Secret", "Tag" -
 `internal/ui/tailscale_form.go`). `--tag` defaults to `tag:once`; bare names
@@ -89,7 +94,8 @@ scopes and the tag ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)).
 ## Step 3: enable
 
 ```sh
-once tailscale enable --client-id <id> --client-secret <secret>
+read -rs ONCE_TAILSCALE_CLIENT_SECRET && export ONCE_TAILSCALE_CLIENT_SECRET
+once tailscale enable --client-id <id>
 ```
 
 The probe runs first; on success the credential is stored in the `once`

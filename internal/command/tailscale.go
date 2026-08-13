@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -11,9 +13,19 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
+// envClientSecret carries the Runtime Credential's secret into `once tailscale
+// enable`. It is the only way in: a command line is world-readable through
+// /proc/<pid>/cmdline, an environment is not (ADR-0013). It shares the
+// ONCE_TAILSCALE_ prefix with the hidden control seam variables but is
+// unrelated to them, and is read here rather than in internal/docker.
+const envClientSecret = "ONCE_TAILSCALE_CLIENT_SECRET"
+
 type tailscaleCommand struct {
-	cmd          *cobra.Command
-	clientID     string
+	cmd      *cobra.Command
+	clientID string
+	// clientSecret is resolved from the environment in enable's PreRunE, before
+	// anything touches Docker, so a rejected command line says what to fix
+	// instead of failing on an unrelated Docker error first.
 	clientSecret string
 	tag          string
 	mode         string
@@ -39,16 +51,25 @@ Setup, once per tailnet:
  2. In the admin console (Settings -> Trust credentials), create an OAuth
     client with write access to Auth Keys, Devices Core, and Services,
     tagged with your tag (default tag:once).
- 3. Run this command with the client's ID and secret. The credential is
-    probed before anything boots, then stored for Docktail and the sidecar.`,
-		RunE: withLegacyTSDProxyWarning(t.enable),
+ 3. Put the client's secret in ` + envClientSecret + ` and run this
+    command with --client-id. The secret comes from the environment so that
+    it never appears on a command line, which every user on this machine can
+    read. The credential is probed before anything boots, then stored for
+    Docktail and the sidecar.`,
+		Example: "  read -rs " + envClientSecret + " && export " + envClientSecret + `
+  once tailscale enable --client-id k123CNTRL`,
+		PreRunE: t.resolveClientSecret,
+		RunE:    withLegacyTSDProxyWarning(t.enable),
 	}
 	enable.Flags().StringVar(&t.clientID, "client-id", "", "OAuth client ID (scopes auth_keys, devices:core, services; tagged)")
-	enable.Flags().StringVar(&t.clientSecret, "client-secret", "", "OAuth client secret")
 	enable.Flags().StringVar(&t.tag, "tag", "tag:once", "Tailscale tag the OAuth client is tagged with")
 	enable.Flags().StringVar(&t.mode, "mode", "", "tailscaled to drive: sidecar (Once-managed, the default) or host (an existing host daemon); unset keeps an enabled install's current mode")
 	_ = enable.MarkFlagRequired("client-id")
-	_ = enable.MarkFlagRequired("client-secret")
+	// Removed flag, kept registered (hidden) so it fails with a clean-break
+	// error naming its replacement instead of cobra's "unknown flag". It keeps
+	// a string value so `--client-secret=x` reaches that error too.
+	enable.Flags().String("client-secret", "", "")
+	_ = enable.Flags().MarkHidden("client-secret")
 
 	policy := &cobra.Command{
 		Use:   "policy",
@@ -100,6 +121,22 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 }
 
 // Private
+
+// resolveClientSecret takes the Runtime Credential's secret from the
+// environment, before enable touches Docker. Passing it as --client-secret is
+// refused rather than accepted with a warning: the leak the environment closes
+// stays open for as long as a working command line exists to copy.
+func (t *tailscaleCommand) resolveClientSecret(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("client-secret") {
+		return fmt.Errorf("--client-secret is no longer accepted: pass the secret in %s, so it stays out of the command line that every user on this machine can read", envClientSecret)
+	}
+
+	t.clientSecret = strings.TrimSpace(os.Getenv(envClientSecret))
+	if t.clientSecret == "" {
+		return fmt.Errorf("set the OAuth client secret in %s, or run `once` and enable Tailscale from the dashboard", envClientSecret)
+	}
+	return nil
+}
 
 func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	settings := docker.TailscaleSettings{
