@@ -3,6 +3,11 @@
 Status: research note, 2026-07-21. Question: best-practice way to (a) pass the
 Tailscale OAuth client secret to the `once` CLI and (b) store it at rest.
 
+Decided by ADR-0013, which followed this note on (b) and narrowed it on (a):
+the environment variable is the only input, `--client-secret` is refused rather
+than kept for scripts, and neither stdin nor a TTY prompt was added. Read the
+recommendation below as the option space, not the outcome.
+
 Prior context reused from local deja index: sessions `1602db36-1a7` (ADR-0006
 direct minimal-scope credential work) and `cb66492f-200` (UX map) located the
 current credential paths and the ADR; see

@@ -21,7 +21,7 @@ fake.
 
 **Blocked by:** 01 - `--mode` flag with sidecar default and sticky re-enable.
 
-**Status:** in-review
+**Status:** done
 
 - [x] `--mode host` with no host socket fails immediately, before the credential probe boots anything
 - [x] `--mode host` with an untagged host node fails with the advertise-tags fix hint
@@ -30,3 +30,7 @@ fake.
 - [x] All four failures occur before any container is created or removed
 - [x] Check 3 is skipped on the headscale control seam; checks 1, 2, 4 still apply there
 - [x] A host node passing all four checks proceeds to a normal host-mode enable
+
+## Comments
+
+- 2026-08-03 (coordinator): verified implemented on main - feature present in code and its integration tests green in the 2026-07-30 wave-4 runs. Done.

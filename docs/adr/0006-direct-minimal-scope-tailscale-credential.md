@@ -2,6 +2,11 @@
 
 Supersedes ADR-0004 (bootstrap-only credentials).
 
+Amended by [ADR-0013](0013-runtime-credential-from-the-environment.md): the
+setup command line below is now
+`ONCE_TAILSCALE_CLIENT_SECRET=... once tailscale enable --client-id ...`, and
+`--client-secret` is refused.
+
 ADR-0004's premise was that a single `oauth_keys`-scoped bootstrap credential
 could mint the narrower clients Once needs, so the user's admin-console work
 shrank to one scope checkbox and the powerful credential was never persisted.

@@ -164,6 +164,29 @@ func TestDashboardPanelHeightGrowsWithTailnetRows(t *testing.T) {
 	assert.Equal(t, StoppedPanelHeight+2, panel.Height(false))
 }
 
+func TestDashboardPanelMarksUnresolvableTailnetURL(t *testing.T) {
+	panel := testPanel(true)
+	panel.tailscaleEnabled = true
+	panel.app.Settings.Exposure = docker.ExposureTailnet
+	panel.tailnetURL = "https://books.tailnet.ts.net"
+	panel.tailnetWarning = "books.tailnet.ts.net does not resolve from this machine."
+
+	view := ansi.Strip(panel.View(false, false, true, 120, DashboardScales{}))
+	assert.Contains(t, view, "https://books.tailnet.ts.net ⚠")
+	// The marker is a suffix on the existing row, so it costs no height.
+	assert.Equal(t, PanelHeight+tailnetBaseRowCount+2, panel.Height(true))
+}
+
+func TestDashboardPanelOmitsMarkerWithoutAWarning(t *testing.T) {
+	panel := testPanel(true)
+	panel.tailscaleEnabled = true
+	panel.app.Settings.Exposure = docker.ExposureTailnet
+	panel.tailnetURL = "https://books.tailnet.ts.net"
+
+	view := ansi.Strip(panel.View(false, false, true, 120, DashboardScales{}))
+	assert.NotContains(t, view, "⚠")
+}
+
 func TestDashboardPanelShowsActiveFunnel(t *testing.T) {
 	panel := testPanel(true)
 	panel.tailscaleEnabled = true

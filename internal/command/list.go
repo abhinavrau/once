@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -33,19 +34,18 @@ func newListCommand() *listCommand {
 // Private
 
 func (l *listCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
+	apps := ns.Applications()
 	tailnet := tailnetURLs(ctx, ns)
 
 	if l.json {
-		reports := make([]appReport, 0, len(ns.Applications()))
-		for _, app := range ns.Applications() {
+		reports := make([]appReport, 0, len(apps))
+		for _, app := range apps {
 			reports = append(reports, newAppReport(app, tailnet[app.Settings.Name]))
 		}
 		return printJSON(reports)
 	}
 
-	for _, app := range ns.Applications() {
-		fmt.Println(appLine(app, tailnet[app.Settings.Name]))
-	}
+	printAppLines(ctx, apps, tailnet)
 	return nil
 }
 
@@ -73,6 +73,47 @@ func newAppReport(app *docker.Application, tailnetURL string) appReport {
 		TailnetURL:      tailnetURL,
 		FunnelExpiresAt: app.Settings.FunnelExpiresAt,
 	}
+}
+
+// printAppLines prints each application's line, followed by the warn-only note
+// when its tailnet service name does not resolve from this machine.
+func printAppLines(ctx context.Context, apps []*docker.Application, tailnet map[string]string) {
+	warnings := tailnetDNSWarnings(ctx, resolvableTailnetURLs(apps, tailnet))
+
+	for i, app := range apps {
+		fmt.Println(appLine(app, tailnet[app.Settings.Name]))
+		if warnings[i] != "" {
+			printWarnings([]string{warnings[i]})
+		}
+	}
+}
+
+// resolvableTailnetURLs gives each application's service URL, empty where there
+// is nothing to resolve: a stopped app's service is deregistered, and apps that
+// are not tailnet-exposed have no service at all.
+func resolvableTailnetURLs(apps []*docker.Application, tailnet map[string]string) []string {
+	urls := make([]string, len(apps))
+	for i, app := range apps {
+		if app.Running && app.Settings.Exposure == docker.ExposureTailnet {
+			urls[i] = tailnet[app.Settings.Name]
+		}
+	}
+	return urls
+}
+
+// tailnetDNSWarnings returns each URL's warn-only note, empty where the URL
+// resolves or was skipped. The lookups run up front and in parallel, so a
+// wedged resolver costs the command one timeout rather than one per row.
+func tailnetDNSWarnings(ctx context.Context, serviceURLs []string) []string {
+	warnings := make([]string, len(serviceURLs))
+	var wg sync.WaitGroup
+	for i, url := range serviceURLs {
+		wg.Go(func() {
+			warnings[i] = docker.TailnetDNSWarning(ctx, url)
+		})
+	}
+	wg.Wait()
+	return warnings
 }
 
 func appLine(app *docker.Application, tailnetURL string) string {

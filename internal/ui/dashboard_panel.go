@@ -39,6 +39,10 @@ type DashboardPanel struct {
 	tailscaleEnabled bool
 	tailnetURL       string
 	funnelURL        string
+	// tailnetWarning is the cached verdict of the dashboard's asynchronous DNS
+	// check on tailnetURL: empty when the name resolves, and equally empty
+	// until the first check lands. The view never resolves anything itself.
+	tailnetWarning string
 }
 
 func NewDashboardPanel(app *docker.Application, scraper *metrics.MetricsScraper, dockerScraper *docker.Scraper, userStats *userstats.Reader) DashboardPanel {
@@ -157,8 +161,13 @@ func (p DashboardPanel) renderTailnetRows() string {
 	}
 
 	tailnet := p.tailnetURL
-	if tailnet == "" {
+	switch {
+	case tailnet == "":
 		tailnet = "registering…"
+	case p.tailnetWarning != "":
+		// Only a marker fits the row; the dashboard prints the full sentence
+		// below the panels for whichever app is selected.
+		tailnet += lipgloss.NewStyle().Foreground(Colors.Warning).Render(" ⚠")
 	}
 
 	rows := []string{

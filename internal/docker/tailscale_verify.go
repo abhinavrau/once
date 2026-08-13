@@ -36,6 +36,10 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 		return err
 	}
 
+	if err := requireServeEnabled(ctx, daemon); err != nil {
+		return err
+	}
+
 	announce := func(line string) {
 		if progress != nil {
 			progress(DeployProgress{Stage: DeployStageWaiting, Status: line})
@@ -48,6 +52,22 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 }
 
 // Helpers
+
+// requireServeEnabled fails the verify before its 90s advertise wait when the
+// tailnet has never had Serve enabled. In that state `tailscale serve` prints
+// an enablement link and then blocks until someone clicks it, so the serve
+// Docktail execs never returns and no service is ever advertised. The link
+// embeds the node ID and so cannot be written down anywhere: probing for it is
+// the only way to put it in front of the user. A probe that cannot run says
+// nothing either way, so it lets the wait proceed rather than inventing a
+// diagnosis.
+func requireServeEnabled(ctx context.Context, daemon TailscaleDaemon) error {
+	url, err := daemon.ServeEnablementURL(ctx)
+	if err != nil || url == "" {
+		return nil
+	}
+	return fmt.Errorf("Tailscale Serve is not enabled on this tailnet, so Once's Services can never be advertised; enable it by opening %s, then re-run `once tailscale enable`", url)
+}
 
 // waitForAdvertised polls the local daemon's serve status until every expected
 // service is advertised, or fails at timeout: with the daemon's error if it

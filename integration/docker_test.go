@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -487,6 +489,10 @@ func TestBackupHookBehavior(t *testing.T) {
 	backupDir := t.TempDir()
 
 	t.Run("WithoutHook", func(t *testing.T) {
+		// The app image ships its own pre-backup hook, and this subtest is
+		// about the pause that happens when there is none.
+		removeHookFromContainer(t, ctx, containerName, "pre-backup")
+
 		stop := collectPauseEvents(t, ctx, containerName)
 		require.NoError(t, app.BackupToFile(ctx, backupDir, "no-hook.tar.gz"))
 		actions := stop()
@@ -897,12 +903,27 @@ func deployApp(t *testing.T, ctx context.Context, ns *docker.Namespace, settings
 	return ns.Application(settings.Name)
 }
 
+// freePortCounter walks a fixed block below the ephemeral range. Binding :0
+// hands back an ephemeral port, which the kernel and dockerd keep handing out
+// to other sockets in the window between our close and the container's bind -
+// the container then fails with "port is already allocated". A dedicated block
+// plus a never-reused counter takes both the host and this process out of the
+// race.
+var freePortCounter = int32(20000 + rand.IntN(8000))
+
 func getFreePort(t *testing.T) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
+	for range 100 {
+		port := int(atomic.AddInt32(&freePortCounter, 1))
+		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			continue
+		}
+		listener.Close()
+		return port
+	}
+	require.FailNow(t, "no free port in the test port block")
+	return 0
 }
 
 func getProxyPorts(t *testing.T) docker.ProxySettings {
@@ -981,6 +1002,11 @@ func countContainers(t *testing.T, ctx context.Context, prefix string) int {
 
 func execInContainer(t *testing.T, ctx context.Context, containerName string, cmd []string) {
 	t.Helper()
+	execInContainerAsUser(t, ctx, containerName, "", cmd)
+}
+
+func execInContainerAsUser(t *testing.T, ctx context.Context, containerName, user string, cmd []string) {
+	t.Helper()
 
 	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	require.NoError(t, err)
@@ -988,6 +1014,7 @@ func execInContainer(t *testing.T, ctx context.Context, containerName string, cm
 
 	execResp, err := c.ContainerExecCreate(ctx, containerName, container.ExecOptions{
 		Cmd:          cmd,
+		User:         user,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
@@ -1029,6 +1056,14 @@ func copyHookToContainer(t *testing.T, ctx context.Context, containerName, hookN
 	require.NoError(t, tw.Close())
 
 	require.NoError(t, c.CopyToContainer(ctx, containerName, "/", &buf, container.CopyToContainerOptions{}))
+}
+
+// removeHookFromContainer deletes a hook the app image ships of its own accord,
+// so a test can cover the no-hook path. The hooks directory is root-owned and
+// the app runs as a non-root user, hence the root exec.
+func removeHookFromContainer(t *testing.T, ctx context.Context, containerName, hookName string) {
+	t.Helper()
+	execInContainerAsUser(t, ctx, containerName, "root", []string{"rm", "-f", "/hooks/" + hookName})
 }
 
 func collectPauseEvents(t *testing.T, ctx context.Context, containerName string) func() []string {

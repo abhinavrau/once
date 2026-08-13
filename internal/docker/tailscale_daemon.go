@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/client"
 )
@@ -17,6 +19,8 @@ import (
 // the tailnet's Magic DNS suffix, which services are advertised, and funnel
 // state. It is the single seam between Once and the daemon, whether that daemon
 // is the Once-managed sidecar (docker exec) or a host tailscaled (host CLI).
+// Every method is a read: ServeEnablementURL runs a serve command, but one the
+// CLI is guaranteed to reject before it writes anything.
 type TailscaleDaemon interface {
 	// MagicDNSSuffix returns the tailnet's Magic DNS suffix (e.g.
 	// tail1234.ts.net), or "" when the daemon doesn't report one yet.
@@ -30,6 +34,10 @@ type TailscaleDaemon interface {
 	// ServeStatus returns the daemon's serve config: advertised services and
 	// funnel state.
 	ServeStatus(ctx context.Context) (TailscaleServeStatus, error)
+	// ServeEnablementURL returns the link a human must click to turn Serve on
+	// for the tailnet, or "" when Serve is already enabled. An error means the
+	// probe couldn't be run, which says nothing either way.
+	ServeEnablementURL(ctx context.Context) (string, error)
 }
 
 // TailscaleSelfStatus is this node's slice of `tailscale status --json`.
@@ -60,25 +68,55 @@ type TailscaleServeStatus struct {
 	FunnelBackends map[string]string
 }
 
+// The Serve-enablement probe: the `tailscale serve` invocation that reveals
+// whether the tailnet has Serve enabled, and how long it is given to say so.
+//
+// The CLI checks the node's HTTPS capability before it touches the serve
+// config or prefs, and when the tailnet lacks it, prints the enablement link
+// and blocks until a human clicks it. The probe target is deliberately
+// unservable: the CLI rejects its scheme just after that capability check, so a
+// tailnet that already has Serve enabled exits immediately having written
+// nothing. --https picks the HTTPS serve type the check is gated on, and --bg
+// keeps the CLI from opening a foreground session on the way there.
+const (
+	serveProbeTarget  = "once-serve-probe://invalid"
+	serveProbeTimeout = 5 * time.Second
+)
+
+var serveProbeArgs = []string{"serve", "--bg", "--https=443", serveProbeTarget}
+
 // NewHostTailscaleDaemon returns a TailscaleDaemon backed by the host's
 // tailscale CLI, for when Once uses a tailscaled already running on the host.
 func NewHostTailscaleDaemon() TailscaleDaemon {
-	return &cliTailscaleDaemon{run: runHostTailscale}
+	return &cliTailscaleDaemon{run: runHostTailscale, probe: runHostTailscaleBounded}
 }
 
 // NewSidecarTailscaleDaemon returns a TailscaleDaemon that runs the tailscale
 // CLI inside the named Once-managed sidecar container via docker exec.
 func NewSidecarTailscaleDaemon(c *client.Client, containerName string) TailscaleDaemon {
-	return &cliTailscaleDaemon{run: func(ctx context.Context, args ...string) (ExecResult, error) {
-		return execInContainer(ctx, c, containerName, append([]string{"tailscale"}, args...))
-	}}
+	return &cliTailscaleDaemon{
+		run: func(ctx context.Context, args ...string) (ExecResult, error) {
+			return execInContainer(ctx, c, containerName, append([]string{"tailscale"}, args...))
+		},
+		probe: func(ctx context.Context, timeout time.Duration, args ...string) (ExecResult, error) {
+			// The inner timeout(1) is what actually kills the CLI; the outer
+			// context only stops Once waiting on the exec, since a docker exec's
+			// process keeps running after its attach is dropped.
+			ctx, cancel := context.WithTimeout(ctx, timeout+probeExecGrace)
+			defer cancel()
+			return execInContainer(ctx, c, containerName, boundedTailscaleCommand(timeout, args))
+		},
+	}
 }
 
-// cliTailscaleDaemon implements TailscaleDaemon over a runner that executes
-// `tailscale args...` somewhere (host CLI or docker exec) and reports its
-// stdout, stderr, and exit code.
+// cliTailscaleDaemon implements TailscaleDaemon over runners that execute
+// `tailscale args...` somewhere (host CLI or docker exec) and report its
+// stdout, stderr, and exit code. probe is the same, for a command that may
+// never return on its own: it is killed at timeout and reports what the
+// command printed before that.
 type cliTailscaleDaemon struct {
-	run func(ctx context.Context, args ...string) (ExecResult, error)
+	run   func(ctx context.Context, args ...string) (ExecResult, error)
+	probe func(ctx context.Context, timeout time.Duration, args ...string) (ExecResult, error)
 }
 
 func (d *cliTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error) {
@@ -121,6 +159,16 @@ func (d *cliTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeSta
 	return parseServeStatus(stripCLIWarnings(res.Stdout))
 }
 
+func (d *cliTailscaleDaemon) ServeEnablementURL(ctx context.Context) (string, error) {
+	res, err := d.probe(ctx, serveProbeTimeout, serveProbeArgs...)
+	if err != nil {
+		return "", err
+	}
+	return parseServeEnablementURL(res.Stdout + res.Stderr), nil
+}
+
+// Private
+
 // statusJSON runs `tailscale status --json` and returns its output with any
 // leading CLI warnings stripped.
 func (d *cliTailscaleDaemon) statusJSON(ctx context.Context) (string, error) {
@@ -137,10 +185,12 @@ func (d *cliTailscaleDaemon) statusJSON(ctx context.Context) (string, error) {
 // FakeTailscaleDaemon implements TailscaleDaemon from canned CLI JSON, routing
 // it through the same parsing as the real implementations. For tests.
 type FakeTailscaleDaemon struct {
-	StatusJSON string // canned `tailscale status --json` output
-	ServeJSON  string // canned `tailscale serve status --json` output
-	StatusErr  error
-	ServeErr   error
+	StatusJSON  string // canned `tailscale status --json` output
+	ServeJSON   string // canned `tailscale serve status --json` output
+	ProbeOutput string // canned output of the Serve-enablement probe
+	StatusErr   error
+	ServeErr    error
+	ProbeErr    error
 }
 
 func (f *FakeTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error) {
@@ -171,19 +221,49 @@ func (f *FakeTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeSt
 	return parseServeStatus(stripCLIWarnings(f.ServeJSON))
 }
 
+func (f *FakeTailscaleDaemon) ServeEnablementURL(ctx context.Context) (string, error) {
+	if f.ProbeErr != nil {
+		return "", f.ProbeErr
+	}
+	return parseServeEnablementURL(f.ProbeOutput), nil
+}
+
 // Helpers
 
+// hostCommandWaitDelay caps how long a killed host CLI's output pipes are
+// still read after the kill. probeExecGrace is the slack the sidecar probe's
+// exec allows beyond the timeout(1) that bounds the command itself.
+const (
+	hostCommandWaitDelay = time.Second
+	probeExecGrace       = 5 * time.Second
+)
+
+// boundedTailscaleCommand wraps a tailscale invocation in timeout(1) - busybox
+// provides it in the tailscale image - so a CLI that blocks forever is killed
+// from inside the container, where a dropped docker exec attach cannot reach
+// it. busybox's timeout counts whole seconds and reads 0 as "no timeout", so it
+// is never handed less than one.
+func boundedTailscaleCommand(timeout time.Duration, args []string) []string {
+	seconds := max(int(timeout/time.Second), 1)
+	return append([]string{"timeout", strconv.Itoa(seconds), "tailscale"}, args...)
+}
+
 // runHostTailscale executes the host's tailscale CLI, mapping a nonzero exit
-// into ExecResult so the caller sees the same shape as a docker exec.
+// into ExecResult so the caller sees the same shape as a docker exec. A
+// process that ran at all reports what it printed, including one the context
+// killed part-way - that partial output is the whole point of the Serve probe.
+// Only a command that never started is an error.
 func runHostTailscale(ctx context.Context, args ...string) (ExecResult, error) {
 	cmd := exec.CommandContext(ctx, "tailscale", args...)
+	// Once the context has killed the command, stop waiting on its output pipes
+	// too: anything the CLI left holding them open (a wrapper's orphaned child)
+	// would otherwise keep the probe blocked for as long as that outlives it.
+	cmd.WaitDelay = hostCommandWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
-	var exitErr *exec.ExitError
-	if err != nil && !errors.As(err, &exitErr) {
+	if err := cmd.Run(); err != nil && cmd.ProcessState == nil {
 		return ExecResult{}, fmt.Errorf("running tailscale CLI: %w", err)
 	}
 	return ExecResult{
@@ -191,6 +271,26 @@ func runHostTailscale(ctx context.Context, args ...string) (ExecResult, error) {
 		Stderr:   stderr.String(),
 		ExitCode: cmd.ProcessState.ExitCode(),
 	}, nil
+}
+
+// runHostTailscaleBounded runs the host's tailscale CLI under its own deadline,
+// killing it at timeout and reporting what it printed before that.
+func runHostTailscaleBounded(ctx context.Context, timeout time.Duration, args ...string) (ExecResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return runHostTailscale(ctx, args...)
+}
+
+// serveEnablementURL matches the link `tailscale serve` prints when the tailnet
+// has never enabled Serve. The link comes from the control plane, so it is
+// anchored on the Tailscale SaaS host - which is the only place Once probes,
+// since the headscale control seam skips service verification entirely.
+var serveEnablementURL = regexp.MustCompile(`https://login\.tailscale\.com/f/\S+`)
+
+// parseServeEnablementURL picks the Serve enablement link out of the probe's
+// output, or returns "" when there is none.
+func parseServeEnablementURL(output string) string {
+	return serveEnablementURL.FindString(output)
 }
 
 // stripCLIWarnings drops warning lines the tailscale CLI can print before the

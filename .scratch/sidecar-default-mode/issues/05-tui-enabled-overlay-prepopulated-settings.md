@@ -19,9 +19,13 @@ updated in the same change.
 
 **Blocked by:** 03 - TUI enable form mode selector.
 
-**Status:** in-review
+**Status:** done
 
 - [x] Opening the overlay on an enabled install shows client ID, secret (masked), and tag pre-populated from the stored settings
 - [x] The mode selector pre-populates with the stored mode (the criterion carried over from ticket 03)
 - [x] Disable remains the enabled overlay's submit and still works
 - [x] The form's integration driver and the enabled-overlay assertions are updated in the same change; the UI integration test passes without hanging
+
+## Comments
+
+- 2026-08-03 (coordinator): verified implemented on main - feature present in code and its integration tests green in the 2026-07-30 wave-4 runs. Done.
