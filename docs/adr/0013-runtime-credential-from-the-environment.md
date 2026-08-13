@@ -55,6 +55,16 @@ reason Once integrates no secret manager: it reads the credential once, at
 enable, and copies it into Docker state, so central rotation changes nothing
 about the copy that is already there.
 
+That non-goal reaches further than the running host, and the reach is the part
+worth stating: the label lives under `/var/lib/docker`, so the credential is
+inside any host-level backup, disk image, or snapshot of the Docker root, and
+inside `docker inspect` output pasted into a bug report. Those copies outlive
+the container and sit wherever the backup sits, which may be far less trusted
+than the host. Once does not defend that boundary; a user who backs up
+`/var/lib/docker` is backing up a live Tailscale credential and should treat
+the backup accordingly, or revoke the OAuth client in the admin console when a
+backup leaves their control.
+
 ## Consequences
 
 - Automation that passes `--client-secret` breaks at the next upgrade,
