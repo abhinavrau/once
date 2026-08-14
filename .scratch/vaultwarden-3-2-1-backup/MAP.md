@@ -128,25 +128,14 @@ the spec.
 
 - [Prototype: the one-time password moment](issues/11-prototype-password-moment.md) - **The phone test passed, so both custody paths ship**: on iOS Safari the password-manager save prompt fires even on an origin whose self-signed-cert warning was clicked through, with one wording consequence (Safari often shows a blank page around the interstitial and needs a manual refresh - the pre-scan text must set that expectation). The reveal screen is **variant D**: a numbered copy/store/prove checklist with the bordered RECOVERY KIT block (password, offsite repo, credential names, local repo, created) under step 1, needing ~3 rows trimmed for the 80x24 floor. The gate is an unmasked, normalizing type-back with a loud skip hatch (password persists, `Enabled` stays false), and the clipboard round-trip loophole is accepted deliberately. ctrl+p copies the bare password, ctrl+k the whole kit; **mouse tracking is off on any screen showing a secret** so native selection works. The phone page holds the password in a form field with PRG-back-to-itself on save, copy buttons, and an explicit Done that burns the single-use 10-minute token. LAN IP is the default route's source address. Password is 32-char base32. The ADR-0013 tension dissolved by demonstration - the CLI already runs sequential bubbletea programs (cli_progress.go:58), so the custody flow is just another one; one amendment line at ship time. Prototype preserved on branch `prototype/password-moment`
 
+- [Assemble the Vaultwarden + 3-2-1 backup spec (PRD)](issues/09-spec.md) - **The destination, reached.** [PRD.md](PRD.md) is written (`ready-for-agent`), assembling tickets 01-08 and 11 into problem, solution, 20 user stories, and per-area detail, with the acceptance test amended per ticket 07 (second repo filled by a second `backup`, not `restic copy`) and a release-notes section carrying the retry-cadence fix, the plain-tar export, and the Campfire naming change. Alongside it: CONTEXT.md gains App Profile and a Backups glossary section with the Backup / Restore entry rewritten; ADR-0014 records install-wide settings on the proxy label; ADR-0013's at-rest inventory grows to three secrets with the threat model stated (offsite protects against host loss, not host compromise). Implementation split into issues 12-18: a wide-and-thin tracer (Vaultwarden deploys + backs up locally), then custody, QR delivery, the offsite leg, restore, status wording, and the acceptance test
+
 ## Not yet specified
 
-- Progress reporting for long backup runs through the ADR-0012 progress adapter.
-  Ticket 07 narrowed this to exactly one step: the **offsite upload**. The pause
-  is sub-second and proportional to Application Data size alone, and everything
-  else in a run is bounded - so the only place a user waits is the network leg,
-  whose `--json` shape ticket 02 already established (stream, take the last
-  `summary` line).
-- Streaming rework. `parseBackup` buffers the entire volume payload into a
-  `[]byte` (namespace.go:623) and the staging-file design adds a full-size disk
-  copy, so Once is bound by backup size in both memory and disk. Pre-existing,
-  but the ceiling gets lower once repos hold more than one app.
-- Restoring into an existing app in place (rollback) rather than always creating
-  a new one.
-- What `once backup status` prints and what the dashboard shows. Four facts are
-  now decided as things to surface - the offsite staleness signal (a
-  `restic snapshots` query, not state), the last `check` result per repo, the
-  same-device warning, and configured-but-not-enabled with its last error - but
-  their wording and layout are not.
+Nothing - the map is complete. The PRD is the destination, reached by
+[the spec ticket](issues/09-spec.md). Status/dashboard wording and offsite
+upload progress graduated into implementation issue 17; the remaining fog
+moved below.
 
 ## Out of scope
 
@@ -165,4 +154,11 @@ the spec.
   its tailnet URL and its per-node Funnel URL, and WebAuthn is origin-bound, so
   one `DOMAIN` value cannot serve both. No App Profile field shape fixes one
   variable against two origins ([ticket 04](issues/04-app-profile-seam.md)).
-- Implementation of the feature itself - this map ends at the PRD.
+- Streaming rework. `parseBackup` buffers the entire volume payload into a
+  `[]byte` (namespace.go:623) and the staging-file design adds a full-size disk
+  copy, so Once is bound by backup size in both memory and disk. Pre-existing
+  ceiling, named in the PRD; a future effort.
+- Restoring into an existing app in place (rollback) rather than always
+  creating a new one. TUI restore waits on the same fog.
+- Implementation of the feature itself - this map ends at the PRD, now written.
+  The build is charted as issues 12-18 in this directory.

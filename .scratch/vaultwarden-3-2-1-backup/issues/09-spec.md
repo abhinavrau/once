@@ -1,8 +1,9 @@
 # Assemble the Vaultwarden + 3-2-1 backup spec (PRD)
 
-Status: open
+Status: done
+Assignee: arau
 Labels: wayfinder:grilling
-Blocked by: 04 (resolved), 05 (resolved), 06 (resolved), 07 (resolved), 08 (resolved), 11
+Blocked by: 04 (resolved), 05 (resolved), 06 (resolved), 07 (resolved), 08 (resolved), 11 (resolved)
 
 ## Question
 
@@ -42,4 +43,38 @@ deploying and backing up locally before the offsite and restore work lands.
 
 ## Resolution
 
-(pending)
+Everything the ticket asked for is produced and committed:
+
+- **[PRD.md](../PRD.md)** (`Status: ready-for-agent`), following the
+  docktail-migration shape: problem statement, solution, 20 user stories,
+  then per-area detail (App Profile with the Vaultwarden entry as the worked
+  example, archive format, configuration, password custody, the Backup Run,
+  restore with bare-metal as the headline, observability), testing decisions
+  including the acceptance test (second repo populated by the second
+  `backup` leg, per ticket 07's amendment - not `restic copy`), out of
+  scope, and a release-notes section carrying the `operationDue` retry fix,
+  the plain-tar export, and the Campfire naming change.
+- **CONTEXT.md**: App Profile added under Core; new Backups section (Backup
+  Repo, Offsite Copy, Backup Run, Staging File, Repo Password, Recovery
+  Kit) with `_Avoid_` lines; the Backup / Restore entry rewritten off the
+  tar.gz-to-a-file model.
+- **[ADR-0014](../../../docs/adr/0014-install-wide-settings-on-the-proxy-label.md)**:
+  install-wide settings ride the Proxy label as a top-level key; why
+  top-level is load-bearing (labelExtra preservation), why observed state
+  stays off labels.
+- **ADR-0013 amended in place** (per ticket 06's choice of amendment over a
+  new ADR): the at-rest inventory grows to three secrets, and the threat
+  model is stated plainly - the Offsite Copy protects against host loss,
+  not host compromise. Ticket 11's second amendment line (custody flow vs
+  no-CLI-prompt) lands with implementation issue 13, as that ticket
+  specified ("when this ships").
+- **Implementation issues 12-18**, each sized for an agent session, wired
+  with Blocked-by: 12 (tracer: Vaultwarden deploys and backs up locally -
+  App Profile, plain tar, local run engine, interim enable), 13 (probe +
+  custody screen + TUI), 14 (QR delivery), 15 (offsite leg), 16 (restore
+  from repo), 17 (status + dashboard wording), 18 (acceptance test).
+  Offsite and restore land after the tracer, as asked.
+
+Fog disposition on the map: status/dashboard wording and offsite-progress
+graduated into issue 17; streaming rework and restore-in-place moved to Out
+of scope (beyond this map's destination; future efforts).

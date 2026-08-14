@@ -65,6 +65,22 @@ than the host. Once does not defend that boundary; a user who backs up
 the backup accordingly, or revoke the OAuth client in the admin console when a
 backup leaves their control.
 
+The 3-2-1 backup work (the Vaultwarden PRD) grew this at-rest inventory from
+one secret to three, all with the same exposure. The restic Repo Password and
+the offsite backend credential values (`BackupRepoSettings.Password` and
+`OffsiteEnv`) sit plaintext in the Proxy's `once` label (ADR-0014): readable
+through the Docker socket, present in any copy of `/var/lib/docker`, visible
+in pasted `docker inspect` output. They arrive the same way this ADR requires
+- values read from the environment, names on the command line, never a secret
+in argv (`RESTIC_PASSWORD` for restore, `--offsite-env` naming variables for
+enable). The threat model, stated plainly: **the Offsite Copy protects
+against host loss, not host compromise.** An attacker on the host reads the
+password and credentials from the label - and already reads the live
+Application Data sitting beside them - so encrypting the label would only
+move the problem to a key stored beside it. What the user must protect is the
+copy they hold: the Recovery Kit is a live key to every backup, wherever it
+is stored.
+
 ## Consequences
 
 - Automation that passes `--client-secret` breaks at the next upgrade,
