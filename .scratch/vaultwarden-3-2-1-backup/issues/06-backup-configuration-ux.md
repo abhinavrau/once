@@ -1,6 +1,6 @@
 # Design: configuring backups, and custody of the repo password
 
-Status: open
+Status: done
 Labels: wayfinder:grilling
 Blocked by: 02 (resolved), 03 (resolved)
 
@@ -49,4 +49,183 @@ unrecoverable if lost. This ticket specifies:
 
 ## Resolution
 
-(pending)
+### Settings shape
+
+Backup Repo settings live as one struct on the **Proxy**'s `once` label, as a
+field on `ProxySettings` - which makes it a **top-level key** in the label JSON:
+
+```go
+type BackupRepoSettings struct {
+	Enabled    bool              `json:"enabled,omitempty"`
+	LocalPath  string            `json:"localPath,omitempty"`
+	OffsiteURL string            `json:"offsiteUrl,omitempty"`
+	OffsiteEnv map[string]string `json:"offsiteEnv,omitempty"`
+	Password   string            `json:"password,omitempty"`
+}
+```
+
+Top-level is not cosmetic. `unknownFields` walks only the top level of the
+decoded type (label.go:52, `reflect.TypeFor[T]`), so `labelExtra` carries a
+`backups` key an older binary does not model, and that binary rewriting the
+proxy label for a port change preserves it. Nested one level deeper it would be
+silently destroyed, taking the repo password with it. No `labelExtra` on
+`BackupRepoSettings` itself - it is a nested struct, like `SMTPSettings`, and
+the carry belongs to the outer type.
+
+`Enabled` is explicit rather than inferred from a non-empty `LocalPath`
+(**Q9**). Tailscale infers enabled from a container that exists; backups have no
+container to look at, so without the flag `once backup disable` would have to
+erase the configuration to turn backups off, and re-enabling would mean typing
+all of it again. The offsite leg needs no flag of its own: a non-empty
+`OffsiteURL` is the switch.
+
+**Observed state is not on the label, and the platform decided that, not us.**
+Docker labels are immutable; `Tailscale.persistSettings` (tailscale.go:726)
+removes and recreates the container to write one field. A `lastRun` on the proxy
+label would tear down and recreate the Proxy - every Application's traffic - on
+every backup run.
+
+Once already has the mutable store instead: `Proxy.LoadState`/`SaveState`
+(proxy.go:235-261) read and write `/home/kamal-proxy/.config/kamal-proxy/once-state.json`
+**inside** the Proxy container via `CopyFromContainer`/`CopyToContainer`, and
+`AppState.LastBackup` is already there driving the daemon's `BackupDue`. The
+check result joins it as an install-wide field per repo (`restic check` covers a
+repo, not an app), and scheduling stays exactly as it is today.
+
+But that file is a **cache, not truth**: it sits in the Proxy container's
+writable layer, so a Proxy recreate (port change, image upgrade) erases it. So
+the user-facing staleness signal ("offsite copy is 6 days old") reads
+`restic snapshots --latest 1 --tag app:<name>` per repo, which no Proxy roll can
+erase. A State-backed staleness display would announce "never backed up" to a
+user whose repo is full of snapshots. Nothing that restic already knows gets a
+settings field: last-backup time is a query, not a setting.
+
+### Local repo location
+
+Default `/var/lib/once/backups`, with the staging file under it (**Q2**).
+
+3-2-1 wants copy 2 on different media, and the default sits on the same disk as
+the Application Data Volume. So Once `stat`s the Docker root and warns,
+persistently, in status and on the dashboard, when the repo shares a device with
+it: *your local copy is on the same disk as your data*. It does not refuse -
+a user with one disk who wants the offsite leg is entitled to it, and refusing
+would block the honest majority to make a point.
+
+### Backend credentials
+
+At rest, plaintext, in `OffsiteEnv` as an opaque `map[string]string`, splatted
+into the restic container's environment (**Q4**). Unattended offsite backups are
+the whole point, and a fixed key set per backend is a backend picker in
+disguise, already ruled out of scope.
+
+Reaching them into Once without argv follows from ADR-0013: the CLI takes the
+**names** of variables to capture (`--offsite-env AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY`)
+and reads their values from Once's own environment. Names are not secrets; the
+values never touch a command line. The TUI form is the other input path.
+
+This is a second at-rest secret with the same exposure as the Runtime
+Credential, and the third counting the repo password. ADR-0013's reach
+paragraph is amended to name them rather than a new ADR being written: the
+decision (secrets by environment, no protection at rest) is unchanged, only its
+inventory grows.
+
+### CLI surface
+
+`once backup` becomes a noun with subcommands and keeps its two-argument export
+form (**Q6**):
+
+```
+once backup <host> <file>                              # export, unchanged
+once backup enable --local-path <p> --offsite-url <u> --offsite-env <names>
+once backup disable
+once backup status
+```
+
+Cobra routes a first argument matching a subcommand to that subcommand and falls
+through to the parent's `RunE` otherwise, so both forms coexist. **Ceiling:** an
+Application whose Host is literally `enable`, `disable`, or `status` can never
+be exported. Accepted, and written down.
+
+`once backups` (plural, beside the singular) was rejected as unmemorable, and
+`once restic` because Once names the concept, not the tool.
+
+### TUI surface
+
+Three places, mirroring where the settings actually belong:
+
+1. **Dashboard-global Backups overlay**, the shape `TailscaleForm` already
+   establishes (dashboard.go:189) - local path, offsite URL, credential
+   name/value pairs, and the password moment. Install-wide settings do not go
+   in a per-app menu.
+2. **Settings > Backups** (per-app) keeps one checkbox, "Include this app in
+   backups", plus the last-run line it already shows. The path field goes.
+3. **Install flow**, both the catalog pick and the custom image path, asks the
+   same checkbox. Ticking it on an install with no Backup Repo configured opens
+   the install-wide overlay **inline, once**, then returns to the install
+   (**Q10**). Asking the install-wide questions on every install is noise;
+   sending the user to the dashboard mid-install to find a screen they have
+   never seen is worse.
+
+Participation stays per-app (**Q1**): the repo is per-install, snapshots are
+already tagged `app:<name>`, and `AutoBackup` survives as the participation
+flag. An install-wide-only switch would silently start backing up an
+Application the user never nominated.
+
+For a **custom image**, ticking the box forces the App Profile's `DataPath`
+(**Q11**): a wrong data path archives an empty directory, which is worse than no
+backup because it looks like one. The **health path does not hang off this
+checkbox** - it is asked for every custom image, unconditionally, because
+`verifyHTTP` calls `Remove(ctx, true)` and takes the Application Data Volume
+with it whether or not backups are on. Coupling it to the backup checkbox would
+leave the user who declines backups holding the destructive default. Catalog
+apps carry both fields in their App Profile already and are unaffected.
+
+### Password custody
+
+**Corrects a decision locked during charting.** Charting said the password is
+generated at first backup. The first backup is normally the background daemon on
+its 5-minute tick (`runner.go:181`), with no human at the terminal, so the
+password would be generated and shown to nobody - and the one moment recovery
+depends on would be a line in a log. The password is therefore generated at
+**configure** time, where a human is present by construction. The install-flow
+answer above (**Q10**) is what makes that reliable.
+
+The TUI shows it once and requires the user to **type it back** before the form
+closes (**Q8**). A checkbox proves nothing; typing it back proves the user has
+it somewhere at that moment.
+
+**Amended after this ticket closed.** It originally said the CLI cannot gate a
+scripted `once backup enable`, so it prints the password with a banner and stops
+there - two behaviours for one moment. That is replaced by **one shared path for
+both frontends**, which asks the user how they want to take custody: show the
+password on screen, or send it to their phone as a QR code. The type-it-back
+gate follows either choice. A non-interactive run (no TTY) keeps the old
+behaviour as its fallback - print with the banner, no prompt, no gate - so
+automation does not break, and `--password-delivery=screen|qr` selects without
+asking. See [ticket 11](11-prototype-password-moment.md), which now owns this
+flow, and note the tension with ADR-0013 recorded there.
+
+**No nag.** A "you have not confirmed" reminder needs a confirmed flag, and the
+only mutable store is the Proxy state file, which a Proxy recreate wipes - so
+the nag would return, permanently, for the user who did everything right. A
+false alarm that cannot be dismissed is worse than no alarm.
+
+The exact screen is not specified here. It goes to
+[ticket 11](11-prototype-password-moment.md) to be prototyped, blocked by
+[ticket 10](10-research-terminal-qr-secret-handoff.md), which asks whether a
+terminal can show a QR code the user scans with a phone to capture the secret
+without typing 64 characters by hand.
+
+### Fate of the existing settings
+
+Clean break, no migration (**Q5**). `BackupSettings.Path` is deleted and
+`TrimBackups` retires. The key needs **no entry in `removedSettingsFields`**:
+that denylist operates on top-level keys, and `backup.path` is nested, so
+`encoding/json` drops it on the next rewrite anyway - the preservation doctrine
+does not reach nested objects.
+
+Existing `.tar.gz` files stay exactly where they are, untouched forever, and
+stay restorable through `once restore <file>` via the gzip sniff decided in
+[ticket 05](05-archive-format-compression.md). Migrating them into a repo is
+already out of scope; deleting them for the user would be worse than leaving
+them.

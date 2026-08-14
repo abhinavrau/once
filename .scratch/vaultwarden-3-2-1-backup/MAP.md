@@ -83,10 +83,13 @@ the spec.
   `--copy-chunker-params` so `copy` remains available as a one-shot backfill when
   a remote is enrolled late.
 - Offsite target is **any restic repo URL + env vars**. No backend picker UI.
-- Repo password is **user-held**: generated at first backup, printed once with a
-  hard "store this off this machine" prompt, cached in a label so unattended
-  backups run. Lose it, lose the backups, by design. Bare-metal restore takes it
-  by prompt or env.
+- Repo password is **user-held**: generated when backups are **configured**,
+  printed once with a hard "store this off this machine" prompt, cached in a
+  label so unattended backups run. Lose it, lose the backups, by design.
+  Bare-metal restore takes it by prompt or env. Originally locked as generated
+  at *first backup*; changed on ticket 06's finding that the first backup is
+  normally the daemon on its 5-minute tick, with no human present, so the one
+  moment recovery depends on would be shown to nobody.
 - Backup settings live on the **proxy container's label**, as a sibling struct
   through the existing label codec. Needs an ADR line.
 - Retention: fixed `--keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune`.
@@ -114,6 +117,10 @@ the spec.
 - [Design: the App Profile seam - catalog columns to app settings](issues/04-app-profile-seam.md) - **App Profile** is a four-field comparable struct (`BaseName`, `DataPath`, `HealthPath`, `URLEnvVar`) in `internal/docker`, nested on both `catalog.App` and `ApplicationSettings`. **The zero value means Once's built-in behaviour**, so `DefaultApplicationSettings` keeps its single-source-of-defaults role and **no backfill is needed** - an old label with no `profile` key behaves exactly as today. A custom `DataPath` **replaces** both Rails mount targets rather than adding a third. `Resolve` returns the `catalog.App`, since a string cannot carry a Profile. Three findings changed the ticket's own framing: the **URL env var is computed, never stored** (`BuildEnv` always has the Application in hand, and Host/Exposure changes already roll the container), using the tailnet URL under Tailnet exposure plus a Deploy warning when it resolves empty; **restore needs no change at all** because `populateVolume`'s `/data` is paired with `BackupDataDir`, not the app's data path; and **user stats filter the Proxy's source address**, not the health path, which needs no per-app lookup table. The App Name had to move into the Profile too - `ns.Deploy` and `ns.Restore` overwrite `settings.Name` from the image ref, so `vaultwarden/server` would deploy as `server`; setting `BaseName` from `Alias` on every catalog entry also fixes Campfire, which deploys as `once-campfire` today
 - [Decision: does the restic-wrapped archive stay gzipped?](issues/05-archive-format-compression.md) - **No. Drop gzip; the archive becomes plain `.tar`.** gzip makes restic re-add the whole archive every run (19.085 MiB/day against 981 KiB for plain tar), which would grow the repo by a full vault per day. The manual export changes format too, so only one format and one code path exist. `parseBackup` must sniff the gzip magic bytes so archives written by current Once stay restorable - without that, every existing backup breaks on upgrade. Staging path fixed at `/staging/<app>.tar`; `RESTIC_COMPRESSION` left at `auto` so restic compresses at chunk granularity
 
+- [Design: configuring backups, and custody of the repo password](issues/06-backup-configuration-ux.md) - Backup Repo settings (`Enabled`, `LocalPath`, `OffsiteURL`, `OffsiteEnv`, `Password`) sit as a **top-level key** on the proxy label, which is what makes an older binary's rewrite carry them through `labelExtra` instead of destroying the password. **No observed state on any label** - Docker labels are immutable, so a `lastRun` there would recreate the Proxy on every run; the check result joins the existing state file inside the Proxy container, while user-facing staleness reads `restic snapshots`, because that file is a cache a Proxy roll erases. CLI is `once backup enable|disable|status` beside the unchanged two-arg export, with backend credential **names** passed by flag and values read from Once's own environment (ADR-0013). TUI puts install-wide settings in a dashboard-global overlay like `TailscaleForm`, leaves a single "Include this app in backups" checkbox per app, and asks that checkbox during install - ticking it with no repo configured opens the overlay inline, once. Its split of the password moment into a gating TUI and a printing CLI was **replaced in review by one shared path** that asks the user how to take custody - on screen, or by QR to their phone - with the type-back gate after either and a no-TTY fallback to today's print-and-banner ([ticket 11](issues/11-prototype-password-moment.md)). Two findings changed the shape: the password must be generated at **configure** time, not first backup (the amended entry above), and the **health path must not hang off the backup checkbox** - `verifyHTTP` deletes the volume whether backups are on or not, so a custom image is asked for it unconditionally, while the checkbox forces only `DataPath`. Local repo defaults to `/var/lib/once/backups` with a persistent warning when it shares a device with the Docker root, since that configuration is 3-2-1 in name only
+
+- [Research: can a terminal show a scannable QR code for the repo password?](issues/10-research-terminal-qr-secret-handoff.md) - **Feasible and cheap, but gated on a five-minute phone test, because what is in doubt is the payoff, not the engineering.** Half-block rendering decoded through a real decoder and a camera model at every terminal cell metric tested; naive one-cell-per-module failed universally; `tailscale up --qr` already ships this exact technique. Cost is one MIT dependency (`piglig/go-qr`), ~25 lines of renderer, and a dedicated full-screen view. **The finding that reaches back into an undecided detail: the password's alphabet sets the size floor, not the library.** 64 mixed-case characters render 49x25 and do not fit the enforced 80x24 terminal floor at all; the same 320 bits as uppercase base32 render 41x21, because QR switches to alphanumeric mode - so the alphabet must be chosen before the password format is fixed. And the catch: no password manager ingests a raw-text QR (all four checked are TOTP-or-file only), and neither Apple nor Android documents a copy affordance for plain text, so a QR of the secret itself rests on undocumented phone behaviour. **Its "the URL variant is dead" conclusion was overturned in review and does not stand:** it holds for `once-admin`, which publishes no host ports, but not for Once, because the Proxy publishes 80 and 443 and the pinned kamal-proxy image accepts `--tls-certificate-path`/`--tls-private-key-path`. So the QR encodes a one-time URL to a page that puts the password in a form field, which is the payload both phone platforms handle well and the only one a password manager will save - over the tailnet URL when Tailscale is on, over a self-signed cert on the LAN IP when it is not, with the browser warning accepted deliberately and explained on screen before the user scans ([ticket 11](issues/11-prototype-password-moment.md))
+
 ## Not yet specified
 
 - Progress reporting for long backup/restore runs through the ADR-0012 progress
@@ -123,10 +130,11 @@ the spec.
   `[]byte` (namespace.go:623) and the staging-file design adds a full-size disk
   copy, so Once is bound by backup size in both memory and disk. Pre-existing,
   but the ceiling gets lower once repos hold more than one app.
-- How the TUI confirms the user actually stored the repo password, and whether
-  it nags until they do.
 - Restoring into an existing app in place (rollback) rather than always creating
   a new one.
+- What `once backup status` prints and what the dashboard shows: the staleness
+  signal, the last check result, and the same-disk warning are all decided as
+  facts to surface, but their wording and layout are not.
 
 ## Out of scope
 

@@ -2,7 +2,7 @@
 
 Status: open
 Labels: wayfinder:grilling
-Blocked by: 02 (resolved), 04 (resolved), 06
+Blocked by: 02 (resolved), 04 (resolved), 06 (resolved)
 
 ## Question
 
