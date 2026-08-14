@@ -160,3 +160,11 @@ Two consequences for this prototype:
   restic error in the still-populated form instead. So there is no "we saved your
   password but backups are broken" state for this flow to render - except on
   retry, where the password already exists and must not be regenerated.
+
+## Comments
+
+Ticket 08 resolution reaches in: the custody screen is a **recovery kit**, not
+just the password. It must also show the offsite repo URL and the backend env
+var **names** (never the values - the user holds those at their provider).
+Rationale: a user who dutifully saved only the password still cannot mount the
+repo on a fresh host.

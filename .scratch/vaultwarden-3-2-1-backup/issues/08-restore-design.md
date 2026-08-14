@@ -1,6 +1,7 @@
 # Design: restoring from a repo, including onto a brand new install
 
-Status: open
+Status: closed
+Assignee: arau
 Labels: wayfinder:grilling
 Blocked by: 02 (resolved), 04 (resolved), 06 (resolved)
 
@@ -54,4 +55,91 @@ Specify:
 
 ## Resolution
 
-(pending)
+All recommendations accepted as proposed. Grilled 2026-08-14.
+
+### CLI surface
+
+One verb: `once restore` grows repo awareness, no new subcommand.
+
+- `once restore <arg>`: if `<arg>` is an existing file (`os.Stat`), today's
+  file-path flow, unchanged. Otherwise `<arg>` is an app name and `--repo` (or a
+  configured repo) is required.
+- `once restore --repo <url>` with **no app arg** is the discovery listing: one
+  line per app in the repo - name, snapshot count, newest snapshot date, image
+  ref from the newest snapshot. This is the discovery-before-trust step on a
+  fresh host, and it makes the bare invocation helpful instead of an error.
+- `once restore <app> --repo <url> --list`: per-app snapshot history - short id,
+  date, image.
+- `--snapshot <short-id>` picks an older snapshot; latest is the default.
+- `--repo` accepts either a local path or a remote restic URL; the flow is
+  repo-agnostic and nothing assumes a local repo exists (bare-metal reads the
+  remote directly).
+- On a configured install, bare `once restore <app>` defaults to the configured
+  **local** repo. Never auto-falls-back to offsite - silently switching hides
+  which copy was trusted. `--repo` overrides.
+
+### Credentials
+
+- Password: interactive no-echo prompt, or `RESTIC_PASSWORD` when set. Never
+  argv (ADR-0013).
+- Backend credentials: values read from Once's environment, same as
+  `backup enable`.
+- The ticket-11 custody screen must carry the full recovery kit: password,
+  offsite URL, and the backend env var **names** (never values - the user
+  already holds those at their provider). Without the URL and names, a saved
+  password still cannot mount the repo. Noted on ticket 11.
+
+### Selection and confirmation
+
+Latest by default. Before restoring, print the pick - app name, image ref,
+snapshot time, original host - then proceed with **no y/n prompt**: restore is
+additive (new app, refuses host collisions), so there is nothing to destroy.
+Completion line: `Restored vaultwarden from snapshot a1b2c3d4 (2026-08-10,
+vaultwarden/server:1.32)`.
+
+### Mechanics
+
+`restic restore <snap>:/staging --target <staging-dir>` (subfolder form,
+verified byte-exact in ticket 02), then `os.Open` the staged file and hand it
+to the existing `ns.Restore`. Not `restic dump` - that would stream a multi-GB
+archive through container stdout plumbing Once does not have. Reuses ticket
+07's staging dir, free-disk check, and host flock. Repo snapshots are always
+plain tar; the gzip magic-byte sniff in `parseBackup` (ticket 05) covers old
+file archives, tested with one gzipped and one plain archive.
+
+### App Profile round-trip
+
+The Profile is a field on `ApplicationSettings`, which is
+`once.application.json` in every archive - it travels for free. The restored
+app deploys with `DataPath` mounts and `HealthPath` probe via the ticket-04
+deploy path; naming uses `BaseName` (`UniqueName(profile.BaseName)`, falling
+back to `NameFromImageRef`). Acceptance test asserts the restored Vaultwarden
+mounts `/data` and probes `/alive`.
+
+### Host collisions
+
+Keep the `ErrHostnameInUse` refusal. Message names the colliding app and the
+`once app destroy <name>` command. No `--host` override - changing identity
+mid-restore touches `DOMAIN`/WebAuthn semantics, which belongs to the
+restore-in-place (rollback) fog, not this ticket.
+
+### Bootstrapping ongoing backups
+
+After a successful restore from a remote repo, one prompt: "Resume backups to
+this repo? [Y/n]". Yes runs the `backup enable` path wholesale - fresh local
+repo `init` with `--copy-chunker-params` from the remote (so `copy` backfill
+works), ticket-07 validation probe, settings persisted. Declining prints the
+`backup enable` one-liner. Silently not backing up after a recovery is the trap
+this closes.
+
+### Post-restore verification
+
+The existing deploy gates are the definition of "vault intact": kamal-proxy
+readiness on the profile's `/alive` (which opens the DB) and `verifyHTTP`'s
+2xx, plus the printed snapshot date. No extra verification machinery; the
+acceptance test provides the deeper proof.
+
+### TUI
+
+CLI-only for this MVP. Bare-metal recovery is inherently a terminal moment; a
+dashboard restore flow waits for the rollback fog to graduate.
