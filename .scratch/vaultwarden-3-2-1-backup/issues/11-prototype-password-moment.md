@@ -139,6 +139,24 @@ alone; the choice prompt collapses to nothing to choose.
   context, so browsers suppress the very save prompt this design exists to
   trigger.
 
-## Resolution
+## Added by ticket 07
 
-(pending)
+The custody flow now has a **fixed position in the enable sequence**, decided by
+[ticket 07](07-backup-run-design.md):
+
+    generate password -> run the validation probe -> custody flow -> Enabled = true
+
+The probe needs the password (it `init`s the repos with it), so generation comes
+first. But the custody ritual - show or QR, then type it back - must not be
+demanded for a configuration that then fails its probe, so it comes after.
+
+Two consequences for this prototype:
+
+- The screen can assume **both repos are reachable and initialized** by the time
+  it renders. A QR served over the tailnet or a LAN IP is being offered to a user
+  whose configuration is already known-good, so nothing on this screen has to
+  hedge about whether backups will work.
+- A probe failure means this screen is **never reached**, and the user sees the
+  restic error in the still-populated form instead. So there is no "we saved your
+  password but backups are broken" state for this flow to render - except on
+  retry, where the password already exists and must not be regenerated.

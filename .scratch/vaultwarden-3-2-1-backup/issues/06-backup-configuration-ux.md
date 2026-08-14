@@ -216,6 +216,24 @@ The exact screen is not specified here. It goes to
 terminal can show a QR code the user scans with a phone to capture the secret
 without typing 64 characters by hand.
 
+### Amended by ticket 07: enabling now validates first
+
+[Ticket 07](07-backup-run-design.md) inserts a **validation probe** between
+"configure" and "enabled". `Enabled` is set only if it passes.
+
+The probe is synthetic - a few bytes written to the staging directory, backed up
+to each repo with the real `--host` and a fixed path, then forgotten without
+`--prune` - because this ticket's own **Q10** decision is what rules out
+validating against a real Application: the overlay opens *inline, mid-install*,
+before the Application is deployed, so there is no App Container to pause. Every
+step is O(1), so it can sit inside the form; `check` and `prune` are excluded
+because both are unbounded against a large pre-existing repo.
+
+On failure the whole `BackupRepoSettings` is persisted **including the
+password** - the probe may already have `init`ed a repo with it, and discarding
+it would orphan that repo - with only `Enabled` withheld. `once backup status`
+then shows configured-but-not-enabled with the last error.
+
 ### Fate of the existing settings
 
 Clean break, no migration (**Q5**). `BackupSettings.Path` is deleted and

@@ -95,8 +95,9 @@ the spec.
 - Retention: fixed `--keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune`.
   Not configurable in the MVP. `TrimBackups` and scheduled tarball dumps retire.
 - `once backup <host> <file>` manual export survives unchanged.
-- Offsite `restic copy` runs after each successful local backup in the same run.
-  Its failure logs but does not fail the backup - **but offsite staleness must be
+- The offsite leg runs in the same run, immediately after the local one, reading
+  the same staging file (originally `restic copy`; see the amended entry above).
+  Its failure logs but does not fail the run - **but offsite staleness must be
   surfaced** ("offsite copy is 6 days old") in status and the dashboard.
 - Quiesce stays pause-and-copy. No catalog-declared backup command.
 - `restic check` (metadata only, no `--read-data`) after each backup; result
@@ -121,20 +122,27 @@ the spec.
 
 - [Research: can a terminal show a scannable QR code for the repo password?](issues/10-research-terminal-qr-secret-handoff.md) - **Feasible and cheap, but gated on a five-minute phone test, because what is in doubt is the payoff, not the engineering.** Half-block rendering decoded through a real decoder and a camera model at every terminal cell metric tested; naive one-cell-per-module failed universally; `tailscale up --qr` already ships this exact technique. Cost is one MIT dependency (`piglig/go-qr`), ~25 lines of renderer, and a dedicated full-screen view. **The finding that reaches back into an undecided detail: the password's alphabet sets the size floor, not the library.** 64 mixed-case characters render 49x25 and do not fit the enforced 80x24 terminal floor at all; the same 320 bits as uppercase base32 render 41x21, because QR switches to alphanumeric mode - so the alphabet must be chosen before the password format is fixed. And the catch: no password manager ingests a raw-text QR (all four checked are TOTP-or-file only), and neither Apple nor Android documents a copy affordance for plain text, so a QR of the secret itself rests on undocumented phone behaviour. **Its "the URL variant is dead" conclusion was overturned in review and does not stand:** it holds for `once-admin`, which publishes no host ports, but not for Once, because the Proxy publishes 80 and 443 and the pinned kamal-proxy image accepts `--tls-certificate-path`/`--tls-private-key-path`. So the QR encodes a one-time URL to a page that puts the password in a form field, which is the payload both phone platforms handle well and the only one a password manager will save - over the tailnet URL when Tailscale is on, over a self-signed cert on the LAN IP when it is not, with the browser warning accepted deliberately and explained on screen before the user scans ([ticket 11](issues/11-prototype-password-moment.md))
 
+- [Design: what one backup run does](issues/07-backup-run-design.md) - A Backup Run is **install-wide, not per-Application**: `checkBackup` leaves the per-app loop and becomes a sibling of `checkSelfUpdate`, staging and backing up each due Application in turn, then running **one** `forget --prune` and **one** `check` per repo - correct because ticket 02's pinned per-app staging path already puts each Application in its own retention group. Backups now run **before** auto-update, so the newest snapshot is of the known-good version. Staging goes to `<LocalPath>.staging` (a suffix, never a child of the repo), bind-mounted read-only, with a free-disk check against **2x the last archive size** recorded per Application - short disk fails the run loudly rather than skipping. restic runs as **one container per command** behind `runRestic`, digest-pinned, root uid forever, named cache volume, `--host {namespace}` as an explicit flag; it is a sixth `ContainerCreate` site, deliberately not factored with the two temp-container helpers, whose lifecycle is opposite. Three findings reached past the question: `operationDue` **retries a failed run every 5 minutes forever** (state.go:81 gates only successes), a pre-existing defect hitting Update too, fixed here with a 1h floor; **enabling backups now runs a validation probe first** and sets `Enabled` only if it passes, and that probe must be **synthetic** because ticket 06's own inline-overlay decision means the Application does not exist yet - persisting everything but `Enabled` on failure, password included, since a probe that reached `init` has already committed it; and a **host flock** is now Once's first lock primitive, because a manual export racing the daemon resumes the App Container under the other's copy and silently produces the torn SQLite pair the pause exists to prevent. Offsite failure logs but the run succeeds; `check` failure alarms separately from backup failure; stale locks are unlocked only on **evidence** of a lock error, never on a schedule, and the offsite `-tmp-` leak is accepted as a named ceiling
+
 ## Not yet specified
 
-- Progress reporting for long backup/restore runs through the ADR-0012 progress
-  adapter. Backups of a real vault are fast; this sharpens once repo sizes and
-  restic's `--json` output shape are known.
+- Progress reporting for long backup runs through the ADR-0012 progress adapter.
+  Ticket 07 narrowed this to exactly one step: the **offsite upload**. The pause
+  is sub-second and proportional to Application Data size alone, and everything
+  else in a run is bounded - so the only place a user waits is the network leg,
+  whose `--json` shape ticket 02 already established (stream, take the last
+  `summary` line).
 - Streaming rework. `parseBackup` buffers the entire volume payload into a
   `[]byte` (namespace.go:623) and the staging-file design adds a full-size disk
   copy, so Once is bound by backup size in both memory and disk. Pre-existing,
   but the ceiling gets lower once repos hold more than one app.
 - Restoring into an existing app in place (rollback) rather than always creating
   a new one.
-- What `once backup status` prints and what the dashboard shows: the staleness
-  signal, the last check result, and the same-disk warning are all decided as
-  facts to surface, but their wording and layout are not.
+- What `once backup status` prints and what the dashboard shows. Four facts are
+  now decided as things to surface - the offsite staleness signal (a
+  `restic snapshots` query, not state), the last `check` result per repo, the
+  same-device warning, and configured-but-not-enabled with its last error - but
+  their wording and layout are not.
 
 ## Out of scope
 
