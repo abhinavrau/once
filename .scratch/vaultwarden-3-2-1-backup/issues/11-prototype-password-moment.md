@@ -1,6 +1,6 @@
 # Prototype: the one-time password moment
 
-Status: open
+Status: done
 Assignee: Abhinav Rau
 Labels: wayfinder:prototype
 Blocked by: 10 (resolved)
@@ -214,9 +214,9 @@ Decisions the prototype embodies, to react to:
   no packet sent), which excludes docker0/br-*/veth by construction; offline
   fallback scans interfaces skipping those prefixes. No guessing among
   multiple real interfaces - the kernel's routing choice is the rule.
-- **Single-use = burned on submit** (not on GET), 10-minute TTL. Open
-  question for the real build: burn-on-GET is stricter but a phone browser
-  preload could consume it.
+- **Single-use = burned on an explicit Done button** (superseding the
+  original burn-on-submit; users may store the password outside a manager),
+  10-minute TTL and screen-close teardown as backstops.
 
 **ADR-0013 tension resolved by demonstration, not amendment-dodging**: the CLI
 already runs a full bubbletea program every time it shows progress
@@ -231,3 +231,56 @@ the CLI's progress rendering already uses.
 **Still needs the human**: (1) the five-minute phone test above - it decides
 whether the QR option ships at all; (2) pick a reveal variant or name the
 hybrid; (3) react to the gate wording and the skip hatch.
+
+### Resolution
+
+Prototype reviewed live over several rounds; every open question is settled.
+Asset: branch `prototype/password-moment`, `cmd/prototype-password-moment/`
+(final commit 5429b0b). The winning designs, as reacted-to and fixed:
+
+- **The phone test passed - the QR option ships.** On iOS Safari the password
+  manager save prompt fires on an origin whose self-signed cert warning was
+  clicked through. Finding for the wording: Safari often renders a blank page
+  around the interstitial and needs a manual refresh (known platform quirk,
+  before and sometimes after "Visit Website Anyway") - the pre-scan text
+  should set that expectation alongside the warning itself.
+- **Reveal screen: variant D wins** - the numbered copy / store / prove
+  checklist with the double-bordered ONCE RECOVERY KIT block (password,
+  offsite repo, credential names, local repo, created date + host) nested
+  under step 1. It needs ~3 rows trimmed to fit the 80x24 floor (drop the
+  Created line or the box's vertical padding).
+- **Copy affordances:** ctrl+p copies the bare password, ctrl+k the whole kit
+  (both OSC52). **Mouse tracking must be off on any screen showing a secret**
+  so native terminal selection works; the custody overlay opts out per-frame
+  even though the dashboard runs with tracking on. Gate keeps tracking for
+  click-to-focus.
+- **Gate:** unmasked field; input normalized (case, dashes, spaces); mismatch
+  message names the stakes without red-wall theatrics; esc opens a loud skip
+  confirm - password stays persisted, `Enabled` stays false, finish later via
+  `once backup enable`. The copy-then-paste loophole (clipboard round-trip
+  passes the gate without real storage) is **accepted deliberately**: the
+  gate is a nudge, not a boundary.
+- **QR path:** an intro screen precedes the code - same-LAN requirement,
+  single-use + 10-minute expiry, and the cert-warning explanation are read
+  before anything is scannable; the QR view itself stays within the 24-row
+  budget. LAN IP rule: the default route's source address (UDP-dial trick),
+  which excludes docker0/br-*/veth by construction; interface scan fallback
+  offline.
+- **Phone page:** username + password form (autocomplete username /
+  new-password); Save in password manager is POST-redirect-GET back to the
+  same page, so the prompt fires on a real navigation and the screen never
+  changes; the prompt firing only once per credential is Safari behaviour,
+  not a bug. Copy buttons on the password and on a separate Recovery details
+  box (repo + credential names). An explicit Done button burns the token;
+  TTL and screen-close teardown are the backstops. Copy kept terse so Done
+  sits above the fold on a phone.
+- **Password format:** 32 chars base32 (A-Z 2-7, 160 bits, `crypto/rand`,
+  bias-free), displayed in groups of 4.
+- **ADR-0013 resolved by demonstration, not exception:** the CLI already runs
+  a bubbletea program per progress render (cli_progress.go:58) and hands the
+  terminal back on quit; the custody flow is a second sequential program, so
+  no terminal negotiation ever happens. One amendment line when this ships:
+  reading a secret in stays TUI-only, handing one out reuses the shared
+  custody component under the CLI's existing sequential-program pattern.
+- **Real-build note:** use `subtle.ConstantTimeCompare` for the URL token
+  check on the admin server (the prototype's mux match is not constant-time).
