@@ -1,6 +1,7 @@
 # Prototype: the one-time password moment
 
 Status: open
+Assignee: Abhinav Rau
 Labels: wayfinder:prototype
 Blocked by: 10 (resolved)
 
@@ -168,3 +169,65 @@ just the password. It must also show the offsite repo URL and the backend env
 var **names** (never the values - the user holds those at their provider).
 Rationale: a user who dutifully saved only the password still cannot mount the
 repo on a fresh host.
+
+### Prototype built - awaiting reaction
+
+**Asset: branch `prototype/password-moment`, `cmd/prototype-password-moment/`**
+(commit 3f0dd44). Run it:
+
+    git checkout prototype/password-moment
+    go run ./cmd/prototype-password-moment            # the TUI flow
+    go run ./cmd/prototype-password-moment --banner   # the no-TTY CLI banner
+    go run ./cmd/prototype-password-moment --serve    # phone page only, prints URL
+
+The flow: custody choice (screen / phone) -> reveal or QR -> type-back gate ->
+done. The reveal screen has **three variants, left/right arrows switch**:
+
+- **A Ceremony** - boxed card, one-line warning, password large and centered,
+  kit lines muted below, ctrl+p copies the password.
+- **B Recovery kit** - the whole screen is a double-bordered KIT document
+  (password, repo, cred names, date, host); ctrl+p copies the entire block;
+  framing is "save this document", not "save this string".
+- **C Checklist** - numbered ritual (copy / store / prove), password inline in
+  step 1; the primary affordance is the workflow.
+
+The QR path serves the real page over HTTPS on the LAN IP with a self-signed
+cert, so **the gating phone test can run against the actual artifact**: scan
+with a stock camera, tap through the warning, tap "Save in password manager",
+and see whether the save prompt fires (iPhone and Android). Verified working
+end to end from this machine (page serves, POST burns the token, burned link
+gets 410).
+
+Decisions the prototype embodies, to react to:
+
+- **Password**: 32 chars base32 (A-Z 2-7, 160 bits), shown grouped in 4s; the
+  gate strips dashes/spaces and ignores case, so phone keyboards can't lose.
+- **Gate field unmasked** - masking a value whose custody we just handed the
+  user is theatre.
+- **Escape hatch exists but is loud**: esc -> "skip without confirming?" -
+  password stays persisted, Enabled stays false, finish later with
+  `once backup enable` (matches ticket 07's retry state).
+- **QR wording precedes the code on its own intro screen** - the cert-warning
+  explanation cannot share the QR screen anyway (ticket 10's 24-row budget),
+  and this guarantees it is read before scanning.
+- **LAN IP rule**: the default route's source address (UDP dial to 8.8.8.8,
+  no packet sent), which excludes docker0/br-*/veth by construction; offline
+  fallback scans interfaces skipping those prefixes. No guessing among
+  multiple real interfaces - the kernel's routing choice is the rule.
+- **Single-use = burned on submit** (not on GET), 10-minute TTL. Open
+  question for the real build: burn-on-GET is stricter but a phone browser
+  preload could consume it.
+
+**ADR-0013 tension resolved by demonstration, not amendment-dodging**: the CLI
+already runs a full bubbletea program every time it shows progress
+(cli_progress.go:58, `tea.NewProgram(p).Run()`), sequentially, handing the
+terminal back on quit. The custody flow is just another such program run after
+the probe's progress program exits - the prototype *is* that shape. No
+concurrent terminal negotiation exists. ADR-0013 should get one amendment
+line when this ships: reading a secret in stays TUI-only; handing one out
+reuses the shared custody component under the same sequential-program pattern
+the CLI's progress rendering already uses.
+
+**Still needs the human**: (1) the five-minute phone test above - it decides
+whether the QR option ships at all; (2) pick a reveal variant or name the
+hybrid; (3) react to the gate wording and the skip hatch.
