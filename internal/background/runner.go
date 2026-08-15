@@ -89,7 +89,6 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 		}
 
 		r.checkUpdate(ctx, app, state)
-		r.checkBackup(ctx, app, state)
 		r.checkFunnelExpiry(ctx, app)
 	}
 
@@ -175,27 +174,6 @@ func (r *Runner) checkUpdate(ctx context.Context, app *docker.Application, state
 		slog.Info("Auto-update completed", "app", app.Settings.Name)
 	} else {
 		slog.Info("Already up to date", "app", app.Settings.Name)
-	}
-}
-
-func (r *Runner) checkBackup(ctx context.Context, app *docker.Application, state *docker.State) {
-	if !app.Settings.Backup.AutoBackup {
-		return
-	}
-	if !state.BackupDue(app.Settings.Name) {
-		return
-	}
-
-	slog.Info("Running auto-backup", "app", app.Settings.Name)
-
-	if err := app.Backup(ctx); err != nil {
-		slog.Error("Auto-backup failed", "app", app.Settings.Name, "error", err)
-	} else {
-		slog.Info("Auto-backup completed", "app", app.Settings.Name)
-	}
-
-	if err := app.TrimBackups(); err != nil {
-		slog.Error("Backup trim failed", "app", app.Settings.Name, "error", err)
 	}
 }
 

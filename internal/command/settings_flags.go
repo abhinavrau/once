@@ -3,7 +3,6 @@ package command
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,7 +24,6 @@ type settingsFlags struct {
 	cpus         int
 	memory       int
 	autoUpdate   bool
-	backupPath   string
 	autoBackup   bool
 	dataPath     string
 	healthPath   string
@@ -47,16 +45,17 @@ func (f *settingsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.cpus, "cpus", defaults.Resources.CPUs, "CPU limit for the container")
 	cmd.Flags().IntVar(&f.memory, "memory", defaults.Resources.MemoryMB, "memory limit in MB for the container")
 	cmd.Flags().BoolVar(&f.autoUpdate, "auto-update", defaults.AutoUpdate, "automatically update the application")
-	cmd.Flags().StringVar(&f.backupPath, "backup-path", defaults.Backup.Path, "path for backups")
-	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", defaults.Backup.AutoBackup, "enable automatic backups")
+	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", defaults.Backup.AutoBackup, "include this application in backups")
 	cmd.Flags().StringVar(&f.dataPath, "data-path", defaults.Profile.DataPath, "path where the application keeps its data (default: /storage and /rails/storage)")
 	cmd.Flags().StringVar(&f.healthPath, "health-check-path", defaults.Profile.HealthPath, "path the application answers health checks on (default: /up)")
 	cmd.Flags().StringVar(&f.urlEnvVar, "url-env-var", defaults.Profile.URLEnvVar, "environment variable to fill with the application's URL")
 
-	// Removed flag, kept registered (hidden) so it fails with a clean-break
-	// error naming its replacement instead of cobra's "unknown flag".
+	// Removed flags, kept registered (hidden) so they fail with a clean-break
+	// error naming their replacement instead of cobra's "unknown flag".
 	cmd.Flags().Bool("tailscale", false, "")
 	_ = cmd.Flags().MarkHidden("tailscale")
+	cmd.Flags().String("backup-path", "", "")
+	_ = cmd.Flags().MarkHidden("backup-path")
 }
 
 // checkRemoved fails a command that was invoked with a removed flag, naming
@@ -64,6 +63,9 @@ func (f *settingsFlags) register(cmd *cobra.Command) {
 func (f *settingsFlags) checkRemoved(cmd *cobra.Command) error {
 	if cmd.Flags().Changed("tailscale") {
 		return errors.New("the --tailscale flag has been removed: use --expose tailnet instead")
+	}
+	if cmd.Flags().Changed("backup-path") {
+		return errors.New("the --backup-path flag has been removed: backups go to the shared repo now, see `once backup enable`")
 	}
 	return nil
 }
@@ -74,10 +76,6 @@ func (f *settingsFlags) buildSettings(entry catalog.App, host string, exposure d
 	envVars, err := f.parseEnvVars()
 	if err != nil {
 		return docker.ApplicationSettings{}, err
-	}
-
-	if f.backupPath != "" && !filepath.IsAbs(f.backupPath) {
-		return docker.ApplicationSettings{}, docker.ErrBackupPathRelative
 	}
 
 	// Start from the defaults so fields without a flag keep their default value.
@@ -109,10 +107,7 @@ func (f *settingsFlags) buildSettings(entry catalog.App, host string, exposure d
 		MemoryMB: f.memory,
 	}
 	s.AutoUpdate = f.autoUpdate
-	s.Backup = docker.BackupSettings{
-		Path:       f.backupPath,
-		AutoBackup: f.autoBackup,
-	}
+	s.Backup = docker.BackupSettings{AutoBackup: f.autoBackup}
 
 	return s, nil
 }
@@ -170,12 +165,6 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 			s.Host = ""
 		}
 		s.Exposure = exposure
-	}
-	if cmd.Flags().Changed("backup-path") {
-		if f.backupPath != "" && !filepath.IsAbs(f.backupPath) {
-			return s, docker.ErrBackupPathRelative
-		}
-		s.Backup.Path = f.backupPath
 	}
 	if cmd.Flags().Changed("auto-backup") {
 		s.Backup.AutoBackup = f.autoBackup

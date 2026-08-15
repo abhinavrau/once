@@ -32,9 +32,13 @@ type ContainerResources struct {
 	MemoryMB int `json:"memoryMB,omitempty"`
 }
 
+// BackupSettings holds an app's participation in the install-wide Backup Run.
+// The per-app path is gone: backups go to the shared Backup Repo now. The old
+// nested "path" key needs no removedSettingsFields entry - that denylist
+// operates on top-level keys, and encoding/json drops unmodelled nested keys
+// on the next rewrite anyway.
 type BackupSettings struct {
-	Path       string `json:"path,omitempty"`
-	AutoBackup bool   `json:"autoBackup,omitempty"`
+	AutoBackup bool `json:"autoBackup,omitempty"`
 }
 
 // removedSettingsFields are label fields older versions of Once wrote that no
@@ -97,9 +101,6 @@ func (s ApplicationSettings) Marshal() string {
 func (s ApplicationSettings) Validate() error {
 	if s.Image == "" {
 		return ErrImageRequired
-	}
-	if s.Backup.AutoBackup && s.Backup.Path == "" {
-		return ErrAutoBackupWithoutPath
 	}
 	if p := s.Profile.DataPath; p != "" && (!strings.HasPrefix(p, "/") || p == "/") {
 		return ErrDataPathInvalid

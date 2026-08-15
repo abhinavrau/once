@@ -440,6 +440,28 @@ func (n *Namespace) LoadState(ctx context.Context) (*State, error) {
 	return n.proxy.LoadState(ctx)
 }
 
+// BackupRepoSettings reads the install-wide Backup Repo settings from the
+// proxy label; the zero value means backups have never been configured.
+func (n *Namespace) BackupRepoSettings() BackupRepoSettings {
+	if n.proxy.Settings == nil {
+		return BackupRepoSettings{}
+	}
+	return n.proxy.Settings.Backups
+}
+
+// SetBackupRepoSettings persists the Backup Repo settings on the proxy label,
+// booting the proxy first when the namespace has never been set up.
+func (n *Namespace) SetBackupRepoSettings(ctx context.Context, backups BackupRepoSettings) error {
+	if n.proxy.Settings == nil {
+		if err := n.Setup(ctx); err != nil {
+			return fmt.Errorf("%w: %w", ErrSetupFailed, err)
+		}
+	}
+	settings := *n.proxy.Settings
+	settings.Backups = backups
+	return n.proxy.UpdateSettings(ctx, settings)
+}
+
 func (n *Namespace) SaveState(ctx context.Context, state *State) error {
 	return n.proxy.SaveState(ctx, state)
 }

@@ -25,7 +25,6 @@ var (
 	ErrInvalidBackup         = errors.New("invalid backup archive")
 	ErrImageRequired         = errors.New("image is required")
 	ErrBackupPathRelative    = errors.New("backup path must be absolute")
-	ErrAutoBackupWithoutPath = errors.New("auto-backup requires a backup path")
 	ErrDataPathInvalid       = errors.New("data path must be absolute and must not be /")
 	ErrHealthPathInvalid     = errors.New("health check path must begin with /")
 	ErrURLEnvVarInvalid      = errors.New("url env var must not contain =")

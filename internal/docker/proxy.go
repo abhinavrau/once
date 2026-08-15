@@ -37,6 +37,10 @@ type ProxySettings struct {
 	HTTPPort    int `json:"httpPort"`
 	HTTPSPort   int `json:"httpsPort"`
 	MetricsPort int `json:"metricsPort"`
+	// Backups holds the install-wide Backup Repo settings. Proxy settings go
+	// on the proxy container, and the Proxy is the one container every install
+	// has - so install-wide settings live here too (ADR-0014).
+	Backups BackupRepoSettings `json:"backups,omitzero"`
 
 	labelExtra
 }
@@ -146,6 +150,18 @@ func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) error {
 
 	p.Settings = &settings
 	return nil
+}
+
+// UpdateSettings rewrites the proxy's settings label. Docker labels are
+// immutable, so the container is removed and booted again with the new
+// settings; the named volume stays, so kamal-proxy's routes, certs and Once's
+// state file all survive the roll.
+func (p *Proxy) UpdateSettings(ctx context.Context, settings ProxySettings) error {
+	if err := p.namespace.client.ContainerRemove(ctx, p.containerName(), container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("removing proxy container: %w", err)
+	}
+	p.Settings = nil
+	return p.Boot(ctx, settings)
 }
 
 func (p *Proxy) Destroy(ctx context.Context) error {

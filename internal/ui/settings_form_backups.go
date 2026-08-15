@@ -1,28 +1,25 @@
 package ui
 
 import (
-	"context"
-
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/basecamp/once/internal/docker"
 )
 
+// SettingsFormBackups is the per-app side of backups: one participation
+// checkbox. The Backup Repo itself (path, offsite, password) is install-wide
+// and configured via `once backup enable`, not per app.
 type SettingsFormBackups struct {
 	settingsFormBase
 }
 
 func NewSettingsFormBackups(app *docker.Application, lastResult *docker.OperationResult) SettingsFormBackups {
-	pathField := NewTextField("/path/to/backups")
-	pathField.SetValue(app.Settings.Backup.Path)
-
-	autoBackupField := NewCheckboxField("Automatically create backups", app.Settings.Backup.AutoBackup)
+	autoBackupField := NewCheckboxField("Include this app in backups", app.Settings.Backup.AutoBackup)
 
 	m := SettingsFormBackups{
 		settingsFormBase: settingsFormBase{
 			title: "Backups",
 			form: NewForm("Done",
-				FormItem{Key: "path", Label: "Backup location", Field: pathField},
 				FormItem{Key: "auto-backup", Label: "Backups", Field: autoBackupField},
 			),
 		},
@@ -32,14 +29,8 @@ func NewSettingsFormBackups(app *docker.Application, lastResult *docker.Operatio
 		return formatOperationStatus("backup", lastResult)
 	}
 
-	m.form.SetActionButton("Run backup now", func() tea.Msg {
-		return settingsRunActionMsg{action: func(_ docker.DeployProgressCallback) (string, error) {
-			return "Backup complete", runBackup(app, pathField.Value())
-		}}
-	})
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		s := app.Settings
-		s.Backup.Path = f.TextField("path").Value()
 		s.Backup.AutoBackup = f.CheckboxField("auto-backup").Checked()
 		return func() tea.Msg { return SettingsSectionSubmitMsg{Settings: s} }
 	})
@@ -54,10 +45,4 @@ func (m SettingsFormBackups) Update(msg tea.Msg) (SettingsSection, tea.Cmd) {
 	var cmd tea.Cmd
 	m.settingsFormBase, cmd = m.update(msg)
 	return m, cmd
-}
-
-// Helpers
-
-func runBackup(app *docker.Application, dir string) error {
-	return app.BackupToFile(context.Background(), dir, app.BackupName())
 }

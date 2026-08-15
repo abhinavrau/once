@@ -302,51 +302,13 @@ func TestSettingsFormResources_Cancel(t *testing.T) {
 	assert.True(t, ok, "expected SettingsSectionCancelMsg, got %T", msg)
 }
 
-func TestSettingsFormBackups_ActionReadsCurrentFieldValue(t *testing.T) {
-	app := &docker.Application{
-		Settings: docker.ApplicationSettings{
-			Name:   "chat",
-			Backup: docker.BackupSettings{Path: "/old/path"},
-		},
-	}
-	form := NewSettingsFormBackups(app, nil)
-
-	assert.Equal(t, "/old/path", form.form.TextField("path").Value())
-
-	// Type a new path into the field
-	form.form.TextField("path").SetValue("/new/path")
-
-	// Tab to Done, then to the action button, then press enter
-	backupsPressTab(&form)
-	backupsPressTab(&form)
-	backupsPressTab(&form)
-	assert.Equal(t, form.form.actionIndex(), form.form.Focused(), "action button focused")
-
-	result, cmd := form.Update(keyPressMsg("enter"))
-	form = result.(SettingsFormBackups)
-	require.NotNil(t, cmd)
-	msg := cmd()
-	actionMsg, ok := msg.(settingsRunActionMsg)
-	require.True(t, ok, "expected settingsRunActionMsg, got %T", msg)
-
-	// Run the action — it will fail (no Docker) but should use the new path
-	_, err := actionMsg.action(nil)
-	require.Error(t, err)
-	// The error should NOT be "backup location is required", proving it read "/new/path"
-	assert.NotContains(t, err.Error(), "backup location is required")
-}
-
 func TestSettingsFormBackups_Submit(t *testing.T) {
 	app := &docker.Application{
 		Settings: docker.ApplicationSettings{Name: "chat"},
 	}
 	form := NewSettingsFormBackups(app, nil)
 
-	// Type a path
-	backupsTypeText(&form, "/my/backups")
-	backupsPressTab(&form)
-
-	// Toggle auto-backup
+	// Toggle participation
 	backupsPressSpace(&form)
 
 	// Tab to Done
@@ -358,7 +320,6 @@ func TestSettingsFormBackups_Submit(t *testing.T) {
 	msg := cmd()
 	submitMsg, ok := msg.(SettingsSectionSubmitMsg)
 	require.True(t, ok, "expected SettingsSectionSubmitMsg, got %T", msg)
-	assert.Equal(t, "/my/backups", submitMsg.Settings.Backup.Path)
 	assert.True(t, submitMsg.Settings.Backup.AutoBackup)
 }
 
@@ -407,11 +368,6 @@ func backupsPressSpace(form *SettingsFormBackups) {
 	updateSettingsForm(form, keyPressMsg(" "))
 }
 
-func backupsTypeText(form *SettingsFormBackups, text string) {
-	for _, r := range text {
-		updateSettingsForm(form, keyPressMsg(string(r)))
-	}
-}
 
 func TestSettingsFormEnvironment_InitialState_Empty(t *testing.T) {
 	form := NewSettingsFormEnvironment(docker.ApplicationSettings{})

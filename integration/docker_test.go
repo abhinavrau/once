@@ -725,7 +725,7 @@ func TestDeployWithSettings(t *testing.T) {
 		},
 		Resources:  docker.ContainerResources{CPUs: 1, MemoryMB: 512},
 		AutoUpdate: false,
-		Backup:     docker.BackupSettings{Path: "/backups", AutoBackup: true},
+		Backup:     docker.BackupSettings{AutoBackup: true},
 	}
 
 	app := deployApp(t, ctx, ns, settings)
@@ -742,7 +742,6 @@ func TestDeployWithSettings(t *testing.T) {
 	assert.Equal(t, "smtp.example.com", restored.Settings.SMTP.Server)
 	assert.Equal(t, "587", restored.Settings.SMTP.Port)
 	assert.False(t, restored.Settings.AutoUpdate)
-	assert.Equal(t, "/backups", restored.Settings.Backup.Path)
 	assert.True(t, restored.Settings.Backup.AutoBackup)
 
 	// Verify container env vars

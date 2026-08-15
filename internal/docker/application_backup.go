@@ -21,21 +21,12 @@ import (
 )
 
 const (
-	BackupDataDir   = "data"
-	BackupRetention = 30 * 24 * time.Hour
+	BackupDataDir = "data"
 
 	backupAppSettingsEntry = "once.application.json"
 	backupVolSettingsEntry = "once.volume.json"
 	backupTimeFormat       = "20060102-150405"
 )
-
-func (a *Application) Backup(ctx context.Context) error {
-	if a.Settings.Backup.Path == "" {
-		return fmt.Errorf("backup location is required")
-	}
-
-	return a.BackupToFile(ctx, a.Settings.Backup.Path, a.BackupName())
-}
 
 func (a *Application) BackupName() string {
 	return fmt.Sprintf("%s-%s.tar", a.Settings.Name, time.Now().Format(backupTimeFormat))
@@ -71,43 +62,6 @@ func (a *Application) BackupToFile(ctx context.Context, dir string, name string)
 	slog.Info("Created backup file", "app", a.Settings.Name, "filename", filePath)
 
 	return nil
-}
-
-func (a *Application) TrimBackups() error {
-	if a.Settings.Backup.Path == "" {
-		return nil
-	}
-
-	entries, err := os.ReadDir(a.Settings.Backup.Path)
-	if err != nil {
-		return fmt.Errorf("reading backup directory: %w", err)
-	}
-
-	var errs []error
-	cutoff := time.Now().Add(-BackupRetention)
-
-	for _, entry := range entries {
-		if !entry.Type().IsRegular() {
-			continue
-		}
-
-		t, ok := parseBackupTime(a.Settings.Name, entry.Name())
-		if !ok {
-			continue
-		}
-
-		if t.Before(cutoff) {
-			filename := filepath.Join(a.Settings.Backup.Path, entry.Name())
-			if err := os.Remove(filename); err != nil {
-				slog.Error("Failed to remove expired backup file", "app", a.Settings.Name, "filename", filename, "error", err)
-				errs = append(errs, err)
-			} else {
-				slog.Info("Removed expired backup file", "app", a.Settings.Name, "filename", filename)
-			}
-		}
-	}
-
-	return errors.Join(errs...)
 }
 
 func (a *Application) Restore(ctx context.Context, volSettings ApplicationVolumeSettings, volumeData []byte) (returnErr error) {
@@ -331,25 +285,6 @@ func (a *Application) tryHookScript(ctx context.Context, containerName, name str
 }
 
 // Helpers
-
-func parseBackupTime(appName, filename string) (time.Time, bool) {
-	prefix := appName + "-"
-	suffix := ".tar.gz"
-
-	if !strings.HasPrefix(filename, prefix) || !strings.HasSuffix(filename, suffix) {
-		return time.Time{}, false
-	}
-
-	middle := strings.TrimPrefix(filename, prefix)
-	middle = strings.TrimSuffix(middle, suffix)
-
-	t, err := time.Parse(backupTimeFormat, middle)
-	if err != nil {
-		return time.Time{}, false
-	}
-
-	return t, true
-}
 
 func writeTarEntry(tw *tar.Writer, name string, data []byte) error {
 	header := &tar.Header{
