@@ -37,6 +37,10 @@ const (
 
 // resticRepo addresses one restic repository for a single command.
 type resticRepo struct {
+	// name is RepoNameLocal or RepoNameOffsite: what results are recorded
+	// under, and what status lines and per-repo errors call this repo. Never
+	// the URL - that can carry a credential.
+	name string
 	// repository is RESTIC_REPOSITORY as seen inside the container.
 	repository string
 	// displayName is the repository as the user configured it. It differs
@@ -109,10 +113,14 @@ func (n *Namespace) LatestOffsiteSnapshot(ctx context.Context, appName string) (
 // Private
 
 // runRestic runs one restic command in its own container: create, start,
-// wait, collect logs, remove. One container per command keeps the exit code
-// on the ContainerWait seam (the whole init protocol is exit-code driven) and
+// stream logs, wait, remove. One container per command keeps the exit code on
+// the ContainerWait seam (the whole init protocol is exit-code driven) and
 // lets each command address a different repo with its own environment.
-func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...string) (resticResult, error) {
+//
+// onLine, when set, sees each stdout line as it arrives rather than after the
+// container exits - which is what makes an upload's `--json` status stream
+// renderable while a person is still waiting on it. nil is the normal case.
+func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, onLine func(string), args ...string) (resticResult, error) {
 	if err := n.ensureResticImage(ctx); err != nil {
 		return resticResult{}, err
 	}
@@ -172,6 +180,14 @@ func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...stri
 		return resticResult{}, fmt.Errorf("starting restic container: %w", err)
 	}
 
+	// Following the logs first is what makes them live; the stream ends when
+	// the container exits, so the wait below returns immediately after and the
+	// exit code still comes off ContainerWait.
+	stdout, stderr, err := n.streamContainerLogs(ctx, resp.ID, onLine)
+	if err != nil {
+		return resticResult{}, err
+	}
+
 	waitCh, errCh := n.client.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
 	var exitCode int
 	select {
@@ -181,11 +197,6 @@ func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...stri
 		return resticResult{}, fmt.Errorf("waiting for restic: %w", err)
 	}
 
-	stdout, stderr, err := n.collectContainerLogs(ctx, resp.ID)
-	if err != nil {
-		return resticResult{}, err
-	}
-
 	return resticResult{exitCode: exitCode, stdout: stdout, stderr: stderr}, nil
 }
 
@@ -193,27 +204,32 @@ func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...stri
 // recovery: on a lock failure, unlock --remove-all against that repo, log at
 // warn, and retry the command once. Never scheduled or unconditional - a
 // shared offsite repo may hold another host's live lock.
-func (n *Namespace) runResticRetryLock(ctx context.Context, repo resticRepo, args ...string) (resticResult, error) {
-	res, err := n.runRestic(ctx, repo, args...)
+func (n *Namespace) runResticRetryLock(ctx context.Context, repo resticRepo, onLine func(string), args ...string) (resticResult, error) {
+	res, err := n.runRestic(ctx, repo, onLine, args...)
 	if err != nil || res.exitCode != resticExitLockFailure {
 		return res, err
 	}
 
 	slog.Warn("restic repository is locked; removing stale locks and retrying once", "repository", repo.displayName)
-	if unlockRes, unlockErr := n.runRestic(ctx, repo, "unlock", "--remove-all"); unlockErr != nil {
+	if unlockRes, unlockErr := n.runRestic(ctx, repo, nil, "unlock", "--remove-all"); unlockErr != nil {
 		return res, unlockErr
 	} else if unlockRes.exitCode != 0 {
 		return res, fmt.Errorf("restic unlock failed: %s", unlockRes.failure())
 	}
 
-	return n.runRestic(ctx, repo, args...)
+	return n.runRestic(ctx, repo, onLine, args...)
 }
 
 // ensureRepo probes the repo with cat config and initializes it on exit 10.
 // init's exit 1 is never treated as "already exists" - it also covers
 // permission and backend errors.
-func (n *Namespace) ensureRepo(ctx context.Context, repo resticRepo) error {
-	res, err := n.runResticRetryLock(ctx, repo, "cat", "config")
+//
+// Both steps are network round trips against a backend, and both can take
+// minutes on a fresh remote repo, so each announces itself: with no output of
+// their own to stream, a status line is the only progress they can offer.
+func (n *Namespace) ensureRepo(ctx context.Context, repo resticRepo, progress DeployProgressCallback) error {
+	reportWaiting(progress, "checking "+repo.name)
+	res, err := n.runResticRetryLock(ctx, repo, nil, "cat", "config")
 	if err != nil {
 		return err
 	}
@@ -226,7 +242,8 @@ func (n *Namespace) ensureRepo(ctx context.Context, repo resticRepo) error {
 		if len(initArgs) == 0 {
 			initArgs = []string{"init"}
 		}
-		initRes, err := n.runRestic(ctx, repo, initArgs...)
+		reportWaiting(progress, "creating "+repo.name)
+		initRes, err := n.runRestic(ctx, repo, nil, initArgs...)
 		if err != nil {
 			return err
 		}
@@ -246,7 +263,7 @@ func (n *Namespace) ensureRepo(ctx context.Context, repo resticRepo) error {
 // asking a question must never be a reason to remove another host's lock from
 // a shared repo.
 func (n *Namespace) latestSnapshot(ctx context.Context, repo resticRepo, appName string) (time.Time, error) {
-	res, err := n.runRestic(ctx, repo, resticLatestSnapshotArgs(n.name, appName)...)
+	res, err := n.runRestic(ctx, repo, nil, resticLatestSnapshotArgs(n.name, appName)...)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -280,15 +297,22 @@ func (n *Namespace) ensureResticImage(ctx context.Context) error {
 	return nil
 }
 
-func (n *Namespace) collectContainerLogs(ctx context.Context, containerID string) (string, string, error) {
-	logs, err := n.client.ContainerLogs(ctx, containerID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+// streamContainerLogs follows the container's output until it exits,
+// accumulating both streams and, when onLine is set, handing each stdout line
+// to it as it arrives.
+func (n *Namespace) streamContainerLogs(ctx context.Context, containerID string, onLine func(string)) (string, string, error) {
+	logs, err := n.client.ContainerLogs(ctx, containerID, container.LogsOptions{ShowStdout: true, ShowStderr: true, Follow: true})
 	if err != nil {
 		return "", "", fmt.Errorf("reading restic logs: %w", err)
 	}
 	defer logs.Close()
 
 	var stdout, stderr strings.Builder
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, logs); err != nil {
+	var out io.Writer = &stdout
+	if onLine != nil {
+		out = io.MultiWriter(&stdout, &lineWriter{fn: onLine})
+	}
+	if _, err := stdcopy.StdCopy(out, &stderr, logs); err != nil {
 		return "", "", fmt.Errorf("demuxing restic logs: %w", err)
 	}
 	return stdout.String(), stderr.String(), nil
@@ -296,19 +320,20 @@ func (n *Namespace) collectContainerLogs(ctx context.Context, containerID string
 
 // Helpers
 
-// namedResticRepo pairs a repo with the name its results are recorded and
-// logged under: check covers a repo, not an app.
-type namedResticRepo struct {
-	name string
-	repo resticRepo
+// reportWaiting announces a step with no output of its own. nil is the
+// legitimate headless adapter (ADR-0012) and stays free.
+func reportWaiting(progress DeployProgressCallback, status string) {
+	if progress != nil {
+		progress(DeployProgress{Stage: DeployStageWaiting, Status: status})
+	}
 }
 
 // configuredResticRepos lists the repos a Backup Run addresses, in order. A
 // non-empty OffsiteURL is the offsite switch; there is no separate flag.
-func configuredResticRepos(cfg BackupRepoSettings) []namedResticRepo {
-	repos := []namedResticRepo{{name: RepoNameLocal, repo: localResticRepo(cfg)}}
+func configuredResticRepos(cfg BackupRepoSettings) []resticRepo {
+	repos := []resticRepo{localResticRepo(cfg)}
 	if cfg.OffsiteURL != "" {
-		repos = append(repos, namedResticRepo{name: RepoNameOffsite, repo: offsiteResticRepo(cfg)})
+		repos = append(repos, offsiteResticRepo(cfg))
 	}
 	return repos
 }
@@ -316,6 +341,7 @@ func configuredResticRepos(cfg BackupRepoSettings) []namedResticRepo {
 // localResticRepo addresses the local Backup Repo on disk.
 func localResticRepo(cfg BackupRepoSettings) resticRepo {
 	return resticRepo{
+		name:         RepoNameLocal,
 		repository:   resticRepoMount,
 		displayName:  cfg.LocalPath,
 		password:     cfg.Password,
@@ -336,6 +362,7 @@ func offsiteResticRepo(cfg BackupRepoSettings) resticRepo {
 	env["RESTIC_FROM_REPOSITORY"] = resticRepoMount
 	env["RESTIC_FROM_PASSWORD"] = cfg.Password
 	repo := resticRepo{
+		name:         RepoNameOffsite,
 		repository:   cfg.OffsiteURL,
 		displayName:  cfg.OffsiteURL,
 		password:     cfg.Password,

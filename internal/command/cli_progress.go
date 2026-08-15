@@ -93,6 +93,11 @@ func (m *cliProgress) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case docker.DeployStageWaiting:
 			m.stage = msg.p.Status
 			m.progress = m.progress.SetPercent(-1)
+		case docker.DeployStageUploading:
+			// A measured send: the status names what is going out, the bar
+			// says how far. "downloading" would be the wrong word entirely.
+			m.stage = msg.p.Status
+			m.progress = m.progress.SetPercent(msg.p.Percentage)
 		}
 		return m, m.waitForProgress()
 

@@ -144,8 +144,8 @@ func (e *backupEnableCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 	// The probe error comes back verbatim from restic; the settings - and
 	// the password ConfigureBackups mints when none exists - are already
 	// persisted, so a retry reuses them. Read them back for the kit.
-	if err := runWithProgress("Validating backup repositories", func(docker.DeployProgressCallback) error {
-		return ns.ConfigureBackups(ctx, settings)
+	if err := runWithProgress("Validating backup repositories", func(progress docker.DeployProgressCallback) error {
+		return ns.ConfigureBackups(ctx, settings, progress)
 	}); err != nil {
 		return err
 	}

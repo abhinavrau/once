@@ -22,12 +22,17 @@ const (
 	DeployStageStarting
 	DeployStageFinished
 	DeployStageWaiting
+	// DeployStageUploading is a measured transfer out of this host - the
+	// offsite backup leg. It carries a Percentage like a download does, and a
+	// Status naming what is being uploaded, because "downloading" is the wrong
+	// word for the one step that sends data away.
+	DeployStageUploading
 )
 
 type DeployProgress struct {
 	Stage      DeployStage
 	Percentage int
-	Status     string // human-readable description for DeployStageWaiting
+	Status     string // human-readable description for DeployStageWaiting and DeployStageUploading
 }
 
 type DeployProgressCallback func(DeployProgress)

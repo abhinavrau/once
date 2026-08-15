@@ -12,11 +12,14 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-func TestProgressBarPercent_DownloadStageDrivesThePercent(t *testing.T) {
+// A measured transfer drives the bar whichever way the bytes are going: a
+// pull in, or the offsite backup leg out.
+func TestProgressBarPercent_TransferStagesDriveThePercent(t *testing.T) {
 	assert.Equal(t, 42, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageDownloading, Percentage: 42}))
+	assert.Equal(t, 42, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageUploading, Percentage: 42, Status: "uploading offsite"}))
 }
 
-func TestProgressBarPercent_NonDownloadStagesAreIndeterminate(t *testing.T) {
+func TestProgressBarPercent_NonTransferStagesAreIndeterminate(t *testing.T) {
 	const indeterminate = -1
 	assert.Equal(t, indeterminate, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageStarting}))
 	assert.Equal(t, indeterminate, progressBarPercent(docker.DeployProgress{Stage: docker.DeployStageWaiting, Status: "verifying"}))
