@@ -28,6 +28,15 @@ const (
 	resticCacheMount   = "/root/.cache/restic"
 )
 
+// The tag prefixes every Backup Run snapshot carries. restic keeps no other
+// per-snapshot metadata, and a bare-metal restore has to read the app name and
+// the image ref before it has an archive to open - so they travel as tags.
+// Tags play no part in retention: forget groups by host,paths.
+const (
+	snapshotAppTag   = "app:"
+	snapshotImageTag = "image:"
+)
+
 // restic exit codes the engine drives on (restic >= 0.17).
 const (
 	resticExitNoRepository  = 10
@@ -395,6 +404,20 @@ func resticBackupArgs(namespace, appName, image string) []string {
 	return append(args, resticStagingMount+"/"+appName+".tar")
 }
 
+// resticRepoSnapshotsArgs asks a repo for everything it holds - the discovery
+// listing. --no-lock keeps it a pure question: a repo shared with another host
+// must not gain a lock because somebody listed it.
+func resticRepoSnapshotsArgs() []string {
+	return []string{"snapshots", "--json", "--no-lock"}
+}
+
+// resticRestoreArgs restores the Staging Directory subfolder of a snapshot
+// into the Staging Directory: the snapshot holds exactly one file, the app's
+// archive, at the fixed in-container path every Backup Run writes.
+func resticRestoreArgs(snapshotID string) []string {
+	return []string{"restore", snapshotID + ":" + resticStagingMount, "--target", resticStagingMount}
+}
+
 // resticLatestSnapshotArgs asks a repo for one app's newest snapshot - the
 // staleness signal. It stays a pure question: --no-lock writes nothing at all
 // to a repo that may be shared with another host, and --host scopes the
@@ -425,14 +448,16 @@ func resticCheckArgs() []string {
 }
 
 // backupDiskCheck fails when the staging device holds less than twice the
-// app's last archive size. A zero baseline (newly participating app) skips
-// the check - there is nothing to size against.
-func backupDiskCheck(freeBytes uint64, lastArchiveBytes int64) error {
-	if lastArchiveBytes <= 0 {
+// archive it is about to hold - the app's last one when backing up, the
+// snapshot's own when restoring. A zero baseline (a newly participating app, a
+// snapshot from a restic too old to record its size) skips the check: there is
+// nothing to size against.
+func backupDiskCheck(freeBytes uint64, archiveBytes int64) error {
+	if archiveBytes <= 0 {
 		return nil
 	}
-	if freeBytes < 2*uint64(lastArchiveBytes) {
-		return fmt.Errorf("not enough free disk to stage the backup: %d bytes free, need %d (2x the last archive)", freeBytes, 2*lastArchiveBytes)
+	if freeBytes < 2*uint64(archiveBytes) {
+		return fmt.Errorf("not enough free disk in the staging directory: %d bytes free, need %d (2x the archive)", freeBytes, 2*archiveBytes)
 	}
 	return nil
 }

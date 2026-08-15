@@ -21,8 +21,12 @@ build-all:
 test:
 	go test ./internal/...
 
+# The timeout is explicit because go's 10m default is now shorter than the
+# suite: a healthy run takes about that long in real Docker work, so the
+# default started reporting a passing suite as a timeout panic - which reads
+# exactly like a hung test.
 integration:
-	go test -v -count=1 ./integration/...
+	go test -v -count=1 -timeout 25m ./integration/...
 
 lint:
 	golangci-lint run

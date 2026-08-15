@@ -5,15 +5,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/basecamp/once/internal/docker"
-	"github.com/basecamp/once/internal/ui"
 )
 
 // resticBackendEnvVars are the backend credentials restic reads from its own
@@ -91,6 +92,9 @@ func (r *restoreCommand) runFromRepo(ctx context.Context, ns *docker.Namespace, 
 	}
 
 	if len(args) == 0 {
+		if r.list || r.snapshot != "" {
+			return fmt.Errorf("--list and --snapshot need an application name; run `once restore --repo %s` to see them", repo.URL)
+		}
 		fmt.Print(formatRepoListing(repo.URL, snapshots.Apps()))
 		return nil
 	}
@@ -139,6 +143,9 @@ func (r *restoreCommand) resolveRepo(cfg docker.BackupRepoSettings) (docker.Rest
 	if repo.URL == "" {
 		return repo, errors.New("no backup repository: pass --repo <url>, or a backup file to restore from")
 	}
+	if err := docker.ValidateRepoURL(repo.URL); err != nil {
+		return repo, err
+	}
 
 	password, err := resolveRepoPassword(repo.URL, cfg)
 	if err != nil {
@@ -149,28 +156,28 @@ func (r *restoreCommand) resolveRepo(cfg docker.BackupRepoSettings) (docker.Rest
 	return repo, nil
 }
 
+// pickSnapshot chooses from one application's history, which the caller has
+// already narrowed.
 func (r *restoreCommand) pickSnapshot(history docker.RepoSnapshots, appName string) (docker.RepoSnapshot, error) {
 	if r.snapshot == "" {
-		pick, _ := history.Latest(appName)
-		return pick, nil
+		return history[len(history)-1], nil
 	}
-	pick, ok := history.Find(appName, r.snapshot)
-	if !ok {
-		return pick, fmt.Errorf("no snapshot %s of %s; run the same command with --list to see the ids", r.snapshot, appName)
+	for _, snapshot := range history {
+		if snapshot.ID == r.snapshot {
+			return snapshot, nil
+		}
 	}
-	return pick, nil
+	return docker.RepoSnapshot{}, fmt.Errorf("no snapshot %s of %s; run the same command with --list to see the ids", r.snapshot, appName)
 }
 
 // offerResumeBackups closes the trap of recovering onto a host that then never
-// backs up. Only after a restore from a repository this install was not
-// already backing up to: restoring from the configured local repo changes
-// nothing about the configuration.
+// backs up again.
 func (r *restoreCommand) offerResumeBackups(ctx context.Context, ns *docker.Namespace, repo docker.RestoreRepo, cfg docker.BackupRepoSettings) error {
-	if cfg.Enabled || repo.URL == cfg.LocalPath {
+	if !shouldOfferResume(repo.URL, cfg) {
 		return nil
 	}
 	if !isTerminal() || !confirm("Resume backups to this repo?") {
-		fmt.Printf("Backups are not enabled. Run `once backup enable --offsite-url %s` to back up to this repository.\n", repo.URL)
+		fmt.Printf("Backups are not enabled. Run `RESTIC_PASSWORD=<the password you just used> once backup enable --offsite-url %s` to back up to this repository.\n", repo.URL)
 		return nil
 	}
 
@@ -188,12 +195,8 @@ func (r *restoreCommand) offerResumeBackups(ctx context.Context, ns *docker.Name
 	settings = ns.BackupRepoSettings()
 
 	confirmed, err := takeCustody(settings)
-	if err != nil {
+	if err != nil || !confirmed {
 		return err
-	}
-	if !confirmed {
-		fmt.Println("Backups are NOT enabled. The password and settings are saved; run `once backup enable` to confirm the password and turn them on.")
-		return nil
 	}
 	if err := ns.EnableBackups(ctx); err != nil {
 		return fmt.Errorf("enabling backups: %w", err)
@@ -252,11 +255,26 @@ func resolveRepoPassword(repoURL string, cfg docker.BackupRepoSettings) (string,
 	return docker.NormalizeRepoPassword(typed), nil
 }
 
+// shouldOfferResume: only an install with no Backup Repo of its own is offered
+// one. An install that already has a repo - enabled or merely configured - has
+// a password and a local path of its own, and resuming would have to overwrite
+// both with the recovered repo's, which is a decision `once backup enable`
+// should be asked for explicitly rather than folded into a restore.
+func shouldOfferResume(repoURL string, cfg docker.BackupRepoSettings) bool {
+	return !cfg.Enabled && !cfg.Configured() && repoURL != cfg.LocalPath
+}
+
 // restoreRepoEnv gathers the backend credentials for the repository. The
 // stored ones come first so a configured install can read its own offsite repo
 // with no ceremony; Once's own environment then wins, because exporting a
-// variable is a deliberate act.
+// variable is a deliberate act. A repository that is a filesystem path reaches
+// no backend, so it carries no credentials - harvesting them would store
+// values the user never named against a repo that cannot use them.
 func restoreRepoEnv(repoURL string, cfg docker.BackupRepoSettings) map[string]string {
+	if filepath.IsAbs(strings.TrimPrefix(repoURL, "local:")) {
+		return nil
+	}
+
 	env := map[string]string{}
 	if repoURL == cfg.OffsiteURL {
 		maps.Copy(env, cfg.OffsiteEnv)
@@ -322,8 +340,14 @@ func pluralize(word string, count int) string {
 // terminal never reaches here: a scripted restore must not hang on a prompt.
 func confirm(question string) bool {
 	fmt.Printf("%s [Y/n] ", question)
-	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil {
+	return readConfirmation(os.Stdin)
+}
+
+func readConfirmation(in io.Reader) bool {
+	answer, err := bufio.NewReader(in).ReadString('\n')
+	// A closed stream with an answer on it still counts: err is io.EOF when
+	// the last line carries no newline.
+	if err != nil && answer == "" {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(answer)) {
@@ -347,13 +371,3 @@ func promptNoEcho(prompt string) (string, error) {
 	return strings.TrimSpace(string(secret)), nil
 }
 
-// takeCustody is the custody moment shared by `backup enable` and the
-// resume-backups prompt: the interactive flow on a terminal, and the banner
-// that never prompts anywhere else.
-func takeCustody(settings docker.BackupRepoSettings) (bool, error) {
-	if !isTerminal() {
-		printRepoPasswordBanner(ui.NewRecoveryKit(settings))
-		return true, nil
-	}
-	return runCustodyFlow(ui.NewRecoveryKit(settings))
-}

@@ -1,6 +1,7 @@
 package command
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,56 @@ func TestResolveRepoWithoutAnyRepository(t *testing.T) {
 	assert.Contains(t, err.Error(), "--repo")
 }
 
+// A relative path would be read inside the restic container, where it means
+// nothing - and the repo would look empty rather than missing.
+func TestResolveRepoRejectsARelativePath(t *testing.T) {
+	_, err := (&restoreCommand{repo: "./backups"}).resolveRepo(docker.BackupRepoSettings{})
+	assert.ErrorIs(t, err, docker.ErrRepoURLInvalid)
+}
+
+// Resuming is offered to an install with no Backup Repo of its own. One that
+// already has a repo has its own password and local path, and overwriting
+// either belongs to an explicit `once backup enable`, not to a restore.
+func TestShouldOfferResume(t *testing.T) {
+	fresh := docker.BackupRepoSettings{}
+	assert.True(t, shouldOfferResume("/mnt/usb/once", fresh))
+
+	configured := configuredBackups()
+	assert.False(t, shouldOfferResume("s3:s3.example.com/bucket/once", configured))
+	assert.False(t, shouldOfferResume("/mnt/usb/once", configured))
+
+	notEnabled := configuredBackups()
+	notEnabled.Enabled = false
+	assert.False(t, shouldOfferResume("/mnt/usb/once", notEnabled),
+		"configured but not enabled still has a password and a path of its own")
+
+	assert.False(t, shouldOfferResume(configured.LocalPath, docker.BackupRepoSettings{LocalPath: configured.LocalPath}),
+		"restoring from the repo already configured here changes nothing")
+}
+
+func TestReadConfirmation(t *testing.T) {
+	assert.True(t, readConfirmation(strings.NewReader("\n")), "the default is yes")
+	assert.True(t, readConfirmation(strings.NewReader("y\n")))
+	assert.True(t, readConfirmation(strings.NewReader("YES\n")))
+	assert.True(t, readConfirmation(strings.NewReader("y")), "an answer with no newline still counts")
+	assert.False(t, readConfirmation(strings.NewReader("n\n")))
+	assert.False(t, readConfirmation(strings.NewReader("no\n")))
+	assert.False(t, readConfirmation(strings.NewReader("")))
+}
+
+// An install enrolling a repository that already exists needs its password:
+// minting a fresh one would leave it unable to open the repo it was pointed
+// at. A stored password always wins, so a retry never regenerates.
+func TestEnableRepoPassword(t *testing.T) {
+	t.Setenv("RESTIC_PASSWORD", "FROMENVIRONMENT")
+
+	assert.Equal(t, "STOREDPASSWORD", enableRepoPassword("STOREDPASSWORD"))
+	assert.Equal(t, "FROMENVIRONMENT", enableRepoPassword(""))
+
+	t.Setenv("RESTIC_PASSWORD", "")
+	assert.Empty(t, enableRepoPassword(""), "with neither, ConfigureBackups mints one")
+}
+
 // RESTIC_PASSWORD is machine-fed and taken verbatim; a password Once did not
 // store and the environment does not hold has to be typed, which the tests
 // cannot do - and neither can a scripted run, which gets told how instead of
@@ -89,13 +140,17 @@ func TestRestoreRepoEnv(t *testing.T) {
 
 	assert.Equal(t, map[string]string{"AWS_ACCESS_KEY_ID": "stored-id"},
 		restoreRepoEnv(cfg.OffsiteURL, cfg))
-	assert.Nil(t, restoreRepoEnv("/mnt/usb/once", cfg),
+	assert.Nil(t, restoreRepoEnv("s3:s3.example.com/other/repo", cfg),
 		"the stored credentials belong to the offsite repo, not to every repo")
 
 	t.Setenv("AWS_ACCESS_KEY_ID", "live-id")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "live-secret")
 	assert.Equal(t, map[string]string{"AWS_ACCESS_KEY_ID": "live-id", "AWS_SECRET_ACCESS_KEY": "live-secret"},
 		restoreRepoEnv(cfg.OffsiteURL, cfg))
+
+	// A repository on disk reaches no backend, so harvesting the environment
+	// would only store credentials the user never named for it.
+	assert.Nil(t, restoreRepoEnv("/mnt/usb/once", cfg))
 }
 
 func TestFormatRepoListing(t *testing.T) {

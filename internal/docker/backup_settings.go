@@ -26,6 +26,10 @@ const (
 // success - a backup that looks identical to a working one and holds nothing.
 var ErrOffsiteURLInvalid = errors.New("offsite repository must be an absolute path or a restic backend URL such as s3:s3.amazonaws.com/bucket/once")
 
+// ErrRepoURLInvalid is the same refusal for a repository named on the command
+// line, where an empty value is not the "off" switch but a mistake.
+var ErrRepoURLInvalid = errors.New("backup repository must be an absolute path or a restic backend URL such as s3:s3.amazonaws.com/bucket/once")
+
 // BackupRepoSettings configures the install-wide Backup Repo. It rides the
 // Proxy's once label as a top-level key (ADR-0014): unknownFields walks only
 // the top level of the decoded type, so an older binary rewriting the proxy
@@ -77,17 +81,24 @@ func (s BackupRepoSettings) offsiteDir() string {
 	return offsiteDirFromURL(s.OffsiteURL)
 }
 
-// ValidateOffsiteURL accepts an empty URL (the offsite leg is off), a
-// filesystem path Once can mount, or anything naming a restic backend by
-// scheme. See ErrOffsiteURLInvalid for what is left.
+// ValidateOffsiteURL accepts an empty URL (the offsite leg is off) alongside
+// everything ValidateRepoURL accepts.
 func ValidateOffsiteURL(url string) error {
-	if url == "" || offsiteDirFromURL(url) != "" {
-		return nil
-	}
-	if scheme, _, found := strings.Cut(url, ":"); found && scheme != "" && scheme != "local" && !strings.ContainsAny(scheme, `/\.`) {
+	if url == "" || addressableRepoURL(url) {
 		return nil
 	}
 	return ErrOffsiteURLInvalid
+}
+
+// ValidateRepoURL accepts a repository Once can actually address: a filesystem
+// path it can bind-mount, or anything naming a restic backend by scheme. A
+// relative path is the one that has to be refused loudly - restic would read
+// it inside the container, where it means nothing.
+func ValidateRepoURL(url string) error {
+	if addressableRepoURL(url) {
+		return nil
+	}
+	return ErrRepoURLInvalid
 }
 
 // GenerateRepoPassword returns the restic repository password: 32 base32
@@ -120,6 +131,16 @@ func NormalizeRepoPassword(s string) string {
 }
 
 // Helpers
+
+// addressableRepoURL reports whether Once can reach the repository at all:
+// a path it can mount, or a backend named by scheme.
+func addressableRepoURL(url string) bool {
+	if offsiteDirFromURL(url) != "" {
+		return true
+	}
+	scheme, _, found := strings.Cut(url, ":")
+	return found && scheme != "" && scheme != "local" && !strings.ContainsAny(scheme, `/\.`)
+}
 
 // offsiteDirFromURL returns the host directory behind a filesystem-path
 // offsite repository, honouring restic's optional local: prefix, and "" for

@@ -202,6 +202,18 @@ func TestRestoreVaultwardenFromRepo(t *testing.T) {
 	require.NotNil(t, older)
 	assert.Equal(t, "vault-data-one", readVaultData(t, ctx, older), "--snapshot restores the older vault, not the newest")
 
+	// The one-liner the restore prints when there is no terminal to ask on has
+	// to actually work: `backup enable` must adopt the password that just
+	// opened the repo instead of minting one it cannot open the offsite with.
+	enabledLocal := filepath.Join(dirs, "enabled")
+	require.NoError(t, runCLI("-n", destName, "backup", "enable",
+		"--local-path", enabledLocal, "--offsite-url", offsiteRepo))
+
+	dest, err = docker.RestoreNamespace(ctx, destName)
+	require.NoError(t, err)
+	assert.Equal(t, password, dest.BackupRepoSettings().Password,
+		"the recovered repo's password is adopted from RESTIC_PASSWORD, never regenerated")
+
 	// Resuming backups: the repo just recovered from becomes the Offsite Repo,
 	// and the fresh local one copies its chunker parameters so a later
 	// `restic copy` backfill stays a one-shot.

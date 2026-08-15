@@ -17,19 +17,6 @@ import (
 	"github.com/basecamp/once/internal/system"
 )
 
-// The tag prefixes every Backup Run snapshot carries. restic keeps no other
-// per-snapshot metadata, and a bare-metal restore has to read the app name and
-// the image ref before it has an archive to open - so they travel as tags.
-// Tags play no part in retention: forget groups by host,paths.
-const (
-	snapshotAppTag   = "app:"
-	snapshotImageTag = "image:"
-)
-
-// ErrBackupInProgress is the flock refusal: staging a restore and staging a
-// backup both write the same Staging Directory, and a backup pauses an app.
-var ErrBackupInProgress = errors.New("a backup is already in progress; try again when it finishes")
-
 // RestoreRepo names a Backup Repo to restore from. Deliberately not
 // BackupRepoSettings: bare-metal recovery starts with no configuration at all
 // - a URL, a password, and whatever the environment holds - so nothing in the
@@ -287,20 +274,6 @@ func localResticRepoFrom(cfg BackupRepoSettings) resticRepo {
 	repo.offsiteRepoDir = offsite.offsiteRepoDir
 	repo.initArgs = []string{"init", "--copy-chunker-params"}
 	return repo
-}
-
-// resticRepoSnapshotsArgs asks a repo for everything it holds. --no-lock keeps
-// it a pure question: a repo shared with another host must not gain a lock
-// because somebody listed it.
-func resticRepoSnapshotsArgs() []string {
-	return []string{"snapshots", "--json", "--no-lock"}
-}
-
-// resticRestoreArgs restores the Staging Directory subfolder of a snapshot
-// into the Staging Directory: the snapshot holds exactly one file, the app's
-// archive, at the fixed in-container path every Backup Run writes.
-func resticRestoreArgs(snapshotID string) []string {
-	return []string{"restore", snapshotID + ":" + resticStagingMount, "--target", resticStagingMount}
 }
 
 // parseRepoSnapshots reads `restic snapshots --json`. Snapshots with no app

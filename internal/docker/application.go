@@ -41,6 +41,10 @@ var (
 		description: "The application couldn't be verified. Please check that you have a valid DNS record set up.",
 	}
 	ErrUnpauseFailed = errors.New("failed to unpause container after backup")
+	// ErrBackupInProgress is the host flock's refusal, reported alike by the
+	// manual export and by a restore: both write the Staging Directory, and a
+	// backup pauses an application.
+	ErrBackupInProgress = errors.New("a backup is already in progress; try again when it finishes")
 )
 
 const (
