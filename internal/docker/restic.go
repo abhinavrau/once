@@ -24,6 +24,7 @@ const ResticImage = "restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a
 const (
 	resticStagingMount = "/staging"
 	resticRepoMount    = "/repo"
+	resticOffsiteMount = "/offsite"
 	resticCacheMount   = "/root/.cache/restic"
 )
 
@@ -38,13 +39,22 @@ const (
 type resticRepo struct {
 	// repository is RESTIC_REPOSITORY as seen inside the container.
 	repository string
-	password   string
+	// displayName is the repository as the user configured it. It differs
+	// from repository whenever the repo is bind-mounted, and it is what logs
+	// and errors must name: "/offsite" means nothing to the person reading.
+	displayName string
+	password    string
 	// env carries backend credentials, splatted into the container
 	// environment - secrets travel by environment, never argv (ADR-0013).
 	env map[string]string
-	// hostPath, when set, is a host directory bind-mounted read-write at
-	// /repo: the local repo. Offsite repos are plain URLs and need no mount.
-	hostPath string
+	// localRepoDir, when set, is a host directory bind-mounted read-write at
+	// /repo: the local Backup Repo. It rides along on offsite commands too,
+	// so init can copy its chunker params.
+	localRepoDir string
+	// offsiteRepoDir, when set, is a host directory bind-mounted read-write
+	// at /offsite: an offsite repository that is a filesystem path - a second
+	// disk or a network mount - rather than a backend URL.
+	offsiteRepoDir string
 	// stagingDir is the host Staging Directory, bind-mounted read-only at
 	// /staging: Once writes the archive, restic only reads it.
 	stagingDir string
@@ -81,6 +91,23 @@ type resticSummary struct {
 	SuggestPrune        bool   `json:"suggest_prune"`
 }
 
+// LatestOffsiteSnapshot reports when the app's newest snapshot landed in the
+// Offsite Repo. This is a query and never state: State is a cache that dies
+// with the install - and a rebuilt host reading a repo full of snapshots is
+// exactly the case this signal exists for, so a state-backed answer would
+// announce "never backed up" to the user who needs it most. A zero time means
+// no offsite copy of this app exists yet - including when no offsite
+// repository is configured at all.
+func (n *Namespace) LatestOffsiteSnapshot(ctx context.Context, appName string) (time.Time, error) {
+	cfg := n.BackupRepoSettings()
+	if cfg.OffsiteURL == "" {
+		return time.Time{}, nil
+	}
+	return n.latestSnapshot(ctx, offsiteResticRepo(cfg), appName)
+}
+
+// Private
+
 // runRestic runs one restic command in its own container: create, start,
 // wait, collect logs, remove. One container per command keeps the exit code
 // on the ContainerWait seam (the whole init protocol is exit-code driven) and
@@ -108,8 +135,11 @@ func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...stri
 		{Type: mount.TypeBind, Source: repo.stagingDir, Target: resticStagingMount, ReadOnly: true},
 		{Type: mount.TypeVolume, Source: n.resticCacheVolume(), Target: resticCacheMount},
 	}
-	if repo.hostPath != "" {
-		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: repo.hostPath, Target: resticRepoMount})
+	if repo.localRepoDir != "" {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: repo.localRepoDir, Target: resticRepoMount})
+	}
+	if repo.offsiteRepoDir != "" {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: repo.offsiteRepoDir, Target: resticOffsiteMount})
 	}
 
 	resp, err := n.client.ContainerCreate(ctx,
@@ -169,7 +199,7 @@ func (n *Namespace) runResticRetryLock(ctx context.Context, repo resticRepo, arg
 		return res, err
 	}
 
-	slog.Warn("restic repository is locked; removing stale locks and retrying once", "repository", repo.repository)
+	slog.Warn("restic repository is locked; removing stale locks and retrying once", "repository", repo.displayName)
 	if unlockRes, unlockErr := n.runRestic(ctx, repo, "unlock", "--remove-all"); unlockErr != nil {
 		return res, unlockErr
 	} else if unlockRes.exitCode != 0 {
@@ -205,10 +235,25 @@ func (n *Namespace) ensureRepo(ctx context.Context, repo resticRepo) error {
 		}
 		return nil
 	case resticExitWrongPassword:
-		return fmt.Errorf("wrong password for restic repository %s - is it aimed at a repository Once did not create?", repo.repository)
+		return fmt.Errorf("wrong password for restic repository %s - is it aimed at a repository Once did not create?", repo.displayName)
 	default:
 		return fmt.Errorf("restic cat config failed: %s", res.failure())
 	}
+}
+
+// latestSnapshot runs the staleness query. Deliberately not
+// runResticRetryLock: the query takes no lock, so it cannot fail on one, and
+// asking a question must never be a reason to remove another host's lock from
+// a shared repo.
+func (n *Namespace) latestSnapshot(ctx context.Context, repo resticRepo, appName string) (time.Time, error) {
+	res, err := n.runRestic(ctx, repo, resticLatestSnapshotArgs(n.name, appName)...)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if res.exitCode != 0 {
+		return time.Time{}, fmt.Errorf("restic snapshots failed: %s", res.failure())
+	}
+	return parseLatestSnapshotTime(res.stdout)
 }
 
 func (n *Namespace) resticCacheVolume() string {
@@ -251,13 +296,31 @@ func (n *Namespace) collectContainerLogs(ctx context.Context, containerID string
 
 // Helpers
 
+// namedResticRepo pairs a repo with the name its results are recorded and
+// logged under: check covers a repo, not an app.
+type namedResticRepo struct {
+	name string
+	repo resticRepo
+}
+
+// configuredResticRepos lists the repos a Backup Run addresses, in order. A
+// non-empty OffsiteURL is the offsite switch; there is no separate flag.
+func configuredResticRepos(cfg BackupRepoSettings) []namedResticRepo {
+	repos := []namedResticRepo{{name: RepoNameLocal, repo: localResticRepo(cfg)}}
+	if cfg.OffsiteURL != "" {
+		repos = append(repos, namedResticRepo{name: RepoNameOffsite, repo: offsiteResticRepo(cfg)})
+	}
+	return repos
+}
+
 // localResticRepo addresses the local Backup Repo on disk.
 func localResticRepo(cfg BackupRepoSettings) resticRepo {
 	return resticRepo{
-		repository: resticRepoMount,
-		password:   cfg.Password,
-		hostPath:   cfg.LocalPath,
-		stagingDir: cfg.StagingDir(),
+		repository:   resticRepoMount,
+		displayName:  cfg.LocalPath,
+		password:     cfg.Password,
+		localRepoDir: cfg.LocalPath,
+		stagingDir:   cfg.StagingDir(),
 	}
 }
 
@@ -272,14 +335,23 @@ func offsiteResticRepo(cfg BackupRepoSettings) resticRepo {
 	maps.Copy(env, cfg.OffsiteEnv)
 	env["RESTIC_FROM_REPOSITORY"] = resticRepoMount
 	env["RESTIC_FROM_PASSWORD"] = cfg.Password
-	return resticRepo{
-		repository: cfg.OffsiteURL,
-		password:   cfg.Password,
-		env:        env,
-		hostPath:   cfg.LocalPath,
-		stagingDir: cfg.StagingDir(),
-		initArgs:   []string{"init", "--copy-chunker-params"},
+	repo := resticRepo{
+		repository:   cfg.OffsiteURL,
+		displayName:  cfg.OffsiteURL,
+		password:     cfg.Password,
+		env:          env,
+		localRepoDir: cfg.LocalPath,
+		stagingDir:   cfg.StagingDir(),
+		initArgs:     []string{"init", "--copy-chunker-params"},
 	}
+	// A filesystem-path offsite repository - a second disk, a network mount -
+	// is bind-mounted and addressed by its in-container path. Left unmounted,
+	// restic would init it inside the container and lose it on removal.
+	if dir := cfg.offsiteDir(); dir != "" {
+		repo.offsiteRepoDir = dir
+		repo.repository = resticOffsiteMount
+	}
+	return repo
 }
 
 // resticProbeBackupArgs builds the validation probe's backup invocation: the
@@ -304,6 +376,20 @@ func resticBackupArgs(namespace, appName string) []string {
 		"--host", namespace,
 		"--tag", "app:" + appName,
 		resticStagingMount + "/" + appName + ".tar",
+	}
+}
+
+// resticLatestSnapshotArgs asks a repo for one app's newest snapshot - the
+// staleness signal. It stays a pure question: --no-lock writes nothing at all
+// to a repo that may be shared with another host, and --host scopes the
+// answer to this install, which is what keeps two installs sharing one
+// offsite repo from reading each other's freshness.
+func resticLatestSnapshotArgs(namespace, appName string) []string {
+	return []string{
+		"snapshots", "--json", "--no-lock",
+		"--latest", "1",
+		"--host", namespace,
+		"--tag", "app:" + appName,
 	}
 }
 
@@ -351,6 +437,26 @@ func parseResticSummary(output string) (resticSummary, bool) {
 		}
 	}
 	return summary, found
+}
+
+// parseLatestSnapshotTime reads the newest snapshot time out of `restic
+// snapshots --json`. An empty list is not an error: it means no copy of this
+// app has landed in the repo yet.
+func parseLatestSnapshotTime(output string) (time.Time, error) {
+	var snapshots []struct {
+		Time time.Time `json:"time"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &snapshots); err != nil {
+		return time.Time{}, fmt.Errorf("parsing restic snapshots: %w", err)
+	}
+
+	var latest time.Time
+	for _, snapshot := range snapshots {
+		if snapshot.Time.After(latest) {
+			latest = snapshot.Time
+		}
+	}
+	return latest, nil
 }
 
 // resticCheckError derives the check outcome: check has no distinct exit code

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/basecamp/once/internal/system"
 )
@@ -14,6 +15,15 @@ import (
 // up. Fixed forever: it is baked into every probe snapshot, and a varying
 // path would mint a new retention group per attempt.
 const backupProbeFile = ".once-probe"
+
+// backupProbeTimeout bounds the whole probe. Every step is O(1) by design,
+// but restic retries backend errors with exponential backoff for about 15
+// minutes, and "the specified bucket does not exist" is one of them - so a
+// bucket that has not been created yet, or a typo in its name, would hold a
+// TUI form open that long (measured against a real S3 endpoint). The probe
+// exists to put failures in front of a human, which means answering while
+// one is still there.
+const backupProbeTimeout = 2 * time.Minute
 
 // ConfigureBackups persists cfg with Enabled withheld, then validates every
 // configured repo with the bounded probe and records the outcome in State.
@@ -43,9 +53,9 @@ func (n *Namespace) ConfigureBackups(ctx context.Context, cfg BackupRepoSettings
 
 	probeErr := n.ValidateBackupRepos(ctx, cfg)
 
-	// The proxy label write above recreated the Proxy and with it the state
-	// file, so this starts from whatever survived. Best effort: the probe
-	// verdict is what matters, the record only feeds `once backup status`.
+	// The proxy label write above recreated the Proxy, so this reloads rather
+	// than reusing a handle. Best effort: the probe verdict is what matters,
+	// the record only feeds `once backup status`.
 	if state, err := n.LoadState(ctx); err != nil {
 		slog.Warn("Failed to load state after backup probe", "error", err)
 	} else {
@@ -72,12 +82,15 @@ func (n *Namespace) EnableBackups(ctx context.Context) error {
 // without --prune. No check, no prune - both are unbounded against a large
 // pre-existing repo.
 func (n *Namespace) ValidateBackupRepos(ctx context.Context, cfg BackupRepoSettings) error {
-	if err := os.MkdirAll(cfg.StagingDir(), 0o700); err != nil {
-		return fmt.Errorf("creating staging directory: %w", err)
+	if err := ValidateOffsiteURL(cfg.OffsiteURL); err != nil {
+		return err
 	}
-	if err := os.MkdirAll(cfg.LocalPath, 0o700); err != nil {
-		return fmt.Errorf("creating repository directory: %w", err)
+	if err := prepareBackupDirs(cfg); err != nil {
+		return err
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, backupProbeTimeout)
+	defer cancel()
 
 	probePath := filepath.Join(cfg.StagingDir(), backupProbeFile)
 	if err := os.WriteFile(probePath, []byte("once backup validation probe\n"), 0o600); err != nil {
@@ -85,11 +98,11 @@ func (n *Namespace) ValidateBackupRepos(ctx context.Context, cfg BackupRepoSetti
 	}
 	defer os.Remove(probePath)
 
-	if err := n.probeRepo(ctx, "local", localResticRepo(cfg)); err != nil {
-		return err
-	}
-	if cfg.OffsiteURL != "" {
-		if err := n.probeRepo(ctx, "offsite", offsiteResticRepo(cfg)); err != nil {
+	for _, repo := range configuredResticRepos(cfg) {
+		if err := n.probeRepo(ctx, repo); err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("%s repository did not answer within %s: check the URL and the credentials, and create the bucket if it does not exist yet", repo.name, backupProbeTimeout)
+			}
 			return err
 		}
 	}
@@ -114,7 +127,9 @@ func (n *Namespace) BackupOnDataDevice(ctx context.Context) bool {
 
 // Private
 
-func (n *Namespace) probeRepo(ctx context.Context, name string, repo resticRepo) error {
+func (n *Namespace) probeRepo(ctx context.Context, named namedResticRepo) error {
+	name, repo := named.name, named.repo
+
 	if err := n.ensureRepo(ctx, repo); err != nil {
 		return fmt.Errorf("%s repository: %w", name, err)
 	}

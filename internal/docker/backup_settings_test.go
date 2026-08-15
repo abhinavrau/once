@@ -37,6 +37,30 @@ func TestBackupRepoSettingsStagingDir(t *testing.T) {
 	assert.Equal(t, "/var/lib/once/backups.staging", s.StagingDir())
 }
 
+// An offsite repository that is a filesystem path - a second disk, an NFS
+// mount, or the second directory the suite uses in place of cloud credentials
+// - has to be bind-mounted, so it is named here and nowhere else. A backend
+// URL has no host directory.
+func TestBackupRepoSettingsOffsiteDir(t *testing.T) {
+	assert.Equal(t, "/mnt/usb/once", BackupRepoSettings{OffsiteURL: "/mnt/usb/once"}.offsiteDir())
+	assert.Equal(t, "/mnt/usb/once", BackupRepoSettings{OffsiteURL: "local:/mnt/usb/once"}.offsiteDir())
+	assert.Empty(t, BackupRepoSettings{OffsiteURL: "s3:s3.example.com/bucket/once"}.offsiteDir())
+	assert.Empty(t, BackupRepoSettings{}.offsiteDir())
+}
+
+// restic reads a bare relative path as its local backend, so an unmounted one
+// would be "backed up" into the restic container's writable layer and vanish
+// with it - a backup that reports success and holds nothing. Refuse it at the
+// one seam both frontends pass through.
+func TestValidateOffsiteURL(t *testing.T) {
+	for _, url := range []string{"", "/mnt/usb/once", "local:/mnt/usb/once", "s3:s3.example.com/bucket/once", "b2:bucket:once", "sftp:user@host:/srv/once", "rest:http://host:8000/"} {
+		assert.NoError(t, ValidateOffsiteURL(url), url)
+	}
+	for _, url := range []string{"backups/offsite", "once", "local:relative/path", "./offsite"} {
+		assert.ErrorIs(t, ValidateOffsiteURL(url), ErrOffsiteURLInvalid, url)
+	}
+}
+
 func TestProxySettingsBackupsLabelRoundTrip(t *testing.T) {
 	settings := ProxySettings{
 		HTTPPort:  80,

@@ -198,6 +198,126 @@ func TestBackupRunSnapshotsIntoOneRetentionGroup(t *testing.T) {
 	assert.Len(t, groups[0].Snapshots, 2)
 }
 
+// The offsite leg. With an offsite repo configured, one run backs up the same
+// Staging File to both repos, each repo keeps its own retention group for the
+// app, and an offsite failure logs without failing the run. The offsite repo
+// is a second local directory - the suite carries no cloud credentials.
+func TestBackupRunOffsiteLeg(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+
+	origLock := docker.BackupLockPath
+	docker.BackupLockPath = filepath.Join(t.TempDir(), "backup.lock")
+	t.Cleanup(func() { docker.BackupLockPath = origLock })
+
+	nsName := "once-backup-offsite-test"
+	ns, err := docker.NewNamespace(nsName)
+	require.NoError(t, err)
+	defer ns.Teardown(ctx, true)
+
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+
+	deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name:   "offsiteapp",
+		Image:  "ghcr.io/basecamp/once-campfire:main",
+		Host:   "offsiteapp.localhost",
+		Backup: docker.BackupSettings{AutoBackup: true},
+	})
+
+	// restic runs as root, so hand the whole tree back before cleanup.
+	dirs := t.TempDir()
+	t.Cleanup(func() { chownToTestUser(t, dirs) })
+	localRepo := filepath.Join(dirs, "backups")
+	offsiteRepo := filepath.Join(dirs, "offsite")
+	stagingFile := filepath.Join(localRepo+".staging", "offsiteapp.tar")
+
+	password, err := docker.GenerateRepoPassword()
+	require.NoError(t, err)
+	require.NoError(t, ns.SetBackupRepoSettings(ctx, docker.BackupRepoSettings{
+		Enabled:    true,
+		LocalPath:  localRepo,
+		OffsiteURL: offsiteRepo,
+		Password:   password,
+	}))
+
+	state, err := ns.LoadState(ctx)
+	require.NoError(t, err)
+	require.NoError(t, ns.RunBackups(ctx, state))
+
+	localGroups := resticSnapshotGroups(t, ctx, localRepo, password)
+	offsiteGroups := resticSnapshotGroups(t, ctx, offsiteRepo, password)
+	require.Len(t, localGroups, 1)
+	require.Len(t, offsiteGroups, 1)
+	assert.Len(t, offsiteGroups[0].Snapshots, 1, "one run, one snapshot in each repo")
+	assert.Equal(t, localGroups[0].GroupKey, offsiteGroups[0].GroupKey,
+		"the same --host and the same in-container path in both repos: one retention group per app per repo")
+	assert.NoFileExists(t, stagingFile, "the Staging File is deleted only after the offsite leg returns")
+	assert.Equal(t,
+		resticChunkerPolynomial(t, ctx, localRepo, password),
+		resticChunkerPolynomial(t, ctx, offsiteRepo, password),
+		"offsite init passes --copy-chunker-params, which keeps a later `restic copy` backfill a one-shot")
+
+	state, err = ns.LoadState(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, state.AppState("offsiteapp").LastBackupResult().Error)
+	for _, repo := range []string{docker.RepoNameLocal, docker.RepoNameOffsite} {
+		assert.False(t, state.LastCheck[repo].At.IsZero(), "forget and check run once per repo: %s", repo)
+		assert.Empty(t, state.LastCheck[repo].Error, repo)
+	}
+
+	// The staleness signal is a query, never state: erase State entirely and
+	// the answer is unchanged.
+	require.NoError(t, ns.SaveState(ctx, &docker.State{}))
+	latest, err := ns.LatestOffsiteSnapshot(ctx, "offsiteapp")
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now(), latest, 10*time.Minute)
+
+	// A second run: each repo keeps its own retention group, stable per app.
+	state, err = ns.LoadState(ctx)
+	require.NoError(t, err)
+	require.NoError(t, ns.RunBackups(ctx, state))
+	for name, dir := range map[string]string{"local": localRepo, "offsite": offsiteRepo} {
+		groups := resticSnapshotGroups(t, ctx, dir, password)
+		require.Len(t, groups, 1, "%s repo: both runs stay in one host,paths group", name)
+		assert.Len(t, groups[0].Snapshots, 2, "%s repo", name)
+	}
+
+	// An offsite repo Once cannot open: the leg fails, and the run stands.
+	foreignRepo := filepath.Join(dirs, "foreign")
+	require.NoError(t, os.MkdirAll(foreignRepo, 0o755))
+	runResticInTest(t, ctx, foreignRepo, "not-the-generated-password", "init")
+
+	cfg := ns.BackupRepoSettings()
+	cfg.OffsiteURL = foreignRepo
+	require.NoError(t, ns.SetBackupRepoSettings(ctx, cfg))
+
+	state, err = ns.LoadState(ctx)
+	require.NoError(t, err)
+	state.Apps["offsiteapp"].LastBackup.At = time.Now().Add(-25 * time.Hour)
+	require.NoError(t, ns.RunBackups(ctx, state), "an offsite failure never fails the run")
+
+	state, err = ns.LoadState(ctx)
+	require.NoError(t, err)
+	result := state.AppState("offsiteapp").LastBackupResult()
+	require.NotNil(t, result)
+	assert.Empty(t, result.Error, "the run is recorded successful")
+	assert.Empty(t, state.LastCheck[docker.RepoNameLocal].Error)
+	assert.NotEmpty(t, state.LastCheck[docker.RepoNameOffsite].Error,
+		"a damaged repo alarms through check, separately from the run result")
+
+	localGroups = resticSnapshotGroups(t, ctx, localRepo, password)
+	require.Len(t, localGroups, 1)
+	assert.WithinDuration(t, time.Now(), newestSnapshotTime(t, localGroups[0]), 10*time.Minute,
+		"the local snapshot is intact")
+	assert.NoFileExists(t, stagingFile)
+	assert.Empty(t, resticSnapshotGroups(t, ctx, foreignRepo, "not-the-generated-password"),
+		"nothing landed in the repo Once could not open")
+
+	_, err = ns.LatestOffsiteSnapshot(ctx, "offsiteapp")
+	assert.Error(t, err, "staleness reports what the repo says, and says so when it cannot ask")
+}
+
 // Enabling backups runs the validation probe (initializing the repo and
 // leaving no snapshot behind), prints the no-TTY banner without prompting,
 // and persists BackupRepoSettings on the proxy label through a real proxy
@@ -345,8 +465,37 @@ type resticSnapshotGroup struct {
 		Paths    []string `json:"paths"`
 	} `json:"group_key"`
 	Snapshots []struct {
-		ShortID string `json:"short_id"`
+		ShortID string    `json:"short_id"`
+		Time    time.Time `json:"time"`
 	} `json:"snapshots"`
+}
+
+func newestSnapshotTime(t *testing.T, group resticSnapshotGroup) time.Time {
+	t.Helper()
+
+	require.NotEmpty(t, group.Snapshots)
+	var newest time.Time
+	for _, snapshot := range group.Snapshots {
+		if snapshot.Time.After(newest) {
+			newest = snapshot.Time
+		}
+	}
+	return newest
+}
+
+// resticChunkerPolynomial reads the repo's content-defined chunking
+// parameter. Two repos share it only when one was initialized from the other
+// with --copy-chunker-params.
+func resticChunkerPolynomial(t *testing.T, ctx context.Context, repoDir, password string) string {
+	t.Helper()
+
+	var config struct {
+		ChunkerPolynomial string `json:"chunker_polynomial"`
+	}
+	out := runResticInTest(t, ctx, repoDir, password, "cat", "config")
+	require.NoError(t, json.Unmarshal([]byte(out), &config), "restic output was: %s", out)
+	require.NotEmpty(t, config.ChunkerPolynomial)
+	return config.ChunkerPolynomial
 }
 
 // resticSnapshotGroups lists the repo's snapshots grouped exactly as forget's

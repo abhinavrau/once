@@ -318,6 +318,10 @@ func newBackupsForm(ns *docker.Namespace, settings docker.BackupRepoSettings) Ba
 			f.SetError("local-path", "The local repository path must be absolute")
 			return nil
 		}
+		if err := docker.ValidateOffsiteURL(s.OffsiteURL); err != nil {
+			f.SetError("offsite-url", docker.ErrorMessage(err))
+			return nil
+		}
 
 		// The password is deliberately not touched here: ConfigureBackups
 		// owns it - reusing the persisted one, minting only when none has
