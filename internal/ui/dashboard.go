@@ -124,6 +124,13 @@ func (m Dashboard) ShowingSecret() bool {
 	return overlayShowingSecret(m.overlay)
 }
 
+// Busy propagates the overlay's quit guard: the Backups overlay holds one
+// while the phone handoff is published, because its route and certificate
+// outlive the process that made them.
+func (m Dashboard) Busy() bool {
+	return overlayBusy(m.overlay)
+}
+
 func (m Dashboard) Init() tea.Cmd {
 	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
 }

@@ -47,3 +47,11 @@ func overlayShowingSecret(overlay Component) bool {
 	s, ok := overlay.(SecretDisplayer)
 	return ok && s.ShowingSecret()
 }
+
+// overlayBusy propagates an overlay's quit guard to the screen hosting it, so
+// work an overlay must not be abandoned mid-flight is protected by the same
+// key check as work a screen owns directly.
+func overlayBusy(overlay Component) bool {
+	b, ok := overlay.(Busy)
+	return ok && b.Busy()
+}

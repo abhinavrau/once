@@ -334,3 +334,36 @@ func (p *Proxy) ExecOutput(ctx context.Context, cmd []string) (string, error) {
 	}
 	return result.Stdout, nil
 }
+
+// proxyUID is the uid kamal-proxy runs as inside its own image. Files copied
+// in arrive owned by root otherwise, and kamal-proxy cannot read its own
+// private key - which surfaces only as "unable to load certificate".
+const proxyUID = 1001
+
+// copyFiles writes files into a directory in the proxy container, the way
+// SaveState already puts the state file there. They are readable only by
+// kamal-proxy itself, because one of them is a private key.
+func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]byte) error {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, data := range files {
+		header := &tar.Header{
+			Name: name,
+			Mode: 0o600,
+			Size: int64(len(data)),
+			Uid:  proxyUID,
+			Gid:  proxyUID,
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("writing tar header: %w", err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			return fmt.Errorf("writing tar data: %w", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("closing tar writer: %w", err)
+	}
+
+	return p.namespace.client.CopyToContainer(ctx, p.containerName(), dir, &buf, container.CopyToContainerOptions{})
+}

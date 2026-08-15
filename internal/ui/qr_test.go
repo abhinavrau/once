@@ -11,6 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The escape fragments the forced colours render as. Lipgloss folds the pair
+// into one SGR sequence per cell, so a cell is identified by the two parameter
+// prefixes and a dark module by its RGB triple.
+const (
+	qrForegroundANSI = "38;2;"
+	qrBackgroundANSI = "48;2;"
+	qrDarkANSI       = "2;0;0;0"
+)
+
 // A LAN handoff URL, the payload that has to fit.
 const testQRURL = "https://192.168.100.250/r/K3PZQ7XW4A2BCDEF"
 

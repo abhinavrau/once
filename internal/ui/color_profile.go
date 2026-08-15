@@ -29,7 +29,3 @@ func DetectColorProfile(detected DetectedColors) colorprofile.Profile {
 	}
 	return colorprofile.Detect(os.Stdout, os.Environ())
 }
-
-// Helpers
-
-func lookupEnv(name string) string { return os.Getenv(name) }

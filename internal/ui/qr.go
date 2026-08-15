@@ -2,6 +2,7 @@ package ui
 
 import (
 	"image/color"
+	"os"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -21,15 +22,6 @@ import (
 const (
 	qrQuietZone = 4
 	qrHalfBlock = "▀"
-)
-
-// The escape fragments the forced colours render as. Lipgloss folds the pair
-// into one SGR sequence per cell, so a cell is identified by the two
-// parameter prefixes and a dark module by its RGB triple.
-const (
-	qrForegroundANSI = "38;2;"
-	qrBackgroundANSI = "48;2;"
-	qrDarkANSI       = "2;0;0;0"
 )
 
 var (
@@ -84,10 +76,10 @@ func QRCode(text string) (string, error) {
 // a code that cannot be scanned sends the user to a phone that will never
 // read it, which is worse than never offering the option.
 func QRUnavailableReason() string {
-	return qrUnavailableReason(ColorProfile(), lookupEnv)
+	return qrUnavailableReason(ColorProfile(), os.Getenv)
 }
 
-// Private
+// Helpers
 
 func qrModuleColor(dark bool) color.Color {
 	if dark {

@@ -239,6 +239,22 @@ func TestCustodyChoiceIsClickable(t *testing.T) {
 	assert.Equal(t, custodyStepQRIntro, c.step)
 }
 
+// The page carries the password in a field of its own, so it must not also
+// appear in the details box beside it - where no password manager would find
+// it, and where it would sit in plain sight.
+func TestPageKitKeepsThePasswordOutOfTheDetails(t *testing.T) {
+	kit := testRecoveryKit()
+	page := kit.PageKit()
+
+	assert.Equal(t, kit.Password, page.Password)
+	require.NotEmpty(t, page.Details)
+	for _, detail := range page.Details {
+		assert.NotContains(t, detail.Value, kit.Password)
+		assert.NotContains(t, detail.Value, docker.FormatRepoPassword(kit.Password))
+	}
+	assert.Len(t, page.Details, len(kit.rows())-1, "every row but the secret one crosses over")
+}
+
 // Helpers
 
 const testCustodyQRURL = "https://192.168.100.250/r/K3PZQ7XW4A2BCDEF"

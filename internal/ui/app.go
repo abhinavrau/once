@@ -301,10 +301,17 @@ func Run(ns *docker.Namespace, installImageRef string) error {
 	detected := DetectTerminalColors(100 * time.Millisecond)
 	ApplyPalette(NewPalette(detected))
 
+	// Recorded, not just applied: anything that forces a colour has to know
+	// whether the forced value survives to the screen. The QR code is drawn to
+	// the symbol spec rather than the theme, and is suppressed outright when
+	// this profile would strip it.
+	profile := DetectColorProfile(detected)
+	SetColorProfile(profile)
+
 	app := NewApp(ns, installImageRef)
 
 	var opts []tea.ProgramOption
-	if detected.SupportsTrueColor() {
+	if profile == colorprofile.TrueColor {
 		opts = append(opts, tea.WithColorProfile(colorprofile.TrueColor))
 	}
 

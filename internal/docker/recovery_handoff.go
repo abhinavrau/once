@@ -1,8 +1,6 @@
 package docker
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -17,8 +15,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/docker/docker/api/types/container"
 
 	"github.com/basecamp/once/internal/handoff"
 )
@@ -43,6 +39,37 @@ func RecoveryHandoffPath() string {
 	return filepath.Join(adminRuntimeDir(), "once-recovery-handoff.json")
 }
 
+// LANAddress is the address a phone on the same network can reach this host at:
+// the source address of the default route, resolved by a UDP dial that sends no
+// packet. Taking the kernel's own routing choice is what excludes docker0, br-*
+// and veth interfaces - none of them carries a default route - so there is no
+// interface-picking heuristic to get wrong.
+//
+// The scan is the offline fallback, where there is no default route to read.
+func LANAddress() (string, error) {
+	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
+		defer conn.Close()
+		if address, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			return address.IP.String(), nil
+		}
+	}
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("listing network interfaces: %w", err)
+	}
+
+	candidates := make([]lanInterface, 0, len(interfaces))
+	for _, iface := range interfaces {
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, lanInterface{Name: iface.Name, Flags: iface.Flags, Addresses: addresses})
+	}
+	return lanAddressFrom(candidates)
+}
+
 // RecoveryHandoff is a live phone handoff: the page is reachable at URL until
 // Close tears it down. Closing is not optional - it is what removes the
 // temporary route, the certificate and the session, and the TTL is only the
@@ -51,9 +78,13 @@ type RecoveryHandoff struct {
 	url   string
 	store *handoff.Store
 	proxy *Proxy
+	admin *Admin
 	// routed records that a temporary proxy service and certificate exist. The
 	// tailnet path publishes neither, so it has nothing to take down.
 	routed bool
+	// bootedAdmin records that once-admin was started for this handoff alone,
+	// on an install that had none, so it should not outlive it.
+	bootedAdmin bool
 }
 
 // StartRecoveryHandoff publishes the Recovery Kit at a one-time HTTPS URL a
@@ -85,10 +116,21 @@ func (n *Namespace) StartRecoveryHandoff(ctx context.Context, kit handoff.Kit) (
 		url:    origin + handoff.PagePath(token),
 		store:  store,
 		proxy:  n.Proxy(),
+		admin:  n.Admin(),
 		routed: routed,
 	}
 
 	if routed {
+		// The LAN route targets once-admin, and only the Tailscale lifecycle
+		// boots it - so a plain install has none, which is exactly the install
+		// this route exists for. Borrow it when it is there, start one when it
+		// is not, and remember which so Close leaves the install as it was.
+		live.bootedAdmin = !live.admin.Exists(ctx)
+		if err := live.admin.Boot(ctx); err != nil {
+			_ = live.Close(ctx)
+			return nil, fmt.Errorf("booting once-admin to serve the handoff page: %w", err)
+		}
+
 		if err := live.publishRoute(ctx, strings.TrimPrefix(origin, "https://")); err != nil {
 			_ = live.Close(ctx)
 			return nil, err
@@ -115,6 +157,10 @@ func (h *RecoveryHandoff) Close(ctx context.Context) error {
 		fail(h.proxy.Remove(ctx, recoveryServiceName))
 		fail(h.proxy.Exec(ctx, []string{"rm", "-f", recoveryCertPath, recoveryKeyPath}))
 	}
+	if h.bootedAdmin {
+		h.bootedAdmin = false
+		fail(h.admin.Destroy(ctx))
+	}
 	return firstErr
 }
 
@@ -123,16 +169,8 @@ func (h *RecoveryHandoff) Close(ctx context.Context) error {
 // recoveryOrigin picks the origin the phone will reach the page on, and reports
 // whether it needs a temporary proxy route to get there.
 func (n *Namespace) recoveryOrigin(ctx context.Context) (string, bool, error) {
-	if enabled, err := n.Tailscale().Enabled(ctx); err == nil && enabled {
-		settings, err := n.Tailscale().LoadSettings(ctx)
-		if err == nil {
-			if suffix, err := n.Tailscale().DomainSuffix(ctx); err == nil && suffix != "" {
-				settings.DomainSuffix = suffix
-			}
-			if url := settings.TailnetURL(adminServiceName); url != "" {
-				return url, false, nil
-			}
-		}
+	if url := n.adminTailnetURL(ctx); url != "" {
+		return url, false, nil
 	}
 
 	address, err := LANAddress()
@@ -140,6 +178,21 @@ func (n *Namespace) recoveryOrigin(ctx context.Context) (string, bool, error) {
 		return "", false, err
 	}
 	return "https://" + address, true, nil
+}
+
+// adminTailnetURL is once-admin's own tailnet origin, which already carries a
+// certificate the phone will trust, or "" when Tailscale is not enabled or the
+// tailnet name is not known yet. Either way the LAN route is the fallback, so
+// none of this is worth failing over.
+func (n *Namespace) adminTailnetURL(ctx context.Context) string {
+	if enabled, err := n.Tailscale().Enabled(ctx); err != nil || !enabled {
+		return ""
+	}
+	suffix, err := n.Tailscale().DomainSuffix(ctx)
+	if err != nil || suffix == "" {
+		return ""
+	}
+	return TailscaleSettings{DomainSuffix: suffix}.TailnetURL(adminServiceName)
 }
 
 // publishRoute mints a certificate for the address the phone dials, copies it
@@ -176,37 +229,6 @@ func (h *RecoveryHandoff) publishRoute(ctx context.Context, address string) erro
 }
 
 // Helpers
-
-// LANAddress is the address a phone on the same network can reach this host at:
-// the source address of the default route, resolved by a UDP dial that sends no
-// packet. Taking the kernel's own routing choice is what excludes docker0, br-*
-// and veth interfaces - none of them carries a default route - so there is no
-// interface-picking heuristic to get wrong.
-//
-// The scan is the offline fallback, where there is no default route to read.
-func LANAddress() (string, error) {
-	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
-		defer conn.Close()
-		if address, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			return address.IP.String(), nil
-		}
-	}
-
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return "", fmt.Errorf("listing network interfaces: %w", err)
-	}
-
-	candidates := make([]lanInterface, 0, len(interfaces))
-	for _, iface := range interfaces {
-		addresses, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		candidates = append(candidates, lanInterface{Name: iface.Name, Flags: iface.Flags, Addresses: addresses})
-	}
-	return lanAddressFrom(candidates)
-}
 
 type lanInterface struct {
 	Name      string
@@ -284,37 +306,4 @@ func selfSignedCertificate(address string) (certificate, key []byte, err error) 
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
 		nil
-}
-
-// proxyUID is the uid kamal-proxy runs as inside its own image. Files copied
-// in arrive owned by root otherwise, and kamal-proxy cannot read its own
-// private key - which surfaces only as "unable to load certificate".
-const proxyUID = 1001
-
-// copyFiles writes files into a directory in the proxy container, the way
-// SaveState already puts the state file there. They are readable only by
-// kamal-proxy itself, because one of them is a private key.
-func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]byte) error {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for name, data := range files {
-		header := &tar.Header{
-			Name: name,
-			Mode: 0o600,
-			Size: int64(len(data)),
-			Uid:  proxyUID,
-			Gid:  proxyUID,
-		}
-		if err := tw.WriteHeader(header); err != nil {
-			return fmt.Errorf("writing tar header: %w", err)
-		}
-		if _, err := tw.Write(data); err != nil {
-			return fmt.Errorf("writing tar data: %w", err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("closing tar writer: %w", err)
-	}
-
-	return p.namespace.client.CopyToContainer(ctx, p.containerName(), dir, &buf, container.CopyToContainerOptions{})
 }

@@ -5,14 +5,6 @@ import (
 	"net/http"
 )
 
-// Handler serves the one-time page on a mux of its own. The daemon uses Mount
-// instead, to add these routes beside the ones it already serves.
-func Handler(store *Store) http.Handler {
-	mux := http.NewServeMux()
-	Mount(mux, store)
-	return mux
-}
-
 // Mount registers the handoff routes. They live under a short, fixed prefix -
 // the prefix is part of the QR payload, and payload length decides whether the
 // code fits the terminal - and every refusal, whether the token is wrong,
@@ -22,65 +14,31 @@ func Handler(store *Store) http.Handler {
 // The routes are dark until the custody flow creates a session, which is why
 // the daemon can serve them unconditionally.
 func Mount(mux *http.ServeMux, store *Store) {
-	mux.HandleFunc("GET "+pathPrefix+"{token}", func(w http.ResponseWriter, r *http.Request) {
-		current, ok := store.lookup(r.PathValue("token"))
-		if !ok {
-			gone(w)
-			return
-		}
-		secureHeaders(w)
+	mux.Handle("GET "+pathPrefix+"{token}", withSession(store, func(w http.ResponseWriter, _ *http.Request, current session) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = pageTemplate.Execute(w, pageData{
 			Kit:        current.Kit,
 			Path:       PagePath(current.Token),
 			TTLMinutes: int(TTL.Minutes()),
 		})
-	})
+	}))
 
 	// Saving in the manager burns nothing and goes nowhere: the submit is a
 	// real navigation, which is what makes the phone offer to save, and the
 	// redirect lands back on this same page so the screen never changes. Only
 	// Done ends the session.
-	mux.HandleFunc("POST "+pathPrefix+"{token}/saved", func(w http.ResponseWriter, r *http.Request) {
-		current, ok := store.lookup(r.PathValue("token"))
-		if !ok {
-			gone(w)
-			return
-		}
-		secureHeaders(w)
+	mux.Handle("POST "+pathPrefix+"{token}/saved", withSession(store, func(w http.ResponseWriter, r *http.Request, current session) {
 		http.Redirect(w, r, PagePath(current.Token), http.StatusSeeOther)
-	})
+	}))
 
-	mux.HandleFunc("POST "+pathPrefix+"{token}/done", func(w http.ResponseWriter, r *http.Request) {
-		token := r.PathValue("token")
-		if _, ok := store.lookup(token); !ok {
+	mux.Handle("POST "+pathPrefix+"{token}/done", withSession(store, func(w http.ResponseWriter, _ *http.Request, current session) {
+		if err := store.burn(current.Token); err != nil {
 			gone(w)
 			return
 		}
-		if err := store.burn(token); err != nil {
-			gone(w)
-			return
-		}
-		secureHeaders(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(donePage))
-	})
-}
-
-// Helpers
-
-func gone(w http.ResponseWriter) {
-	secureHeaders(w)
-	http.Error(w, "This link has expired. Start the handoff again from the Once screen.", http.StatusGone)
-}
-
-// secureHeaders keeps the page out of caches, histories-by-proxy and referrer
-// headers. It carries a secret, so it must not be stored anywhere but the
-// password manager the user chooses.
-func secureHeaders(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+	}))
 }
 
 type pageData struct {
@@ -191,3 +149,34 @@ color: #e8e8ee; display: grid; place-items: center; height: 100vh; margin: 0; }
 div { text-align: center; } p { color: #a0a3b1; }</style></head>
 <body><div><h1>Done</h1><p>This link no longer works. You can close this page<br>
 and finish on the server: type the password back there.</p></div></body></html>`
+
+// Helpers
+
+// withSession resolves the token or answers 410, so no route can serve the
+// page by forgetting to check, and sets the headers a page carrying a secret
+// needs before the handler writes anything.
+func withSession(store *Store, serve func(http.ResponseWriter, *http.Request, session)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current, ok := store.lookup(r.PathValue("token"))
+		if !ok {
+			gone(w)
+			return
+		}
+		secureHeaders(w)
+		serve(w, r, current)
+	})
+}
+
+func gone(w http.ResponseWriter) {
+	secureHeaders(w)
+	http.Error(w, "This link has expired. Start the handoff again from the Once screen.", http.StatusGone)
+}
+
+// secureHeaders keeps the page out of caches, histories-by-proxy and referrer
+// headers. It carries a secret, so it must not be stored anywhere but the
+// password manager the user chooses.
+func secureHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+}

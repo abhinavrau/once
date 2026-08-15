@@ -101,7 +101,7 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 // App reuses this to guard its quit key, the same protection a running
 // Settings action gets.
 func (m Install) Busy() bool {
-	return m.state == installStateActivity
+	return m.state == installStateActivity || overlayBusy(m.overlay)
 }
 
 // ShowingSecret propagates the overlay's mouse-tracking opt-out (the Backups

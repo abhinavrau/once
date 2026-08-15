@@ -89,6 +89,12 @@ func TestStoreLookupWithNoSession(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func testHandler(store *Store) http.Handler {
+	mux := http.NewServeMux()
+	Mount(mux, store)
+	return mux
+}
+
 // get and post drive the handler the way the phone does.
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -110,7 +116,7 @@ func TestHandlerServesThePasswordInAFormField(t *testing.T) {
 	token, err := store.Create(kit, time.Minute)
 	require.NoError(t, err)
 
-	rec := get(t, Handler(store), PagePath(token))
+	rec := get(t, testHandler(store), PagePath(token))
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	body := rec.Body.String()
@@ -131,7 +137,7 @@ func TestHandlerSavedIsPostRedirectGetBackToTheSamePage(t *testing.T) {
 	store := newTestStore(t)
 	token, err := store.Create(testKit(), time.Minute)
 	require.NoError(t, err)
-	h := Handler(store)
+	h := testHandler(store)
 
 	rec := post(t, h, PagePath(token)+"/saved")
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
@@ -145,7 +151,7 @@ func TestHandlerDoneBurnsTheTokenAndLaterVisitsAreGone(t *testing.T) {
 	store := newTestStore(t)
 	token, err := store.Create(testKit(), time.Minute)
 	require.NoError(t, err)
-	h := Handler(store)
+	h := testHandler(store)
 
 	rec := post(t, h, PagePath(token)+"/done")
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -161,7 +167,7 @@ func TestHandlerNeverLeaksTheSecretOnARefusedRequest(t *testing.T) {
 	kit := testKit()
 	token, err := store.Create(kit, time.Minute)
 	require.NoError(t, err)
-	h := Handler(store)
+	h := testHandler(store)
 
 	for _, path := range []string{
 		PagePath(strings.Repeat("A", tokenLength)),
@@ -179,7 +185,7 @@ func TestHandlerExpiredTokenIsGone(t *testing.T) {
 	token, err := store.Create(testKit(), -time.Second)
 	require.NoError(t, err)
 
-	assert.Equal(t, http.StatusGone, get(t, Handler(store), PagePath(token)).Code)
+	assert.Equal(t, http.StatusGone, get(t, testHandler(store), PagePath(token)).Code)
 }
 
 func TestPagePathIsShortEnoughForTheQRRowBudget(t *testing.T) {

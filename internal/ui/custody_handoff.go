@@ -15,7 +15,7 @@ import (
 func (k RecoveryKit) PageKit() handoff.Kit {
 	page := handoff.Kit{Password: k.Password, Hostname: k.Hostname}
 	for _, row := range k.rows() {
-		if row.label == "Password" {
+		if row.secret {
 			continue
 		}
 		page.Details = append(page.Details, handoff.Detail{Label: row.label, Value: row.value})

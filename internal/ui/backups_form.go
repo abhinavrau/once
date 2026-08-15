@@ -62,6 +62,13 @@ func (m BackupsForm) Init() tea.Cmd {
 	return m.form.Init()
 }
 
+// Busy guards the quit key while the phone handoff is published. The route and
+// certificate it puts in the Proxy outlive this process, and only the custody
+// flow knows how to take them down, so quitting out from under it strands them.
+func (m BackupsForm) Busy() bool {
+	return m.custody != nil && m.custody.HandoffLive()
+}
+
 // ShowingSecret propagates the custody screen's mouse-tracking opt-out.
 func (m BackupsForm) ShowingSecret() bool {
 	return m.custody != nil && m.custody.ShowingSecret()
@@ -204,13 +211,8 @@ func (m BackupsForm) stopHandoff() tea.Cmd {
 	if m.handoff == nil {
 		return nil
 	}
-	handoff := m.handoff
-	return func() tea.Msg {
-		_ = handoff.Stop(context.Background())
-		return nil
-	}
+	return stopHandoffCmd(m.handoff)
 }
-
 
 // startRunning switches to the progress view and runs cmd in the background.
 func (m BackupsForm) startRunning(status string, cmd tea.Cmd) (Component, tea.Cmd) {

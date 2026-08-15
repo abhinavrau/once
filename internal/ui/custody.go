@@ -55,22 +55,26 @@ func (k RecoveryKit) Text() string {
 
 type kitRow struct {
 	label, value string
+	// secret marks the row that is the password itself, so a surface carrying
+	// it some other way can drop that row without matching on the label - a
+	// reworded label must not be able to leak the password into a details box.
+	secret bool
 }
 
 // rows is the kit's single row source: the reveal block and the plain-text
 // kit render the same facts, with the offsite lines omitted when there is no
 // offsite repo.
 func (k RecoveryKit) rows() []kitRow {
-	rows := []kitRow{{"Password", docker.FormatRepoPassword(k.Password)}}
+	rows := []kitRow{{label: "Password", value: docker.FormatRepoPassword(k.Password), secret: true}}
 	if k.OffsiteURL != "" {
-		rows = append(rows, kitRow{"Offsite repo", k.OffsiteURL})
+		rows = append(rows, kitRow{label: "Offsite repo", value: k.OffsiteURL})
 	}
 	if len(k.CredentialNames) > 0 {
-		rows = append(rows, kitRow{"Credentials", strings.Join(k.CredentialNames, ", ") + " (names only)"})
+		rows = append(rows, kitRow{label: "Credentials", value: strings.Join(k.CredentialNames, ", ") + " (names only)"})
 	}
 	return append(rows,
-		kitRow{"Local repo", k.LocalPath},
-		kitRow{"Created", k.CreatedAt.Format("2006-01-02") + " on " + k.Hostname},
+		kitRow{label: "Local repo", value: k.LocalPath},
+		kitRow{label: "Created", value: k.CreatedAt.Format("2006-01-02") + " on " + k.Hostname},
 	)
 }
 
@@ -180,9 +184,13 @@ type Custody struct {
 	confirmed  bool
 	// fromQR changes what the gate asks the user to type back from: the copy
 	// on their phone, rather than what is still on the screen behind it.
-	fromQR        bool
-	handoffURL    string
-	handoffErr    error
+	fromQR     bool
+	handoffURL string
+	handoffErr error
+	// handoffLive tracks the page being published, so a host can refuse to
+	// quit while there is a route and a certificate that only this flow knows
+	// how to take down.
+	handoffLive   bool
 	width, height int
 }
 
@@ -214,6 +222,13 @@ func (m Custody) Init() tea.Cmd {
 	return nil
 }
 
+// HandoffLive reports whether the phone page is published. Its route and
+// certificate outlive the process that made them, so a host must not quit out
+// from under it without tearing it down.
+func (m Custody) HandoffLive() bool {
+	return m.handoffLive
+}
+
 // ShowingSecret reports whether the current screen displays the password.
 // Mouse tracking must be off there so native terminal selection keeps
 // working; the gate keeps tracking for click-to-focus.
@@ -230,6 +245,7 @@ func (m Custody) Update(msg tea.Msg) (Custody, tea.Cmd) {
 
 	case custodyHandoffStartedMsg:
 		m.handoffURL, m.handoffErr = msg.url, msg.err
+		m.handoffLive = msg.err == nil && msg.url != ""
 		return m, nil
 
 	case custodyGatePassedMsg:
@@ -322,15 +338,12 @@ func (m Custody) startHandoff() tea.Cmd {
 // stopHandoff takes the page down as soon as the flow is over. It is not the
 // only teardown - the host tears down on any exit, and the session expires on
 // its own - but it is the one that runs while the user is still watching.
-func (m Custody) stopHandoff() tea.Cmd {
-	if m.handoff == nil || m.handoffURL == "" {
+func (m *Custody) stopHandoff() tea.Cmd {
+	if m.handoff == nil || !m.handoffLive {
 		return nil
 	}
-	handoff := m.handoff
-	return func() tea.Msg {
-		_ = handoff.Stop(context.Background())
-		return nil
-	}
+	m.handoffLive = false
+	return stopHandoffCmd(m.handoff)
 }
 
 func (m Custody) handleKey(msg tea.KeyPressMsg) (Custody, tea.Cmd) {
@@ -577,6 +590,15 @@ func (m Custody) copyHint(kind, label string) string {
 }
 
 // Helpers
+
+// stopHandoffCmd takes the phone page down off the update loop. Stop is
+// idempotent, so the flow and its host can both call it.
+func stopHandoffCmd(handoff CustodyHandoff) tea.Cmd {
+	return func() tea.Msg {
+		_ = handoff.Stop(context.Background())
+		return nil
+	}
+}
 
 func newCustodyGateForm(password string) Form {
 	field := NewTextField("type or paste the password")

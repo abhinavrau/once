@@ -57,6 +57,15 @@ func (a *Admin) RequireDaemon() error {
 	return nil
 }
 
+// Exists reports whether once-admin is already part of this install. Only the
+// Tailscale lifecycle boots it, so a plain install has none - and anything that
+// boots it for its own use has to know whether it is borrowing the container or
+// creating one it should clean up.
+func (a *Admin) Exists(ctx context.Context) bool {
+	_, err := a.namespace.client.ContainerInspect(ctx, a.containerName())
+	return err == nil
+}
+
 // Boot starts once-admin from the pinned nginx image on the once network with no
 // host ports, bind-mounting the daemon socket and generated config. The daemon
 // must be running (the socket is the thing being exposed), so a missing socket or

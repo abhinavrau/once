@@ -38,9 +38,11 @@ func TestRecoveryHandoffServesThePageThroughTheProxy(t *testing.T) {
 	ports := getProxyPorts(t)
 	require.NoError(t, ns.Proxy().Boot(ctx, ports))
 
-	// The daemon serves the page; once-admin is what the Proxy targets.
+	// The daemon serves the page. once-admin is deliberately NOT booted here:
+	// only the Tailscale lifecycle boots it, so a plain install has none - and
+	// a plain install is exactly what the LAN route exists for.
 	startAdminServer(t, ctx)
-	require.NoError(t, ns.Admin().Boot(ctx))
+	require.False(t, ns.Admin().Exists(ctx), "the LAN route has to stand up once-admin itself")
 
 	kit := handoff.Kit{
 		Password: "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
@@ -94,6 +96,7 @@ func TestRecoveryHandoffServesThePageThroughTheProxy(t *testing.T) {
 	certificates, err := ns.Proxy().ExecOutput(ctx, []string{"ls", "/home/kamal-proxy/.config/kamal-proxy"})
 	require.NoError(t, err)
 	assert.NotContains(t, certificates, "once-recovery", "the certificate and key are removed from the proxy")
+	assert.False(t, ns.Admin().Exists(ctx), "once-admin was started for the handoff alone, so it goes with it")
 
 	require.Eventually(t, func() bool {
 		resp, err := client.Get(url)
