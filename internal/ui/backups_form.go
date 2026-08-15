@@ -51,6 +51,7 @@ type BackupsForm struct {
 	progress      Progress
 	err           error
 	custody       *Custody
+	handoff       CustodyHandoff
 }
 
 func NewBackupsForm(ns *docker.Namespace) BackupsForm {
@@ -124,7 +125,8 @@ func (m BackupsForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 			// reconfigure only revalidates.
 			return m.startRunning("Enabling backups...", m.runEnable())
 		}
-		custody := NewCustody(NewRecoveryKit(msg.settings))
+		m.handoff = NewNamespaceCustodyHandoff(m.namespace)
+		custody := NewCustody(NewRecoveryKit(msg.settings), m.handoff, CustodyDeliveryAsk)
 		c, _ := custody.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		m.custody = &c
 		return m, m.custody.Init()
@@ -183,16 +185,32 @@ func (m BackupsForm) updateCustody(msg tea.Msg) (Component, tea.Cmd) {
 	// form, where a retry is possible - before the overlay may close.
 	if closed, ok := msg.(CustodyClosedMsg); ok {
 		m.custody = nil
+		// The flow takes its own phone handoff down; this is the backstop for
+		// every way out of it, and Stop is idempotent.
+		stop := m.stopHandoff()
 		if !closed.Confirmed {
-			return m, func() tea.Msg { return BackupsFormCloseMsg{} }
+			return m, tea.Batch(stop, func() tea.Msg { return BackupsFormCloseMsg{} })
 		}
-		return m.startRunning("Enabling backups...", m.runEnable())
+		component, cmd := m.startRunning("Enabling backups...", m.runEnable())
+		return component, tea.Batch(stop, cmd)
 	}
 
 	c, cmd := m.custody.Update(msg)
 	m.custody = &c
 	return m, cmd
 }
+
+func (m BackupsForm) stopHandoff() tea.Cmd {
+	if m.handoff == nil {
+		return nil
+	}
+	handoff := m.handoff
+	return func() tea.Msg {
+		_ = handoff.Stop(context.Background())
+		return nil
+	}
+}
+
 
 // startRunning switches to the progress view and runs cmd in the background.
 func (m BackupsForm) startRunning(status string, cmd tea.Cmd) (Component, tea.Cmd) {

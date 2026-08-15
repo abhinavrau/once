@@ -1,10 +1,16 @@
 package command
 
 import (
+	"context"
+	"fmt"
+	"time"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 
+	"github.com/basecamp/once/internal/docker"
 	"github.com/basecamp/once/internal/mouse"
 	"github.com/basecamp/once/internal/ui"
 )
@@ -14,9 +20,33 @@ import (
 // pattern runShowingProgress already uses (ADR-0013 amendment: reading a
 // secret in stays TUI-only, handing one out reuses this shared component).
 // Returns whether the user proved custody through the type-back gate.
-func runCustodyFlow(kit ui.RecoveryKit) (bool, error) {
-	m := &custodyProgram{flow: ui.NewCustody(kit)}
-	if _, err := tea.NewProgram(m).Run(); err != nil {
+func runCustodyFlow(ctx context.Context, ns *docker.Namespace, kit ui.RecoveryKit, delivery ui.CustodyDelivery) (bool, error) {
+	// The palette and the colour profile are the TUI's job in ui.Run; this
+	// program is the CLI's own, and the QR needs a real black and white to
+	// survive to the screen, so it detects them the same way.
+	detected := ui.DetectTerminalColors(100 * time.Millisecond)
+	ui.ApplyPalette(ui.NewPalette(detected))
+	profile := ui.DetectColorProfile(detected)
+	ui.SetColorProfile(profile)
+
+	if delivery == ui.CustodyDeliveryQR {
+		if reason := ui.QRUnavailableReason(); reason != "" {
+			return false, fmt.Errorf("--password-delivery=qr cannot be used here: %s", reason)
+		}
+	}
+
+	handoff := ui.NewNamespaceCustodyHandoff(ns)
+	// Whatever ends the program - the gate, the skip hatch, ctrl+c, an error -
+	// the temporary route and the session go away with it.
+	defer func() { _ = handoff.Stop(ctx) }()
+
+	m := &custodyProgram{flow: ui.NewCustody(kit, handoff, delivery)}
+
+	var opts []tea.ProgramOption
+	if profile == colorprofile.TrueColor {
+		opts = append(opts, tea.WithColorProfile(colorprofile.TrueColor))
+	}
+	if _, err := tea.NewProgram(m, opts...).Run(); err != nil {
 		return false, err
 	}
 	return m.confirmed, nil

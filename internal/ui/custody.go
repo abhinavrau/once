@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/handoff"
+	"github.com/basecamp/once/internal/mouse"
 )
 
 // RecoveryKit is everything bare-metal recovery needs: the password alone is
@@ -78,21 +81,71 @@ func (k RecoveryKit) rows() []kitRow {
 // CLI runs it as a sequential bubbletea program the way cli_progress.go
 // already runs progress.
 //
-// custodyDeliveries lists the ways the password can be handed over. With one
-// option the choice prompt collapses to nothing to choose; the QR delivery
-// (issue 14) appends a second option and the prompt reappears.
-var custodyDeliveries = []string{"Show it on this screen"}
+// The user is asked how to take custody first: on this screen, or sent to
+// their phone as a QR code of a one-time URL.
+
+// CustodyDelivery is how the user takes custody of the password. It is also
+// what --password-delivery names, so the values are the flag's own words.
+type CustodyDelivery string
+
+const (
+	// CustodyDeliveryAsk leaves the choice to the user.
+	CustodyDeliveryAsk    CustodyDelivery = ""
+	CustodyDeliveryScreen CustodyDelivery = "screen"
+	CustodyDeliveryQR     CustodyDelivery = "qr"
+)
+
+// CustodyHandoff publishes the Recovery Kit at a one-time URL a phone can
+// open, and takes it down again. The custody screen sees only the URL: which
+// origin it is, and what had to be built to route there, stay behind this.
+type CustodyHandoff interface {
+	Start(ctx context.Context, kit RecoveryKit) (string, error)
+	Stop(ctx context.Context) error
+}
+
+type custodyOption struct {
+	delivery CustodyDelivery
+	label    string
+}
+
+// custodyDeliveries lists the ways the password can be handed over, in the
+// order they are offered. Showing it on screen always works. The phone handoff
+// is offered only when there is somewhere to serve it and a terminal that can
+// draw a code worth scanning - a QR this terminal will mangle sends the user
+// to a phone that will never read it, which is worse than not offering it.
+//
+// With one option the choice prompt collapses to nothing to choose.
+func custodyDeliveries(handoff CustodyHandoff) []custodyOption {
+	options := []custodyOption{{CustodyDeliveryScreen, "Show it on this screen"}}
+	if handoff != nil && QRUnavailableReason() == "" {
+		options = append(options, custodyOption{CustodyDeliveryQR, "Send it to my phone (QR code)"})
+	}
+	return options
+}
+
+func custodyDeliveryTarget(delivery CustodyDelivery) string {
+	return "delivery:" + string(delivery)
+}
 
 type custodyStep int
 
 const (
 	custodyStepChoice custodyStep = iota
 	custodyStepReveal
+	custodyStepQRIntro
+	custodyStepQR
 	custodyStepGate
 	custodyStepSkipConfirm
 	custodyStepDone
 	custodyStepSkipped
 )
+
+// custodyHandoffStartedMsg carries the URL the QR will encode, or the reason
+// there is none.
+type custodyHandoffStartedMsg struct {
+	url string
+	err error
+}
 
 var custodyKeys = struct {
 	CopyPassword key.Binding
@@ -117,21 +170,43 @@ type (
 )
 
 type Custody struct {
-	kit           RecoveryKit
-	step          custodyStep
-	choice        int
-	gate          Form
-	copied        string // "", "password", or "kit"
-	confirmed     bool
+	kit        RecoveryKit
+	handoff    CustodyHandoff
+	deliveries []custodyOption
+	step       custodyStep
+	choice     int
+	gate       Form
+	copied     string // "", "password", or "kit"
+	confirmed  bool
+	// fromQR changes what the gate asks the user to type back from: the copy
+	// on their phone, rather than what is still on the screen behind it.
+	fromQR        bool
+	handoffURL    string
+	handoffErr    error
 	width, height int
 }
 
-func NewCustody(kit RecoveryKit) Custody {
-	m := Custody{kit: kit, step: custodyStepChoice}
-	if len(custodyDeliveries) == 1 {
-		m.step = custodyStepReveal
+// NewCustody builds the flow. A chosen delivery skips the prompt, which is how
+// --password-delivery selects without asking; CustodyDeliveryAsk offers the
+// choice. A handoff of nil means no phone delivery is possible here.
+func NewCustody(kit RecoveryKit, handoff CustodyHandoff, chosen CustodyDelivery) Custody {
+	m := Custody{
+		kit:        kit,
+		handoff:    handoff,
+		deliveries: custodyDeliveries(handoff),
+		step:       custodyStepChoice,
 	}
 	m.gate = newCustodyGateForm(kit.Password)
+
+	if chosen == CustodyDeliveryAsk && len(m.deliveries) == 1 {
+		chosen = m.deliveries[0].delivery
+	}
+	for i, option := range m.deliveries {
+		if option.delivery == chosen {
+			m.choice = i
+			m.step = m.stepFor(chosen)
+		}
+	}
 	return m
 }
 
@@ -153,10 +228,14 @@ func (m Custody) Update(msg tea.Msg) (Custody, tea.Cmd) {
 		m.gate, _ = m.gate.Update(msg)
 		return m, nil
 
+	case custodyHandoffStartedMsg:
+		m.handoffURL, m.handoffErr = msg.url, msg.err
+		return m, nil
+
 	case custodyGatePassedMsg:
 		m.step = custodyStepDone
 		m.confirmed = true
-		return m, nil
+		return m, m.stopHandoff()
 
 	case custodyGateCancelMsg:
 		m.step = custodyStepSkipConfirm
@@ -164,6 +243,22 @@ func (m Custody) Update(msg tea.Msg) (Custody, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case MouseEvent:
+		// Only the choice screen owns clicks of its own; everywhere else they
+		// belong to the gate's form, below.
+		if m.step != custodyStepChoice {
+			break
+		}
+		if msg.IsClick {
+			for i, option := range m.deliveries {
+				if msg.Target == custodyDeliveryTarget(option.delivery) {
+					m.choice = i
+					return m.chooseDelivery()
+				}
+			}
+		}
+		return m, nil
 	}
 
 	if m.step == custodyStepGate {
@@ -180,6 +275,10 @@ func (m Custody) View() string {
 		return m.choiceView()
 	case custodyStepReveal:
 		return m.revealView()
+	case custodyStepQRIntro:
+		return m.qrIntroView()
+	case custodyStepQR:
+		return m.qrView()
 	case custodyStepGate:
 		return m.gateView()
 	case custodyStepSkipConfirm:
@@ -194,16 +293,81 @@ func (m Custody) View() string {
 
 // Private
 
+func (m Custody) stepFor(delivery CustodyDelivery) custodyStep {
+	if delivery == CustodyDeliveryQR {
+		// The intro always precedes the code: the same-network requirement and
+		// the certificate warning have to be read before anything is
+		// scannable, and they do not fit on the screen the code needs.
+		return custodyStepQRIntro
+	}
+	return custodyStepReveal
+}
+
+func (m Custody) chooseDelivery() (Custody, tea.Cmd) {
+	m.step = m.stepFor(m.deliveries[m.choice].delivery)
+	return m, nil
+}
+
+func (m Custody) startHandoff() tea.Cmd {
+	if m.handoff == nil || m.handoffURL != "" {
+		return nil
+	}
+	handoff, kit := m.handoff, m.kit
+	return func() tea.Msg {
+		url, err := handoff.Start(context.Background(), kit)
+		return custodyHandoffStartedMsg{url: url, err: err}
+	}
+}
+
+// stopHandoff takes the page down as soon as the flow is over. It is not the
+// only teardown - the host tears down on any exit, and the session expires on
+// its own - but it is the one that runs while the user is still watching.
+func (m Custody) stopHandoff() tea.Cmd {
+	if m.handoff == nil || m.handoffURL == "" {
+		return nil
+	}
+	handoff := m.handoff
+	return func() tea.Msg {
+		_ = handoff.Stop(context.Background())
+		return nil
+	}
+}
+
 func (m Custody) handleKey(msg tea.KeyPressMsg) (Custody, tea.Cmd) {
 	switch m.step {
 	case custodyStepChoice:
 		switch msg.String() {
 		case "up", "k":
-			m.choice = (m.choice + len(custodyDeliveries) - 1) % len(custodyDeliveries)
+			m.choice = (m.choice + len(m.deliveries) - 1) % len(m.deliveries)
 		case "down", "j", "tab":
-			m.choice = (m.choice + 1) % len(custodyDeliveries)
+			m.choice = (m.choice + 1) % len(m.deliveries)
 		case "enter":
-			m.step = custodyStepReveal
+			return m.chooseDelivery()
+		}
+		return m, nil
+
+	case custodyStepQRIntro:
+		switch msg.String() {
+		case "enter":
+			m.step = custodyStepQR
+			return m, m.startHandoff()
+		case "esc":
+			m.step = custodyStepChoice
+		}
+		return m, nil
+
+	case custodyStepQR:
+		switch msg.String() {
+		case "enter":
+			// Only reachable once there is something to have scanned.
+			if m.handoffURL == "" {
+				return m, nil
+			}
+			m.step = custodyStepGate
+			m.fromQR = true
+			return m, m.gate.Init()
+		case "esc":
+			m.step = custodyStepQRIntro
 		}
 		return m, nil
 
@@ -240,6 +404,7 @@ func (m Custody) handleKey(msg tea.KeyPressMsg) (Custody, tea.Cmd) {
 			return m, m.gate.Init()
 		case "s":
 			m.step = custodyStepSkipped
+			return m, m.stopHandoff()
 		}
 		return m, nil
 
@@ -259,13 +424,13 @@ func (m Custody) choiceView() string {
 		"you can read it back later. How do you want to save it?")
 
 	var lines []string
-	for i, opt := range custodyDeliveries {
+	for i, option := range m.deliveries {
 		cursor, style := "  ", lipgloss.NewStyle()
 		if i == m.choice {
 			cursor = "> "
 			style = style.Foreground(Colors.Focused).Bold(true)
 		}
-		lines = append(lines, style.Render(cursor+opt))
+		lines = append(lines, mouse.Mark(custodyDeliveryTarget(option.delivery), style.Render(cursor+option.label)))
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
@@ -307,9 +472,66 @@ func (m Custody) kitBlock() string {
 		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
-func (m Custody) gateView() string {
+// qrIntroView is everything the user must know before anything is scannable.
+// It is a screen of its own because the code needs the whole of the other one,
+// and because a certificate warning nobody was warned about teaches exactly
+// the habit self-hosting security depends on not having.
+func (m Custody) qrIntroView() string {
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		custodyMuted("Type the password back from what you just saved to prove it is\n"+
+		custodyMuted("The next screen shows a QR code. Scan it with your phone's camera:\n"+
+			"it opens a page served by this machine, where your phone's password\n"+
+			"manager can save the password directly."),
+		"",
+		custodyMuted(fmt.Sprintf("Your phone must be on the same network as this server - the page\n"+
+			"is not reachable from anywhere else. The link works once, and\n"+
+			"expires after %d minutes.", int(handoff.TTL.Minutes()))),
+		"",
+		lipgloss.NewStyle().Bold(true).Render("Your phone will warn about the certificate."),
+		custodyMuted("Expected, this once: this server signs its own certificate and your\n"+
+			"phone has never seen it. Tap through it for this one page - anywhere\n"+
+			"else, that warning means stop. On iPhone the page often comes up\n"+
+			"blank around the warning; pull down to refresh it."),
+		custodyHelpLine("enter show the QR code", "esc back"))
+
+	return custodyBox().Render(lipgloss.JoinVertical(lipgloss.Center,
+		custodyTitle("Send it to your phone"), body))
+}
+
+// qrView is a screen of its own: the code plus its quiet zone takes most of
+// the 24-row floor, which leaves no room to share with anything else.
+func (m Custody) qrView() string {
+	if m.handoffErr != nil {
+		return custodyBox().Render(lipgloss.JoinVertical(lipgloss.Center,
+			custodyTitle("Send it to your phone"),
+			lipgloss.NewStyle().Foreground(Colors.Error).Render("Could not serve the page:"),
+			custodyMuted(m.handoffErr.Error()),
+			custodyHelpLine("esc back - show it on this screen instead")))
+	}
+	if m.handoffURL == "" {
+		return custodyBox().Render(custodyMuted("Publishing the page..."))
+	}
+
+	code, err := QRCode(m.handoffURL)
+	if err != nil {
+		return custodyBox().Render(lipgloss.JoinVertical(lipgloss.Center,
+			lipgloss.NewStyle().Foreground(Colors.Error).Render("Could not draw the code: "+err.Error()),
+			custodyHelpLine("esc back")))
+	}
+
+	// No box and no margins: every row here belongs to the symbol.
+	return lipgloss.JoinVertical(lipgloss.Center,
+		code,
+		custodyMuted(m.handoffURL),
+		custodyMuted("enter once it is saved on your phone · esc back"))
+}
+
+func (m Custody) gateView() string {
+	source := "what you just saved"
+	if m.fromQR {
+		source = "the copy on your phone"
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		custodyMuted("Type the password back from "+source+" to prove it is\n"+
 			"saved. Pasting is fine - the point is that it now lives somewhere\n"+
 			"off this server. Dashes and case don't matter."),
 		"",

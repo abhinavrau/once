@@ -18,6 +18,7 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.4.0
 	github.com/mattn/go-runewidth v0.0.21
 	github.com/opencontainers/image-spec v1.1.1
+	github.com/piglig/go-qr v1.1.0
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.67.5
 	github.com/shirou/gopsutil/v4 v4.26.3

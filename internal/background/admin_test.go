@@ -11,30 +11,40 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/handoff"
 )
 
-func TestAdminServerServesHealthOverUnixSocket(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", dir)
+// startAdminServerForTest runs the daemon's admin server against a temporary
+// runtime dir and returns a client that speaks HTTP over its Unix socket, the
+// way the once-admin container's nginx does.
+func startAdminServerForTest(t *testing.T, dir string) *http.Client {
+	t.Helper()
 	socket := filepath.Join(dir, "once-admin.sock")
 
-	ctx := t.Context()
-
 	srv := NewAdminServer()
-	go func() { _ = srv.Run(ctx) }()
+	go func() { _ = srv.Run(t.Context()) }()
 
 	require.Eventually(t, func() bool {
 		_, err := net.Dial("unix", socket)
 		return err == nil
 	}, 2*time.Second, 10*time.Millisecond, "socket never became available")
 
-	client := &http.Client{
+	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 			},
 		},
 	}
+}
+
+func TestAdminServerServesHealthOverUnixSocket(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", dir)
+
+	client := startAdminServerForTest(t, dir)
 
 	resp, err := client.Get("http://once-admin/up")
 	require.NoError(t, err)
@@ -46,6 +56,46 @@ func TestAdminServerServesHealthOverUnixSocket(t *testing.T) {
 
 	// The config the once-admin container mounts must have been written.
 	assert.FileExists(t, filepath.Join(dir, "once-admin-nginx.conf"))
+}
+
+// TestAdminServerServesTheRecoveryHandoff is the seam between the two
+// processes: the custody flow writes a session, and the daemon - which never
+// hears about it directly - serves that session's page and burns it.
+func TestAdminServerServesTheRecoveryHandoff(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", dir)
+
+	client := startAdminServerForTest(t, dir)
+	password := "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567"
+
+	// No handoff is live: the routes are dark rather than absent.
+	resp, err := client.Get("http://once-admin" + handoff.PagePath("AAAAAAAAAAAAAAAA"))
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusGone, resp.StatusCode)
+
+	// The custody flow, in the other process, publishes the kit.
+	store := handoff.NewStore(docker.RecoveryHandoffPath())
+	token, err := store.Create(handoff.Kit{Password: password, Hostname: "vault-host"}, handoff.TTL)
+	require.NoError(t, err)
+
+	resp, err = client.Get("http://once-admin" + handoff.PagePath(token))
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, string(body), password)
+
+	// Done burns it, and the link is spent from then on.
+	resp, err = client.Post("http://once-admin"+handoff.PagePath(token)+"/done", "", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp, err = client.Get("http://once-admin" + handoff.PagePath(token))
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusGone, resp.StatusCode)
 }
 
 func TestAdminServerRemovesSocketOnShutdown(t *testing.T) {

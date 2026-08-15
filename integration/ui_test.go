@@ -320,7 +320,12 @@ func TestUIBackupsOverlayEnableFlow(t *testing.T) {
 	d.clearField("local-path")
 	d.typeText(repoDir)
 	d.click("submit")
-	d.waitForView("ONCE RECOVERY KIT", 5*time.Minute)
+
+	// The probe runs, then custody asks how to take custody. Both deliveries
+	// are offered here; this flow takes the screen.
+	d.waitForView("Send it to my phone", 5*time.Minute)
+	d.click("delivery:screen")
+	d.waitForView("ONCE RECOVERY KIT", 10*time.Second)
 
 	password := ns.BackupRepoSettings().Password
 	require.Regexp(t, `^[A-Z2-7]{32}$`, password, "the probe persisted the generated password")

@@ -56,7 +56,7 @@ func newBackupEnableCommand() *backupEnableCommand {
 	e.cmd.Flags().StringVar(&e.localPath, "local-path", docker.DefaultBackupLocalPath, "path for the local backup repository")
 	e.cmd.Flags().StringVar(&e.offsiteURL, "offsite-url", "", "restic repository URL for the offsite copy (empty disables the offsite leg)")
 	e.cmd.Flags().StringSliceVar(&e.offsiteEnv, "offsite-env", nil, "names of environment variables holding the offsite backend credentials; values are read from the environment, never the command line")
-	e.cmd.Flags().StringVar(&e.passwordDelivery, "password-delivery", "", "how to take custody of the repository password without being asked (screen)")
+	e.cmd.Flags().StringVar(&e.passwordDelivery, "password-delivery", "", "how to take custody of the repository password without being asked (screen, qr)")
 	return e
 }
 
@@ -153,7 +153,7 @@ func (e *backupEnableCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 
 	if !enabledBefore {
 		if isTerminal() {
-			confirmed, err := runCustodyFlow(ui.NewRecoveryKit(settings))
+			confirmed, err := runCustodyFlow(ctx, ns, ui.NewRecoveryKit(settings), ui.CustodyDelivery(e.passwordDelivery))
 			if err != nil {
 				return err
 			}
@@ -268,16 +268,15 @@ func (s *backupStatusCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 
 // Helpers
 
-// validatePasswordDelivery gates the --password-delivery flag: "screen" is
-// the only delivery that ships today; "qr" arrives with the phone handoff.
+// validatePasswordDelivery gates the --password-delivery flag. Whether the QR
+// can actually be drawn on this terminal is settled later, by the custody
+// flow, which is the first thing that knows the colour profile.
 func validatePasswordDelivery(delivery string) error {
-	switch delivery {
-	case "", "screen":
+	switch ui.CustodyDelivery(delivery) {
+	case ui.CustodyDeliveryAsk, ui.CustodyDeliveryScreen, ui.CustodyDeliveryQR:
 		return nil
-	case "qr":
-		return errors.New("--password-delivery=qr is not available yet; use screen")
 	default:
-		return fmt.Errorf("unknown password delivery %q (supported: screen)", delivery)
+		return fmt.Errorf("unknown password delivery %q (supported: screen, qr)", delivery)
 	}
 }
 

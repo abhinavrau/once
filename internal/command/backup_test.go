@@ -11,13 +11,13 @@ func TestValidatePasswordDelivery(t *testing.T) {
 	assert.NoError(t, validatePasswordDelivery(""))
 	assert.NoError(t, validatePasswordDelivery("screen"))
 
-	// qr ships with the phone handoff; until then it is a named refusal, not
-	// an unknown value.
-	err := validatePasswordDelivery("qr")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not available yet")
+	assert.NoError(t, validatePasswordDelivery("qr"))
 
-	assert.Error(t, validatePasswordDelivery("carrier-pigeon"))
+	// Whether a QR can actually be drawn here is the custody flow's call, made
+	// once the colour profile is known; the flag only refuses unknown words.
+	err := validatePasswordDelivery("carrier-pigeon")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "screen, qr")
 }
 
 func TestCaptureOffsiteEnvReadsValuesFromEnvironment(t *testing.T) {

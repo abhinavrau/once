@@ -59,6 +59,12 @@ type DeployOptions struct {
 	Host            string
 	TLS             bool
 	HealthCheckPath string
+	// TLSCertificatePath and TLSPrivateKeyPath serve a certificate Once
+	// supplies instead of one kamal-proxy provisions through ACME. Both are
+	// paths inside the proxy container. The recovery handoff uses them to
+	// serve on a LAN IP, which no public CA will ever issue for.
+	TLSCertificatePath string
+	TLSPrivateKeyPath  string
 }
 
 type Proxy struct {
@@ -244,6 +250,12 @@ func (p *Proxy) deployArgs(opts DeployOptions) []string {
 
 	if opts.TLS {
 		args = append(args, "--tls")
+	}
+
+	if opts.TLSCertificatePath != "" {
+		args = append(args,
+			"--tls-certificate-path", opts.TLSCertificatePath,
+			"--tls-private-key-path", opts.TLSPrivateKeyPath)
 	}
 
 	if opts.HealthCheckPath != "" {
