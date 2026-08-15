@@ -3,7 +3,6 @@ package docker
 import (
 	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -39,7 +38,7 @@ func (a *Application) Backup(ctx context.Context) error {
 }
 
 func (a *Application) BackupName() string {
-	return fmt.Sprintf("%s-%s.tar.gz", a.Settings.Name, time.Now().Format(backupTimeFormat))
+	return fmt.Sprintf("%s-%s.tar", a.Settings.Name, time.Now().Format(backupTimeFormat))
 }
 
 func (a *Application) BackupToFile(ctx context.Context, dir string, name string) error {
@@ -167,9 +166,10 @@ func (a *Application) backupToWriter(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("getting volume: %w", err)
 	}
 
-	gw := gzip.NewWriter(w)
-	defer gw.Close()
-	tw := tar.NewWriter(gw)
+	// Plain tar, deliberately uncompressed: gzip defeats restic's
+	// content-defined chunking, re-adding the whole archive every day. restic
+	// compresses at chunk granularity itself (RESTIC_COMPRESSION=auto).
+	tw := tar.NewWriter(w)
 	defer tw.Close()
 
 	if err := writeTarEntry(tw, backupAppSettingsEntry, []byte(a.Settings.Marshal())); err != nil {

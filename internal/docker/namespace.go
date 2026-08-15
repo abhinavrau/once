@@ -2,6 +2,7 @@ package docker
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -628,13 +629,21 @@ func (n *Namespace) parseBackup(r io.Reader) (ApplicationSettings, ApplicationVo
 	var volSettings ApplicationVolumeSettings
 	var volumeData bytes.Buffer
 
-	gr, err := gzip.NewReader(r)
-	if err != nil {
-		return appSettings, volSettings, nil, fmt.Errorf("%w: %v", ErrInvalidBackup, err)
+	// Once wrote gzipped archives before switching to plain tar, and those
+	// files live on users' disks forever, so the format is sniffed rather than
+	// assumed: decompress only when the gzip magic bytes are present.
+	br := bufio.NewReader(r)
+	var src io.Reader = br
+	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
+		gr, err := gzip.NewReader(br)
+		if err != nil {
+			return appSettings, volSettings, nil, fmt.Errorf("%w: %v", ErrInvalidBackup, err)
+		}
+		defer gr.Close()
+		src = gr
 	}
-	defer gr.Close()
 
-	tr := tar.NewReader(gr)
+	tr := tar.NewReader(src)
 	tw := tar.NewWriter(&volumeData)
 	defer tw.Close()
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,12 +43,9 @@ func TestBackupName(t *testing.T) {
 
 	name := app.BackupName()
 	assert.Contains(t, name, "myapp-")
-	assert.True(t, len(name) > len("myapp-.tar.gz"))
-	assert.Contains(t, name, ".tar.gz")
-
-	// Verify the embedded timestamp is parseable
-	_, ok := parseBackupTime("myapp", name)
-	assert.True(t, ok)
+	assert.True(t, len(name) > len("myapp-.tar"))
+	assert.True(t, strings.HasSuffix(name, ".tar"))
+	assert.False(t, strings.HasSuffix(name, ".tar.gz"), "exports are plain tar now")
 }
 
 func TestParseBackupTime(t *testing.T) {
