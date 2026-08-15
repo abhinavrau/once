@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 // what matters is that the bytes come back identical after a restore.
 type vaultwardenClient struct {
 	t       *testing.T
+	ctx     context.Context
 	baseURL string
 	http    *http.Client
 	token   string
@@ -39,11 +41,12 @@ type vaultItem struct {
 	Attachment     []byte
 }
 
-func newVaultwardenClient(t *testing.T, baseURL string) *vaultwardenClient {
+func newVaultwardenClient(t *testing.T, ctx context.Context, baseURL string) *vaultwardenClient {
 	t.Helper()
 
 	return &vaultwardenClient{
 		t:       t,
+		ctx:     ctx,
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
@@ -84,7 +87,7 @@ func (c *vaultwardenClient) LogIn(email, password string) {
 		"deviceName":       {"once-acceptance-test"},
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/identity/connect/token", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost, c.baseURL+"/identity/connect/token", strings.NewReader(form.Encode()))
 	require.NoError(c.t, err)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Auth-Email", base64.RawURLEncoding.EncodeToString([]byte(email)))
@@ -97,17 +100,18 @@ func (c *vaultwardenClient) LogIn(email, password string) {
 	c.token = body.AccessToken
 }
 
-// AddItem stores one item with its attachment, and returns it as the vault now
-// holds it.
-func (c *vaultwardenClient) AddItem(name, username, password, attachmentName string, attachment []byte) vaultItem {
+// AddItem takes an item in plain text, stores it the way a client would - each
+// field encrypted, the attachment as bytes - and returns it as the vault now
+// holds it, which is the value a later read is compared against.
+func (c *vaultwardenClient) AddItem(plain vaultItem) vaultItem {
 	c.t.Helper()
 
 	item := vaultItem{
-		Name:           encryptedString(name),
-		Username:       encryptedString(username),
-		Password:       encryptedString(password),
-		AttachmentName: encryptedString(attachmentName),
-		Attachment:     attachment,
+		Name:           encryptedString(plain.Name),
+		Username:       encryptedString(plain.Username),
+		Password:       encryptedString(plain.Password),
+		AttachmentName: encryptedString(plain.AttachmentName),
+		Attachment:     plain.Attachment,
 	}
 
 	var created struct {
@@ -125,7 +129,7 @@ func (c *vaultwardenClient) AddItem(name, username, password, attachmentName str
 	}, &created)
 	require.NotEmpty(c.t, created.ID)
 
-	c.attach(created.ID, item.AttachmentName, attachment)
+	c.attach(created.ID, item.AttachmentName, item.Attachment)
 	return item
 }
 
@@ -188,7 +192,7 @@ func (c *vaultwardenClient) attach(cipherID, fileName string, data []byte) {
 	require.NoError(c.t, err)
 	require.NoError(c.t, form.Close())
 
-	req, err := http.NewRequest(http.MethodPost,
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost,
 		fmt.Sprintf("%s/api/ciphers/%s/attachment/%s", c.baseURL, cipherID, slot.AttachmentID), &body)
 	require.NoError(c.t, err)
 	req.Header.Set("Content-Type", form.FormDataContentType())
@@ -204,7 +208,7 @@ func (c *vaultwardenClient) download(attachmentURL string) []byte {
 	parsed, err := url.Parse(attachmentURL)
 	require.NoError(c.t, err)
 
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+parsed.RequestURI(), nil)
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.baseURL+parsed.RequestURI(), nil)
 	require.NoError(c.t, err)
 
 	resp, err := c.http.Do(req)
@@ -223,7 +227,7 @@ func (c *vaultwardenClient) postJSON(path string, payload any, out any) {
 	body, err := json.Marshal(payload)
 	require.NoError(c.t, err)
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	require.NoError(c.t, err)
 	req.Header.Set("Content-Type", "application/json")
 	c.do(req, out)
@@ -232,7 +236,7 @@ func (c *vaultwardenClient) postJSON(path string, payload any, out any) {
 func (c *vaultwardenClient) getJSON(path string, out any) {
 	c.t.Helper()
 
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.baseURL+path, nil)
 	require.NoError(c.t, err)
 	c.do(req, out)
 }

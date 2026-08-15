@@ -29,21 +29,12 @@ import (
 // suite), which is a genuine restic backend rather than a stub: a filesystem
 // path is a repository, so the leg exercised here is the leg an S3 URL takes.
 func TestVaultwardenBackupAndBareMetalRecovery(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	// One app and a small vault: the ticket's ceiling is the suite's own
+	// ten-minute budget, and the journey runs in well under a minute of it.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	origLock := docker.BackupLockPath
-	docker.BackupLockPath = filepath.Join(t.TempDir(), "backup.lock")
-	t.Cleanup(func() { docker.BackupLockPath = origLock })
-
-	// The restore stages into the default install path, which only root can
-	// create.
-	dirs := t.TempDir()
-	t.Cleanup(func() { chownToTestUser(t, dirs) })
-	origDefault := docker.DefaultBackupLocalPath
-	docker.DefaultBackupLocalPath = filepath.Join(dirs, "default")
-	t.Cleanup(func() { docker.DefaultBackupLocalPath = origDefault })
-
+	dirs := stageBackupDirs(t)
 	localRepo := filepath.Join(dirs, "backups")
 	offsiteRepo := filepath.Join(dirs, "offsite")
 
@@ -73,8 +64,10 @@ func TestVaultwardenBackupAndBareMetalRecovery(t *testing.T) {
 	settings.Host = "vaultwarden.localhost"
 	settings.Backup = docker.BackupSettings{AutoBackup: true}
 
+	// The deploy gates - readiness on /alive, a 2xx from verifyHTTP - are what
+	// this error carries.
 	app, _, err := source.Deploy(ctx, settings, nil)
-	require.NoError(t, err, "the deploy gates are readiness on /alive and a 2xx from verifyHTTP")
+	require.NoError(t, err)
 	appName := app.Settings.Name
 
 	// -- Vault data, written the way a Bitwarden client writes it --
@@ -82,28 +75,37 @@ func TestVaultwardenBackupAndBareMetalRecovery(t *testing.T) {
 	const email = "ada@example.com"
 	const masterPassword = "once-acceptance-master-password"
 
-	vault := newVaultwardenClient(t, app.URL())
+	vault := newVaultwardenClient(t, ctx, app.URL())
 	vault.Register(email, masterPassword)
 	vault.LogIn(email, masterPassword)
 	written := []vaultItem{
-		vault.AddItem("Bank", "ada@example.com", "correct-horse-battery-staple", "recovery-codes.txt", acceptanceAttachment()),
+		vault.AddItem(vaultItem{
+			Name:           "Bank",
+			Username:       "ada@example.com",
+			Password:       "correct-horse-battery-staple",
+			AttachmentName: "recovery-codes.txt",
+			Attachment:     acceptanceAttachment(),
+		}),
 	}
-	require.Equal(t, written, vault.Items(), "the vault holds what was just written")
+	require.Equal(t, written, vault.Items())
 
 	// -- Backups enabled through the CLI: probe, then the recovery kit --
 
+	// With no terminal to run the custody gate on, enable prints the kit and
+	// carries on - and that printout is the only copy of the password that
+	// leaves this machine, so the rest of the journey uses it and nothing else.
 	out, err := captureCLIOutput("-n", sourceName, "backup", "enable",
 		"--local-path", localRepo, "--offsite-url", offsiteRepo)
-	require.NoError(t, err, "enable runs the validation probe against both repos")
+	require.NoError(t, err)
 	assert.Contains(t, out, "BACKUP PASSWORD - SHOWN ONCE, NEVER AGAIN")
 	assert.Contains(t, out, "Offsite repo: "+offsiteRepo)
+	password := docker.NormalizeRepoPassword(kitPassword(t, out))
+	require.NotEmpty(t, password)
 
 	source, err = docker.RestoreNamespace(ctx, sourceName)
 	require.NoError(t, err)
-	password := source.BackupRepoSettings().Password
-	require.NotEmpty(t, password)
-	assert.Equal(t, password, docker.NormalizeRepoPassword(kitPassword(t, out)),
-		"the password on the printed kit is the one the repos were initialized with - it is all the operator carries off this machine")
+	assert.Equal(t, source.BackupRepoSettings().Password, password,
+		"the password on the printed kit is the one the repos were initialized with")
 
 	// kamal-proxy's routes live in its named volume, so the label rewrite that
 	// stores the settings leaves the vault served.
@@ -162,9 +164,13 @@ func TestVaultwardenBackupAndBareMetalRecovery(t *testing.T) {
 	assert.Contains(t, listing, appName)
 	assert.Contains(t, listing, entry.ImageRef)
 
+	// The restore's own deploy waits on /alive, so a vault that will not come
+	// up is a failed restore rather than a failed assertion below.
 	out, err = captureCLIOutput("-n", destName, "restore", appName, "--repo", offsiteRepo)
-	require.NoError(t, err, "the restore's own deploy waits on /alive, so a vault that will not come up is a failed restore")
-	assert.Contains(t, out, "Restored ")
+	require.NoError(t, err)
+	assert.Regexp(t, `Restored vaultwarden-\w+ from snapshot \w+ \(\d{4}-\d{2}-\d{2}, `+regexp.QuoteMeta(entry.ImageRef)+`\)`, out)
+	assert.Contains(t, out, "Run `RESTIC_PASSWORD=<the password you just used> once backup enable --offsite-url "+offsiteRepo+"`",
+		"with no terminal to ask on, the resume offer becomes the one-liner that finishes the recovery")
 
 	dest, err = docker.RestoreNamespace(ctx, destName)
 	require.NoError(t, err)
@@ -189,7 +195,7 @@ func TestVaultwardenBackupAndBareMetalRecovery(t *testing.T) {
 
 	// -- The vault itself, read back through the API --
 
-	recovered := newVaultwardenClient(t, restored.URL())
+	recovered := newVaultwardenClient(t, ctx, restored.URL())
 	recovered.LogIn(email, masterPassword)
 	assert.Equal(t, written, recovered.Items(),
 		"every item comes back byte for byte, attachment included")
@@ -229,7 +235,6 @@ func resticSnapshotList(t *testing.T, ctx context.Context, repoDir, password str
 }
 
 type resticSnapshot struct {
-	ShortID  string    `json:"short_id"`
 	Time     time.Time `json:"time"`
 	Tree     string    `json:"tree"`
 	Paths    []string  `json:"paths"`

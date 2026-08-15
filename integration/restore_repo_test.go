@@ -33,20 +33,9 @@ func TestRestoreVaultwardenFromRepo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
-	origLock := docker.BackupLockPath
-	docker.BackupLockPath = filepath.Join(t.TempDir(), "backup.lock")
-	t.Cleanup(func() { docker.BackupLockPath = origLock })
-
-	dirs := t.TempDir()
-	t.Cleanup(func() { chownToTestUser(t, dirs) })
+	dirs := stageBackupDirs(t)
 	localRepo := filepath.Join(dirs, "backups")
 	offsiteRepo := filepath.Join(dirs, "offsite")
-
-	// The restored install stages into the default install path, which only
-	// root can create.
-	origDefault := docker.DefaultBackupLocalPath
-	docker.DefaultBackupLocalPath = filepath.Join(dirs, "default")
-	t.Cleanup(func() { docker.DefaultBackupLocalPath = origDefault })
 
 	password, err := docker.GenerateRepoPassword()
 	require.NoError(t, err)
@@ -289,10 +278,13 @@ func assertSingleDataMount(t *testing.T, ctx context.Context, app *docker.Applic
 func resticSnapshotAppTags(t *testing.T, ctx context.Context, repoDir, password string) []string {
 	t.Helper()
 
-	out := runResticInTest(t, ctx, repoDir, password, "snapshots", "--json", "--no-lock")
 	var tags []string
-	for _, match := range regexp.MustCompile(`"app:[^"]+"`).FindAllString(out, -1) {
-		tags = append(tags, strings.Trim(match, `"`))
+	for _, snapshot := range resticSnapshotList(t, ctx, repoDir, password) {
+		for _, tag := range snapshot.Tags {
+			if strings.HasPrefix(tag, "app:") {
+				tags = append(tags, tag)
+			}
+		}
 	}
 	return tags
 }

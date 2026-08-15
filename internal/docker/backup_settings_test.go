@@ -130,12 +130,24 @@ func TestOlderBinaryRewritePreservesBackupSettings(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, current.Backups, decoded.Backups)
 	assert.Equal(t, 8443, decoded.HTTPSPort, "the older binary's own edit still lands")
+}
 
-	// Nested one level deeper the carry cannot save it: unknown fields are
-	// captured at the top level only, so anything inside a modelled object is
-	// gone the moment an older binary writes the label back.
+// And the counterfactual that makes the top-level key load-bearing: unknown
+// fields are captured at the top level only, so settings nested inside a key
+// an older binary already models are gone the moment it writes the label back.
+func TestNestedBackupSettingsWouldNotSurviveAnOlderBinary(t *testing.T) {
+	current := ProxySettings{
+		HTTPPort: 80,
+		Backups: BackupRepoSettings{
+			Enabled:   true,
+			LocalPath: "/var/lib/once/backups",
+			Password:  "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+		},
+	}
+
 	partial, err := decodeLabel[partialProxySettings](current.Marshal())
 	require.NoError(t, err)
+
 	nested, err := UnmarshalProxySettings(encodeLabel[partialProxySettings](partial))
 	require.NoError(t, err)
 	assert.Empty(t, nested.Backups.Password)
