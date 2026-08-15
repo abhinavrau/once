@@ -2,14 +2,25 @@ package docker
 
 import "time"
 
+// failedTaskRetryInterval floors how soon a failed backup or update retries.
+// Without it a permanently failing task retries on every daemon tick - 288
+// attempts a day, each pausing a container or calling a backend.
+const failedTaskRetryInterval = time.Hour
+
 type State struct {
 	Apps           map[string]*AppState `json:"apps"`
 	LastSelfUpdate OperationResult      `json:"lastSelfUpdate"`
+	// LastCheck records the latest restic check result per repo ("local" or
+	// "offsite") - a repo-wide fact, so it lives beside the per-app states.
+	LastCheck map[string]OperationResult `json:"lastCheck,omitempty"`
 }
 
 type AppState struct {
 	LastBackup OperationResult `json:"lastBackup"`
 	LastUpdate OperationResult `json:"lastUpdate"`
+	// LastArchiveBytes is the size of the app's last staged backup archive,
+	// the baseline for the free-disk check. Zero means no baseline yet.
+	LastArchiveBytes int64 `json:"lastArchiveBytes,omitempty"`
 }
 
 func (as *AppState) LastBackupResult() *OperationResult {
@@ -65,6 +76,17 @@ func (s *State) RecordUpdate(appName string, err error) {
 	s.ensureApp(appName).LastUpdate = newResult(err)
 }
 
+func (s *State) RecordArchiveBytes(appName string, n int64) {
+	s.ensureApp(appName).LastArchiveBytes = n
+}
+
+func (s *State) RecordCheck(repo string, err error) {
+	if s.LastCheck == nil {
+		s.LastCheck = make(map[string]OperationResult)
+	}
+	s.LastCheck[repo] = newResult(err)
+}
+
 // Private
 
 func (s *State) operationDue(appName string, getResult func(*AppState) OperationResult) bool {
@@ -78,7 +100,8 @@ func (s *State) operationDue(appName string, getResult func(*AppState) Operation
 		return true
 	}
 
-	return result.Error != "" || time.Since(result.At) >= AutomaticTaskInterval
+	return result.Error != "" && time.Since(result.At) >= failedTaskRetryInterval ||
+		time.Since(result.At) >= AutomaticTaskInterval
 }
 
 func (s *State) ensureApp(appName string) *AppState {
