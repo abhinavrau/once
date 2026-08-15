@@ -140,6 +140,30 @@ Decisions worth carrying forward:
   `backup_custody.go`; `ErrBackupInProgress` and the restic argument builders
   moved to the files that own their kind.
 
+### Notes for 17 and 18
+
+- **17 (status/dashboard):** `Namespace.ListRepoSnapshots(ctx, RestoreRepo)`
+  answers "what is actually in this repo" for any repo, with no configuration;
+  `RepoSnapshots.Apps()` gives one line per app (count, newest, image). It is a
+  much heavier question than `LatestOffsiteSnapshot` - one restic container over
+  the whole repo - so it belongs behind a user action, never a render.
+  `RepoSnapshot.Bytes` carries the archive size restic recorded, if a size is
+  wanted anywhere.
+- **18 (acceptance test):** `TestRestoreVaultwardenFromRepo` already walks the
+  whole 3-2-1 story (deploy the real image, two backups into two repos, the
+  install destroyed, discovery, restore, backups resumed) - it is the acceptance
+  test's skeleton, and its helpers are reusable: `writeVaultData` /
+  `readVaultData` (exec into `/data`), `assertSingleDataMount`,
+  `resticSnapshotAppTags`, and `execInContainerOutput` - the exec helper that
+  returns stdout, which the suite did not have. What it deliberately does *not*
+  do is assert vault integrity through Vaultwarden's own API: it proves the
+  deploy gates pass on `/alive` and that a file written into `/data` comes back
+  byte for byte. Both `docker.DefaultBackupLocalPath` and `docker.BackupLockPath`
+  must be pointed at writable paths in any test that restores.
+- **Both:** a full suite run is now ~12.5 minutes of Docker work. Take
+  `flock /tmp/once-integration.lock` - a sibling agent's run collided with this
+  work twice.
+
 ### One thing changed outside this ticket
 
 The integration suite's `go test` timeout is now explicit at **25m**
