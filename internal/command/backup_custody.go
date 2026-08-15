@@ -15,6 +15,25 @@ import (
 	"github.com/basecamp/once/internal/ui"
 )
 
+// takeCustody is the whole custody moment, shared by `backup enable` and the
+// restore flow's resume prompt: the interactive gate on a terminal, and the
+// banner - print, no gate - anywhere else, so a scripted run never hangs on a
+// prompt. Reports whether custody was taken; a refusal says what was kept and
+// how to finish, since the settings and the password are already persisted.
+func takeCustody(ctx context.Context, ns *docker.Namespace, settings docker.BackupRepoSettings, delivery ui.CustodyDelivery) (bool, error) {
+	if !isTerminal() {
+		printRepoPasswordBanner(ui.NewRecoveryKit(settings))
+		return true, nil
+	}
+
+	confirmed, err := runCustodyFlow(ctx, ns, ui.NewRecoveryKit(settings), delivery)
+	if err != nil || confirmed {
+		return confirmed, err
+	}
+	fmt.Println("Backups are NOT enabled. The password and settings are saved; run `once backup enable` to confirm the password and turn them on.")
+	return false, nil
+}
+
 // runCustodyFlow hands the Repo Password over interactively: the shared
 // custody component run as its own sequential bubbletea program, the same
 // pattern runShowingProgress already uses (ADR-0013 amendment: reading a

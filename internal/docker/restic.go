@@ -28,6 +28,15 @@ const (
 	resticCacheMount   = "/root/.cache/restic"
 )
 
+// The tag prefixes every Backup Run snapshot carries. restic keeps no other
+// per-snapshot metadata, and a bare-metal restore has to read the app name and
+// the image ref before it has an archive to open - so they travel as tags.
+// Tags play no part in retention: forget groups by host,paths.
+const (
+	snapshotAppTag   = "app:"
+	snapshotImageTag = "image:"
+)
+
 // restic exit codes the engine drives on (restic >= 0.17).
 const (
 	resticExitNoRepository  = 10
@@ -55,9 +64,14 @@ type resticRepo struct {
 	// at /offsite: an offsite repository that is a filesystem path - a second
 	// disk or a network mount - rather than a backend URL.
 	offsiteRepoDir string
-	// stagingDir is the host Staging Directory, bind-mounted read-only at
-	// /staging: Once writes the archive, restic only reads it.
+	// stagingDir is the host Staging Directory, bind-mounted at /staging:
+	// Once writes the archive, restic only reads it.
 	stagingDir string
+	// stagingWritable makes that mount read-write. Only a restore needs it -
+	// it is restic that writes the archive back out - and backing up under a
+	// read-only mount is the guarantee that a backup can never alter the file
+	// it is preserving.
+	stagingWritable bool
 	// initArgs overrides the plain "init" ensureRepo runs when the repo does
 	// not exist yet; empty means []string{"init"}.
 	initArgs []string
@@ -132,8 +146,14 @@ func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...stri
 	}
 
 	mounts := []mount.Mount{
-		{Type: mount.TypeBind, Source: repo.stagingDir, Target: resticStagingMount, ReadOnly: true},
 		{Type: mount.TypeVolume, Source: n.resticCacheVolume(), Target: resticCacheMount},
+	}
+	// Only commands that carry an archive mount the Staging Directory. A
+	// question about a repo must not require one to exist: on a fresh host
+	// nothing has created it, and Docker refuses a missing bind source with an
+	// error naming a path the user never typed.
+	if repo.stagingDir != "" {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: repo.stagingDir, Target: resticStagingMount, ReadOnly: !repo.stagingWritable})
 	}
 	if repo.localRepoDir != "" {
 		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: repo.localRepoDir, Target: resticRepoMount})
@@ -368,15 +388,34 @@ func resticProbeBackupArgs(namespace string) []string {
 // resticBackupArgs builds the backup invocation. Both --host and the staging
 // path are constants of the namespace and app name: forget groups by
 // host,paths, so any variation would mint a new retention group per run and
-// retention would silently keep everything forever. The app tag is what the
-// staleness query (`snapshots --latest 1 --tag app:<name>`) selects on.
-func resticBackupArgs(namespace, appName string) []string {
-	return []string{
+// retention would silently keep everything forever. Tags carry what a restore
+// must read before it has an archive to open, and are not part of the
+// grouping. The app tag is also what the staleness query
+// (`snapshots --latest 1 --tag app:<name>`) selects on.
+func resticBackupArgs(namespace, appName, image string) []string {
+	args := []string{
 		"backup", "--json",
 		"--host", namespace,
-		"--tag", "app:" + appName,
-		resticStagingMount + "/" + appName + ".tar",
+		"--tag", snapshotAppTag + appName,
 	}
+	if image != "" {
+		args = append(args, "--tag", snapshotImageTag+image)
+	}
+	return append(args, resticStagingMount+"/"+appName+".tar")
+}
+
+// resticRepoSnapshotsArgs asks a repo for everything it holds - the discovery
+// listing. --no-lock keeps it a pure question: a repo shared with another host
+// must not gain a lock because somebody listed it.
+func resticRepoSnapshotsArgs() []string {
+	return []string{"snapshots", "--json", "--no-lock"}
+}
+
+// resticRestoreArgs restores the Staging Directory subfolder of a snapshot
+// into the Staging Directory: the snapshot holds exactly one file, the app's
+// archive, at the fixed in-container path every Backup Run writes.
+func resticRestoreArgs(snapshotID string) []string {
+	return []string{"restore", snapshotID + ":" + resticStagingMount, "--target", resticStagingMount}
 }
 
 // resticLatestSnapshotArgs asks a repo for one app's newest snapshot - the
@@ -389,7 +428,7 @@ func resticLatestSnapshotArgs(namespace, appName string) []string {
 		"snapshots", "--json", "--no-lock",
 		"--latest", "1",
 		"--host", namespace,
-		"--tag", "app:" + appName,
+		"--tag", snapshotAppTag + appName,
 	}
 }
 
@@ -409,14 +448,16 @@ func resticCheckArgs() []string {
 }
 
 // backupDiskCheck fails when the staging device holds less than twice the
-// app's last archive size. A zero baseline (newly participating app) skips
-// the check - there is nothing to size against.
-func backupDiskCheck(freeBytes uint64, lastArchiveBytes int64) error {
-	if lastArchiveBytes <= 0 {
+// archive it is about to hold - the app's last one when backing up, the
+// snapshot's own when restoring. A zero baseline (a newly participating app, a
+// snapshot from a restic too old to record its size) skips the check: there is
+// nothing to size against.
+func backupDiskCheck(freeBytes uint64, archiveBytes int64) error {
+	if archiveBytes <= 0 {
 		return nil
 	}
-	if freeBytes < 2*uint64(lastArchiveBytes) {
-		return fmt.Errorf("not enough free disk to stage the backup: %d bytes free, need %d (2x the last archive)", freeBytes, 2*lastArchiveBytes)
+	if freeBytes < 2*uint64(archiveBytes) {
+		return fmt.Errorf("not enough free disk in the staging directory: %d bytes free, need %d (2x the archive)", freeBytes, 2*archiveBytes)
 	}
 	return nil
 }

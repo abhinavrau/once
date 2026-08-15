@@ -105,7 +105,7 @@ func (b *backupCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 	// host flock.
 	lock, err := system.TryLock(docker.BackupLockPath)
 	if errors.Is(err, system.ErrLocked) {
-		return errors.New("a backup is already in progress; try again when it finishes")
+		return docker.ErrBackupInProgress
 	}
 	if err != nil {
 		return err
@@ -153,19 +153,9 @@ func (e *backupEnableCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 	settings = ns.BackupRepoSettings()
 
 	if !enabledBefore {
-		if isTerminal() {
-			confirmed, err := runCustodyFlow(ctx, ns, ui.NewRecoveryKit(settings), ui.CustodyDelivery(e.passwordDelivery))
-			if err != nil {
-				return err
-			}
-			if !confirmed {
-				fmt.Println("Backups are NOT enabled. The password and settings are saved; run `once backup enable` to confirm the password and turn them on.")
-				return nil
-			}
-		} else {
-			// No TTY: the banner is the custody fallback - print, no gate,
-			// and never hang a scripted run on a prompt.
-			printRepoPasswordBanner(ui.NewRecoveryKit(settings))
+		confirmed, err := takeCustody(ctx, ns, settings, ui.CustodyDelivery(e.passwordDelivery))
+		if err != nil || !confirmed {
+			return err
 		}
 	}
 
@@ -183,10 +173,14 @@ func (e *backupEnableCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 // flag keeps what is configured. The password stays as stored (empty on a
 // first enable) - ConfigureBackups mints it when missing and reuses it
 // otherwise, so a retry hands over the same password the repos were
-// initialized with.
+// initialized with - unless RESTIC_PASSWORD names one, which is how an
+// install enrolls a repository that already exists. Without it, a recovered
+// host pointed at the repo it just restored from would mint a fresh password
+// and fail to open it.
 func (e *backupEnableCommand) collectSettings(ns *docker.Namespace, cmd *cobra.Command) (docker.BackupRepoSettings, error) {
 	settings := ns.BackupRepoSettings()
 
+	settings.Password = enableRepoPassword(settings.Password)
 	if cmd.Flags().Changed("local-path") || settings.LocalPath == "" {
 		settings.LocalPath = e.localPath
 	}
@@ -291,6 +285,21 @@ func validatePasswordDelivery(delivery string) error {
 	default:
 		return fmt.Errorf("unknown password delivery %q (supported: screen, qr)", delivery)
 	}
+}
+
+// enableRepoPassword decides which password an enable runs with. A stored one
+// always wins - a retry must reuse the password its repos were initialized
+// with. Otherwise RESTIC_PASSWORD, which is how an install enrolls a
+// repository that already exists: without it a host recovered from a repo and
+// pointed back at it would mint a fresh password and fail to open it. Empty
+// leaves ConfigureBackups to mint one. Taken verbatim, exactly as
+// `once restore` reads it - the two must agree, or an enable would store a
+// password that differs from the one that just opened the repository.
+func enableRepoPassword(stored string) string {
+	if stored != "" {
+		return stored
+	}
+	return os.Getenv("RESTIC_PASSWORD")
 }
 
 // captureOffsiteEnv reads the named variables from Once's own environment:

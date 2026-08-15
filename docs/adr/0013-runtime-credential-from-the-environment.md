@@ -37,6 +37,13 @@ We decided the secret arrives only through the environment:
   shared custody component under the CLI's existing sequential-program
   pattern - a bubbletea program run to completion the way `cli_progress.go`
   already renders progress, so no terminal negotiation ever happens.
+  Amendment (restore from a repo): `once restore` reads the Repo Password with
+  a no-echo prompt when `RESTIC_PASSWORD` is unset. It is the one exception to
+  "reading a secret in stays TUI-only", and the case bounds it: bare-metal
+  recovery has no install holding the password, no TUI to offer, and nothing
+  rendering progress at the moment it asks. `RESTIC_PASSWORD` stays the
+  scripted path, and with no terminal the prompt is an error naming it, never
+  a hang.
 - The variable is read in `internal/command`, never through
   `controlSeamActive()`. It shares the `ONCE_TAILSCALE_` prefix with the hidden
   Control Seam variables, so that prefix alone no longer marks a hidden seam.

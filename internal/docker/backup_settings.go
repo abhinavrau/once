@@ -9,8 +9,9 @@ import (
 )
 
 // DefaultBackupLocalPath is where the local Backup Repo lives unless the user
-// points it elsewhere (typically at a second disk).
-const DefaultBackupLocalPath = "/var/lib/once/backups"
+// points it elsewhere (typically at a second disk). A var so tests can point
+// it at a writable location, as with BackupLockPath.
+var DefaultBackupLocalPath = "/var/lib/once/backups"
 
 // The names per-repo results are recorded under - in State.LastCheck, and in
 // the log lines and status output that report on one repo rather than one app.
@@ -24,6 +25,10 @@ const (
 // the restic container and thrown away with it, while every command reported
 // success - a backup that looks identical to a working one and holds nothing.
 var ErrOffsiteURLInvalid = errors.New("offsite repository must be an absolute path or a restic backend URL such as s3:s3.amazonaws.com/bucket/once")
+
+// ErrRepoURLInvalid is the same refusal for a repository named on the command
+// line, where an empty value is not the "off" switch but a mistake.
+var ErrRepoURLInvalid = errors.New("backup repository must be an absolute path or a restic backend URL such as s3:s3.amazonaws.com/bucket/once")
 
 // BackupRepoSettings configures the install-wide Backup Repo. It rides the
 // Proxy's once label as a top-level key (ADR-0014): unknownFields walks only
@@ -55,6 +60,17 @@ func (s BackupRepoSettings) StagingDir() string {
 	return s.LocalPath + ".staging"
 }
 
+// StagingDirOrDefault is the Staging Directory when there may be no
+// configuration at all: a restore onto a fresh install has no local repo to
+// hang it off, and "".staging is a relative path in whatever directory the
+// user happened to run from.
+func (s BackupRepoSettings) StagingDirOrDefault() string {
+	if s.LocalPath == "" {
+		return BackupRepoSettings{LocalPath: DefaultBackupLocalPath}.StagingDir()
+	}
+	return s.StagingDir()
+}
+
 // Private
 
 // offsiteDir is the host directory an offsite repository lives in when it is
@@ -65,17 +81,31 @@ func (s BackupRepoSettings) offsiteDir() string {
 	return offsiteDirFromURL(s.OffsiteURL)
 }
 
-// ValidateOffsiteURL accepts an empty URL (the offsite leg is off), a
-// filesystem path Once can mount, or anything naming a restic backend by
-// scheme. See ErrOffsiteURLInvalid for what is left.
+// ValidateOffsiteURL accepts an empty URL (the offsite leg is off) alongside
+// everything ValidateRepoURL accepts.
 func ValidateOffsiteURL(url string) error {
-	if url == "" || offsiteDirFromURL(url) != "" {
-		return nil
-	}
-	if scheme, _, found := strings.Cut(url, ":"); found && scheme != "" && scheme != "local" && !strings.ContainsAny(scheme, `/\.`) {
+	if url == "" || addressableRepoURL(url) {
 		return nil
 	}
 	return ErrOffsiteURLInvalid
+}
+
+// RepoOnDisk reports whether a repository is a filesystem path Once mounts -
+// a second disk, a network mount - rather than a backend it reaches over the
+// network and hands credentials to.
+func RepoOnDisk(url string) bool {
+	return offsiteDirFromURL(url) != ""
+}
+
+// ValidateRepoURL accepts a repository Once can actually address: a filesystem
+// path it can bind-mount, or anything naming a restic backend by scheme. A
+// relative path is the one that has to be refused loudly - restic would read
+// it inside the container, where it means nothing.
+func ValidateRepoURL(url string) error {
+	if addressableRepoURL(url) {
+		return nil
+	}
+	return ErrRepoURLInvalid
 }
 
 // GenerateRepoPassword returns the restic repository password: 32 base32
@@ -108,6 +138,16 @@ func NormalizeRepoPassword(s string) string {
 }
 
 // Helpers
+
+// addressableRepoURL reports whether Once can reach the repository at all:
+// a path it can mount, or a backend named by scheme.
+func addressableRepoURL(url string) bool {
+	if offsiteDirFromURL(url) != "" {
+		return true
+	}
+	scheme, _, found := strings.Cut(url, ":")
+	return found && scheme != "" && scheme != "local" && !strings.ContainsAny(scheme, `/\.`)
+}
 
 // offsiteDirFromURL returns the host directory behind a filesystem-path
 // offsite repository, honouring restic's optional local: prefix, and "" for

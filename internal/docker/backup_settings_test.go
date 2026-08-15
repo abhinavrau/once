@@ -61,6 +61,17 @@ func TestValidateOffsiteURL(t *testing.T) {
 	}
 }
 
+// A repository named on the command line takes the same addresses, except
+// that empty is a mistake there rather than the offsite leg's off switch.
+func TestValidateRepoURL(t *testing.T) {
+	for _, url := range []string{"/mnt/usb/once", "local:/mnt/usb/once", "s3:s3.example.com/bucket/once", "rest:http://host:8000/"} {
+		assert.NoError(t, ValidateRepoURL(url), url)
+	}
+	for _, url := range []string{"", "./backups", "backups", "local:relative/path"} {
+		assert.ErrorIs(t, ValidateRepoURL(url), ErrRepoURLInvalid, url)
+	}
+}
+
 func TestProxySettingsBackupsLabelRoundTrip(t *testing.T) {
 	settings := ProxySettings{
 		HTTPPort:  80,

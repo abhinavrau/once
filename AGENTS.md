@@ -64,11 +64,18 @@ make lint        # Run golangci-lint
 
 ## Testing notes
 
-- The integration suite runs under a 30-minute total `go test` timeout. A single
-  hung test consumes the whole budget and the suite reports as a timeout panic,
-  masking the real culprit. When this happens, read the goroutine dump for the
-  goroutine stuck in the test body (e.g. `appDriver.waitUntil`), not the alarm or
-  the background `scraper.go` stats-stream goroutines that always appear.
+- The integration suite runs under a total `go test` timeout, set explicitly to
+  30 minutes in the Makefile: a healthy run now takes about 10 minutes of real
+  Docker work, and go's 10-minute default had begun reporting a passing suite as
+  a timeout panic. A single hung test still consumes the whole budget and still
+  reports as a timeout panic, masking the real culprit. When this happens, read
+  the goroutine dump for the goroutine stuck in the test body (e.g.
+  `appDriver.waitUntil`), not the alarm or the background `scraper.go`
+  stats-stream goroutines that always appear.
+- Run the suite under `flock /tmp/once-integration.lock` whenever another agent
+  may share the Docker daemon. Two concurrent runs tear down each other's
+  containers, which surfaces as "network not found" or a proxy that vanishes
+  mid-test - and looks like flakiness rather than a collision.
 - TUI forms are integration-tested in `integration/ui_test.go` by clicking named
   targets - `field:<key>` for a field, `submit`/`action`/`cancel` for the buttons -
   so adding, removing, or reordering a field does not break the drivers. The
