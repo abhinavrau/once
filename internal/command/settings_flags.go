@@ -3,11 +3,11 @@ package command
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -24,8 +24,10 @@ type settingsFlags struct {
 	cpus         int
 	memory       int
 	autoUpdate   bool
-	backupPath   string
 	autoBackup   bool
+	dataPath     string
+	healthPath   string
+	urlEnvVar    string
 }
 
 func (f *settingsFlags) register(cmd *cobra.Command) {
@@ -43,13 +45,17 @@ func (f *settingsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.cpus, "cpus", defaults.Resources.CPUs, "CPU limit for the container")
 	cmd.Flags().IntVar(&f.memory, "memory", defaults.Resources.MemoryMB, "memory limit in MB for the container")
 	cmd.Flags().BoolVar(&f.autoUpdate, "auto-update", defaults.AutoUpdate, "automatically update the application")
-	cmd.Flags().StringVar(&f.backupPath, "backup-path", defaults.Backup.Path, "path for backups")
-	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", defaults.Backup.AutoBackup, "enable automatic backups")
+	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", defaults.Backup.AutoBackup, "include this application in backups")
+	cmd.Flags().StringVar(&f.dataPath, "data-path", defaults.Profile.DataPath, "path where the application keeps its data (default: /storage and /rails/storage)")
+	cmd.Flags().StringVar(&f.healthPath, "health-check-path", defaults.Profile.HealthPath, "path the application answers health checks on (default: /up)")
+	cmd.Flags().StringVar(&f.urlEnvVar, "url-env-var", defaults.Profile.URLEnvVar, "environment variable to fill with the application's URL")
 
-	// Removed flag, kept registered (hidden) so it fails with a clean-break
-	// error naming its replacement instead of cobra's "unknown flag".
+	// Removed flags, kept registered (hidden) so they fail with a clean-break
+	// error naming their replacement instead of cobra's "unknown flag".
 	cmd.Flags().Bool("tailscale", false, "")
 	_ = cmd.Flags().MarkHidden("tailscale")
+	cmd.Flags().String("backup-path", "", "")
+	_ = cmd.Flags().MarkHidden("backup-path")
 }
 
 // checkRemoved fails a command that was invoked with a removed flag, naming
@@ -58,23 +64,34 @@ func (f *settingsFlags) checkRemoved(cmd *cobra.Command) error {
 	if cmd.Flags().Changed("tailscale") {
 		return errors.New("the --tailscale flag has been removed: use --expose tailnet instead")
 	}
+	if cmd.Flags().Changed("backup-path") {
+		return errors.New("the --backup-path flag has been removed: backups go to the shared repo now, see `once backup enable`")
+	}
 	return nil
 }
 
-func (f *settingsFlags) buildSettings(image, host string, exposure docker.Exposure) (docker.ApplicationSettings, error) {
+// buildSettings layers a deploy's settings: defaults, then the catalog entry's
+// Profile, then any flags the user set.
+func (f *settingsFlags) buildSettings(entry catalog.App, host string, exposure docker.Exposure) (docker.ApplicationSettings, error) {
 	envVars, err := f.parseEnvVars()
 	if err != nil {
 		return docker.ApplicationSettings{}, err
 	}
 
-	if f.backupPath != "" && !filepath.IsAbs(f.backupPath) {
-		return docker.ApplicationSettings{}, docker.ErrBackupPathRelative
-	}
-
 	// Start from the defaults so fields without a flag keep their default value.
 	s := docker.DefaultApplicationSettings()
-	s.Image = image
+	s.Image = entry.ImageRef
 	s.Host = host
+	s.Profile = entry.Profile
+	if f.dataPath != "" {
+		s.Profile.DataPath = f.dataPath
+	}
+	if f.healthPath != "" {
+		s.Profile.HealthPath = f.healthPath
+	}
+	if f.urlEnvVar != "" {
+		s.Profile.URLEnvVar = f.urlEnvVar
+	}
 	s.Exposure = exposure
 	s.DisableTLS = f.disableTLS
 	s.EnvVars = envVars
@@ -90,10 +107,7 @@ func (f *settingsFlags) buildSettings(image, host string, exposure docker.Exposu
 		MemoryMB: f.memory,
 	}
 	s.AutoUpdate = f.autoUpdate
-	s.Backup = docker.BackupSettings{
-		Path:       f.backupPath,
-		AutoBackup: f.autoBackup,
-	}
+	s.Backup = docker.BackupSettings{AutoBackup: f.autoBackup}
 
 	return s, nil
 }
@@ -152,17 +166,20 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 		}
 		s.Exposure = exposure
 	}
-	if cmd.Flags().Changed("backup-path") {
-		if f.backupPath != "" && !filepath.IsAbs(f.backupPath) {
-			return s, docker.ErrBackupPathRelative
-		}
-		s.Backup.Path = f.backupPath
-	}
 	if cmd.Flags().Changed("auto-backup") {
 		s.Backup.AutoBackup = f.autoBackup
 	}
+	if cmd.Flags().Changed("data-path") {
+		s.Profile.DataPath = f.dataPath
+	}
+	if cmd.Flags().Changed("health-check-path") {
+		s.Profile.HealthPath = f.healthPath
+	}
+	if cmd.Flags().Changed("url-env-var") {
+		s.Profile.URLEnvVar = f.urlEnvVar
+	}
 
-	host, err := docker.ResolveHost(s.Exposure, s.Host, docker.NameFromImageRef(s.Image))
+	host, err := docker.ResolveHost(s.Exposure, s.Host, s.Profile.AppName(s.Image))
 	if err != nil {
 		return s, err
 	}

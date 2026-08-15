@@ -32,7 +32,7 @@ func TestBuildEnvWithSMTP(t *testing.T) {
 		},
 	}
 
-	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"})
+	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"}, "")
 
 	assert.Contains(t, env, "SMTP_ADDRESS=smtp.example.com")
 	assert.Contains(t, env, "SMTP_PORT=587")
@@ -44,7 +44,7 @@ func TestBuildEnvWithSMTP(t *testing.T) {
 func TestBuildEnvWithCPULimit(t *testing.T) {
 	settings := ApplicationSettings{Resources: ContainerResources{CPUs: 4}}
 
-	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"})
+	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"}, "")
 
 	assert.Contains(t, env, "NUM_CPUS=4")
 }
@@ -52,7 +52,7 @@ func TestBuildEnvWithCPULimit(t *testing.T) {
 func TestBuildEnvWithoutCPULimit(t *testing.T) {
 	settings := ApplicationSettings{}
 
-	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"})
+	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"}, "")
 
 	assert.NotContains(t, env, "NUM_CPUS=0")
 }
@@ -60,7 +60,7 @@ func TestBuildEnvWithoutCPULimit(t *testing.T) {
 func TestBuildEnvWithoutSMTP(t *testing.T) {
 	settings := ApplicationSettings{}
 
-	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"})
+	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"}, "")
 
 	for _, e := range env {
 		assert.NotContains(t, e, "SMTP_")
@@ -101,16 +101,10 @@ func TestAutoUpdateEqualDiffers(t *testing.T) {
 }
 
 func TestBackupSettingsEqualDiffers(t *testing.T) {
-	base := ApplicationSettings{Name: "app", Backup: BackupSettings{Path: "/backups", AutoBackup: true}}
+	base := ApplicationSettings{Name: "app", Backup: BackupSettings{AutoBackup: true}}
 
-	differentPath := ApplicationSettings{Name: "app", Backup: BackupSettings{Path: "/other", AutoBackup: true}}
-	assert.False(t, base.Equal(differentPath))
-
-	differentAutoBackupup := ApplicationSettings{Name: "app", Backup: BackupSettings{Path: "/backups", AutoBackup: false}}
-	assert.False(t, base.Equal(differentAutoBackupup))
-
-	noBackup := ApplicationSettings{Name: "app"}
-	assert.False(t, base.Equal(noBackup))
+	differentAutoBackup := ApplicationSettings{Name: "app", Backup: BackupSettings{AutoBackup: false}}
+	assert.False(t, base.Equal(differentAutoBackup))
 }
 
 func TestExposureBackfilledFromHostOnUnmarshal(t *testing.T) {
@@ -201,7 +195,7 @@ func TestBuildEnvWithVAPIDKeys(t *testing.T) {
 		VAPIDPublicKey:  "test-vapid-public",
 		VAPIDPrivateKey: "test-vapid-private",
 	}
-	env := settings.BuildEnv(vol)
+	env := settings.BuildEnv(vol, "")
 
 	assert.Contains(t, env, "VAPID_PUBLIC_KEY=test-vapid-public")
 	assert.Contains(t, env, "VAPID_PRIVATE_KEY=test-vapid-private")
@@ -215,7 +209,7 @@ func TestBuildEnvWithEnvVars(t *testing.T) {
 		},
 	}
 
-	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"})
+	env := settings.BuildEnv(ApplicationVolumeSettings{SecretKeyBase: "test-secret-key"}, "")
 
 	assert.Contains(t, env, "DB_HOST=postgres.local")
 	assert.Contains(t, env, "DB_NAME=mydb")
@@ -257,12 +251,11 @@ func TestAutoUpdateAndBackupMarshalRoundTrip(t *testing.T) {
 		Image:      "img:latest",
 		Exposure:   ExposureLocal,
 		AutoUpdate: true,
-		Backup:     BackupSettings{Path: "/backups", AutoBackup: true},
+		Backup:     BackupSettings{AutoBackup: true},
 	}
 	restored, err := UnmarshalApplicationSettings(original.Marshal())
 	require.NoError(t, err)
 	assert.True(t, restored.AutoUpdate)
-	assert.Equal(t, "/backups", restored.Backup.Path)
 	assert.True(t, restored.Backup.AutoBackup)
 	assert.True(t, original.Equal(restored))
 }

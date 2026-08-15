@@ -47,8 +47,8 @@ func TestCLIDeployExposureLifecycle(t *testing.T) {
 
 	restored, err := docker.RestoreNamespace(ctx, nsName)
 	require.NoError(t, err)
-	app := restored.ApplicationByHost("once-campfire.localhost")
-	require.NotNil(t, app, "expected the host derived from the resolved catalog image, not the catalog name")
+	app := restored.ApplicationByHost("campfire.localhost")
+	require.NotNil(t, app, "expected the host derived from the catalog entry BaseName")
 	assert.Equal(t, "ghcr.io/basecamp/once-campfire", app.Settings.Image)
 	assert.Equal(t, docker.ExposureLocal, app.Settings.Exposure)
 	assert.False(t, app.Settings.TLSEnabled())
@@ -63,12 +63,12 @@ func TestCLIDeployExposureLifecycle(t *testing.T) {
 	unmarshalCLI(t, &listed, "-n", nsName, "list", "--json")
 	require.Len(t, listed, 1)
 	assert.Equal(t, appName, listed[0]["name"])
-	assert.Equal(t, "once-campfire.localhost", listed[0]["host"])
+	assert.Equal(t, "campfire.localhost", listed[0]["host"])
 	assert.Equal(t, "local", listed[0]["exposure"])
 	assert.Equal(t, true, listed[0]["running"])
 
 	var status map[string]any
-	unmarshalCLI(t, &status, "-n", nsName, "status", "once-campfire.localhost", "--json")
+	unmarshalCLI(t, &status, "-n", nsName, "status", "campfire.localhost", "--json")
 	assert.Equal(t, appName, status["name"])
 	assert.Equal(t, "local", status["exposure"])
 
@@ -78,7 +78,7 @@ func TestCLIDeployExposureLifecycle(t *testing.T) {
 
 	// A bare --host under local exposure gets the suffix appended, and the
 	// stored exposure survives the update's container recreation.
-	require.NoError(t, runCLI("-n", nsName, "update", "once-campfire.localhost", "--host", "writebook"))
+	require.NoError(t, runCLI("-n", nsName, "update", "campfire.localhost", "--host", "writebook"))
 
 	restored, err = docker.RestoreNamespace(ctx, nsName)
 	require.NoError(t, err)
@@ -187,14 +187,14 @@ func runCLI(args ...string) error {
 	return command.NewRootCommand().ExecuteArgs(args...)
 }
 
-// unmarshalCLI runs a CLI command capturing os.Stdout and unmarshals the
-// output, proving it is valid JSON as any consumer like jq would see it.
-func unmarshalCLI(t *testing.T, v any, args ...string) {
-	t.Helper()
-
+// captureCLIOutput runs a CLI command capturing what it prints to os.Stdout,
+// returning the output alongside the command's error.
+func captureCLIOutput(args ...string) (string, error) {
 	orig := os.Stdout
 	r, w, err := os.Pipe()
-	require.NoError(t, err)
+	if err != nil {
+		return "", err
+	}
 	os.Stdout = w
 	defer func() { os.Stdout = orig }()
 
@@ -207,8 +207,15 @@ func unmarshalCLI(t *testing.T, v any, args ...string) {
 
 	runErr := runCLI(args...)
 	w.Close()
-	out := <-outCh
+	return string(<-outCh), runErr
+}
 
-	require.NoError(t, runErr)
-	require.NoError(t, json.Unmarshal(out, v), "output was: %s", out)
+// unmarshalCLI runs a CLI command capturing os.Stdout and unmarshals the
+// output, proving it is valid JSON as any consumer like jq would see it.
+func unmarshalCLI(t *testing.T, v any, args ...string) {
+	t.Helper()
+
+	out, err := captureCLIOutput(args...)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(out), v), "output was: %s", out)
 }

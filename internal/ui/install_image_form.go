@@ -6,7 +6,7 @@ import (
 	"github.com/basecamp/once/internal/catalog"
 )
 
-type InstallImageSubmitMsg struct{ ImageRef string }
+type InstallImageSubmitMsg struct{ App catalog.App }
 type InstallImageBackMsg struct{}
 
 type InstallImageForm struct {
@@ -24,8 +24,8 @@ func NewInstallImageForm() InstallImageForm {
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
-		ref := catalog.Resolve(f.TextField("image").Value())
-		return func() tea.Msg { return InstallImageSubmitMsg{ImageRef: ref} }
+		entry := catalog.Resolve(f.TextField("image").Value())
+		return func() tea.Msg { return InstallImageSubmitMsg{App: entry} }
 	})
 	m.form.OnCancel(func(f *Form) tea.Cmd {
 		return func() tea.Msg { return InstallImageBackMsg{} }

@@ -32,7 +32,18 @@ We decided the secret arrives only through the environment:
   enable form is the interactive path, and a second no-echo implementation
   would have to negotiate the terminal with `runShowingProgress`. The value is
   whitespace-trimmed, because a client secret never contains whitespace and
-  piped values often carry a trailing newline.
+  piped values often carry a trailing newline. Amendment (backup custody
+  flow): reading a secret in stays TUI-only; handing one out reuses the
+  shared custody component under the CLI's existing sequential-program
+  pattern - a bubbletea program run to completion the way `cli_progress.go`
+  already renders progress, so no terminal negotiation ever happens.
+  Amendment (restore from a repo): `once restore` reads the Repo Password with
+  a no-echo prompt when `RESTIC_PASSWORD` is unset. It is the one exception to
+  "reading a secret in stays TUI-only", and the case bounds it: bare-metal
+  recovery has no install holding the password, no TUI to offer, and nothing
+  rendering progress at the moment it asks. `RESTIC_PASSWORD` stays the
+  scripted path, and with no terminal the prompt is an error naming it, never
+  a hang.
 - The variable is read in `internal/command`, never through
   `controlSeamActive()`. It shares the `ONCE_TAILSCALE_` prefix with the hidden
   Control Seam variables, so that prefix alone no longer marks a hidden seam.
@@ -54,6 +65,32 @@ label would only move the problem to the key stored beside it. For the same
 reason Once integrates no secret manager: it reads the credential once, at
 enable, and copies it into Docker state, so central rotation changes nothing
 about the copy that is already there.
+
+That non-goal reaches further than the running host, and the reach is the part
+worth stating: the label lives under `/var/lib/docker`, so the credential is
+inside any host-level backup, disk image, or snapshot of the Docker root, and
+inside `docker inspect` output pasted into a bug report. Those copies outlive
+the container and sit wherever the backup sits, which may be far less trusted
+than the host. Once does not defend that boundary; a user who backs up
+`/var/lib/docker` is backing up a live Tailscale credential and should treat
+the backup accordingly, or revoke the OAuth client in the admin console when a
+backup leaves their control.
+
+The 3-2-1 backup work (the Vaultwarden PRD) grew this at-rest inventory from
+one secret to three, all with the same exposure. The restic Repo Password and
+the offsite backend credential values (`BackupRepoSettings.Password` and
+`OffsiteEnv`) sit plaintext in the Proxy's `once` label (ADR-0014): readable
+through the Docker socket, present in any copy of `/var/lib/docker`, visible
+in pasted `docker inspect` output. They arrive the same way this ADR requires
+- values read from the environment, names on the command line, never a secret
+in argv (`RESTIC_PASSWORD` for restore, `--offsite-env` naming variables for
+enable). The threat model, stated plainly: **the Offsite Copy protects
+against host loss, not host compromise.** An attacker on the host reads the
+password and credentials from the label - and already reads the live
+Application Data sitting beside them - so encrypting the label would only
+move the problem to a key stored beside it. What the user must protect is the
+copy they hold: the Recovery Kit is a live key to every backup, wherever it
+is stored.
 
 ## Consequences
 

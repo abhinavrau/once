@@ -30,6 +30,7 @@ var dashboardKeys = struct {
 	Logs      key.Binding
 	Details   key.Binding
 	Tailscale key.Binding
+	Backups   key.Binding
 	Quit      key.Binding
 }{
 	Up:        WithHelp(NewKeyBinding("up", "k"), "↑/k", "up"),
@@ -40,6 +41,7 @@ var dashboardKeys = struct {
 	Logs:      WithHelp(NewKeyBinding("g"), "g", "logs"),
 	Details:   WithHelp(NewKeyBinding("d"), "d", "toggle details"),
 	Tailscale: WithHelp(NewKeyBinding("t", "T"), "t", "tailscale"),
+	Backups:   WithHelp(NewKeyBinding("b", "B"), "b", "backups"),
 	Quit:      WithHelp(NewKeyBinding("esc"), "esc", "quit"),
 }
 
@@ -71,6 +73,11 @@ type Dashboard struct {
 	// of the Tailscale info. A URL that is absent has either resolved or not
 	// been checked yet, and neither renders a warning.
 	tailnetWarnings map[string]string
+
+	// backupStatus caches the install-wide backup facts, refreshed on its own
+	// slow schedule because the staleness answer costs a restic container per
+	// app. The zero value is "not configured", which renders nothing.
+	backupStatus docker.BackupStatus
 }
 
 type dashboardTickMsg struct{}
@@ -116,8 +123,24 @@ func NewDashboard(ns *docker.Namespace, apps []*docker.Application, selectedInde
 	return d
 }
 
+// ShowingSecret propagates the overlay's mouse-tracking opt-out (the custody
+// moment inside the Backups overlay shows the repo password).
+func (m Dashboard) ShowingSecret() bool {
+	return overlayShowingSecret(m.overlay)
+}
+
+// Busy propagates the overlay's quit guard: the Backups overlay holds one
+// while the phone handoff is published, because its route and certificate
+// outlive the process that made them.
+func (m Dashboard) Busy() bool {
+	return overlayBusy(m.overlay)
+}
+
 func (m Dashboard) Init() tea.Cmd {
-	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
+	// The backup gather arms its own next run when it returns, so no schedule
+	// is started here: one gather at a time, however slow a repository is.
+	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh(),
+		m.fetchBackupStatus())
 }
 
 func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
@@ -169,27 +192,19 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, func() tea.Msg { return NavigateToInstallMsg{} }
 		}
 		if key.Matches(msg, dashboardKeys.Settings) && len(m.apps) > 0 {
-			app := m.apps[m.selectedIndex]
-			m.overlay = NewSettingsMenu(app)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, cmd
+			return m, m.openOverlay(NewSettingsMenu(m.apps[m.selectedIndex]))
 		}
 		if key.Matches(msg, dashboardKeys.Actions) && len(m.apps) > 0 && !m.toggling {
-			app := m.apps[m.selectedIndex]
-			m.overlay = NewActionsMenu(app)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, cmd
+			return m, m.openOverlay(NewActionsMenu(m.apps[m.selectedIndex]))
 		}
 		if key.Matches(msg, dashboardKeys.Logs) && len(m.apps) > 0 {
 			return m, func() tea.Msg { return NavigateToLogsMsg{App: m.apps[m.selectedIndex]} }
 		}
 		if key.Matches(msg, dashboardKeys.Tailscale) {
-			m.overlay = NewTailscaleForm(m.namespace)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, tea.Batch(m.overlay.Init(), cmd)
+			return m, m.openOverlay(NewTailscaleForm(m.namespace))
+		}
+		if key.Matches(msg, dashboardKeys.Backups) {
+			return m, m.openOverlay(NewBackupsForm(m.namespace))
 		}
 		if key.Matches(msg, dashboardKeys.Details) && len(m.apps) > 0 {
 			dashboardShowDetails = !dashboardShowDetails
@@ -202,6 +217,9 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		m.overlay = nil
 
 	case TailscaleFormCloseMsg:
+		m.overlay = nil
+
+	case BackupsFormCloseMsg:
 		m.overlay = nil
 
 	case SettingsMenuSelectMsg:
@@ -251,6 +269,15 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 
 	case tailscaleRefreshMsg:
 		cmds = append(cmds, m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
+
+	case backupStatusMsg:
+		m.backupStatus = msg.status
+		m.updateViewportSize()
+		m.rebuildViewportContent()
+		cmds = append(cmds, m.scheduleBackupStatusRefresh())
+
+	case backupStatusRefreshMsg:
+		cmds = append(cmds, m.fetchBackupStatus())
 
 	case ProgressTickMsg:
 		if m.toggling {
@@ -317,6 +344,9 @@ func (m Dashboard) View() string {
 	if note := m.tailnetWarningNote(); note != "" {
 		parts = append(parts, note)
 	}
+	if note := m.backupNote(); note != "" {
+		parts = append(parts, note)
+	}
 	parts = append(parts, helpLine)
 	content := strings.Join(parts, "\n")
 
@@ -329,14 +359,22 @@ func (m Dashboard) View() string {
 
 // Private
 
+// openOverlay mounts an overlay sized to the dashboard and starts it.
+func (m *Dashboard) openOverlay(overlay Component) tea.Cmd {
+	m.overlay = overlay
+	var cmd tea.Cmd
+	m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return tea.Batch(m.overlay.Init(), cmd)
+}
+
 func (m Dashboard) helpBindings() []key.Binding {
 	if len(m.apps) > 0 {
 		return []key.Binding{
 			dashboardKeys.Up, dashboardKeys.Down, dashboardKeys.Actions,
-			dashboardKeys.Settings, dashboardKeys.Logs, dashboardKeys.Details, dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Quit,
+			dashboardKeys.Settings, dashboardKeys.Logs, dashboardKeys.Details, dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Backups, dashboardKeys.Quit,
 		}
 	}
-	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Quit}
+	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Backups, dashboardKeys.Quit}
 }
 
 // tailnetURL is the app's service URL: computed from the stored Magic DNS
@@ -439,6 +477,9 @@ func (m *Dashboard) updateViewportSize() {
 	noteHeight := 0
 	if note := m.tailnetWarningNote(); note != "" {
 		noteHeight = lipgloss.Height(note)
+	}
+	if note := m.backupNote(); note != "" {
+		noteHeight += lipgloss.Height(note)
 	}
 	vpHeight := max(m.height-titleHeight-headerHeight-helpHeight-progressHeight-noteHeight, 0)
 	m.viewport.SetHeight(vpHeight)

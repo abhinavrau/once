@@ -2,6 +2,7 @@ package docker
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -236,7 +237,7 @@ func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, pr
 		return nil, nil, fmt.Errorf("%w: %w", ErrSetupFailed, err)
 	}
 
-	name, err := n.UniqueName(NameFromImageRef(settings.Image))
+	name, err := n.UniqueName(settings.Profile.AppName(settings.Image))
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating app name: %w", err)
 	}
@@ -376,6 +377,7 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 		n.proxy.Destroy(ctx),
 		n.tailscale.Destroy(ctx),
 		n.admin.Destroy(ctx),
+		n.removeResticCacheVolume(ctx),
 		n.client.NetworkRemove(ctx, n.name),
 	)
 	return errors.Join(errs...)
@@ -439,6 +441,28 @@ func (n *Namespace) LoadState(ctx context.Context) (*State, error) {
 	return n.proxy.LoadState(ctx)
 }
 
+// BackupRepoSettings reads the install-wide Backup Repo settings from the
+// proxy label; the zero value means backups have never been configured.
+func (n *Namespace) BackupRepoSettings() BackupRepoSettings {
+	if n.proxy.Settings == nil {
+		return BackupRepoSettings{}
+	}
+	return n.proxy.Settings.Backups
+}
+
+// SetBackupRepoSettings persists the Backup Repo settings on the proxy label,
+// booting the proxy first when the namespace has never been set up.
+func (n *Namespace) SetBackupRepoSettings(ctx context.Context, backups BackupRepoSettings) error {
+	if n.proxy.Settings == nil {
+		if err := n.Setup(ctx); err != nil {
+			return fmt.Errorf("%w: %w", ErrSetupFailed, err)
+		}
+	}
+	settings := *n.proxy.Settings
+	settings.Backups = backups
+	return n.proxy.UpdateSettings(ctx, settings)
+}
+
 func (n *Namespace) SaveState(ctx context.Context, state *State) error {
 	return n.proxy.SaveState(ctx, state)
 }
@@ -449,11 +473,16 @@ func (n *Namespace) Restore(ctx context.Context, r io.Reader) (*Application, err
 		return nil, fmt.Errorf("parsing backup: %w", err)
 	}
 
-	if n.HostInUse(appSettings.Host) {
-		return nil, ErrHostnameInUse
+	// Restore is additive - it always creates a new application - so the one
+	// thing it cannot share is a hostname. The refusal names the occupant and
+	// how to clear it: the alternative, restoring under a different host,
+	// changes the app's own idea of its URL and belongs to rollback, not here.
+	if existing := n.ApplicationByHost(appSettings.Host); existing != nil {
+		return nil, fmt.Errorf("%w: %s already serves %s; remove it first with `once remove %s`",
+			ErrHostnameInUse, existing.Settings.Name, appSettings.Host, appSettings.Host)
 	}
 
-	name, err := n.UniqueName(NameFromImageRef(appSettings.Image))
+	name, err := n.UniqueName(appSettings.Profile.AppName(appSettings.Image))
 	if err != nil {
 		return nil, fmt.Errorf("generating app name: %w", err)
 	}
@@ -503,6 +532,12 @@ func (n *Namespace) deployWarnings(ctx context.Context, settings ApplicationSett
 	}
 	if w := PublicDNSWarning(ctx, settings.Exposure, settings.Host); w != "" {
 		warnings = append(warnings, w)
+	}
+	if settings.Profile.URLEnvVar != "" {
+		tailscaleEnabled, _ := n.tailscale.Enabled(ctx)
+		if NewApplication(n, settings).resolvedURL(ctx, tailscaleEnabled) == "" {
+			warnings = append(warnings, fmt.Sprintf("no URL could be resolved for %s, so the %s environment variable will not be set", settings.Host, settings.Profile.URLEnvVar))
+		}
 	}
 	return warnings
 }
@@ -622,13 +657,21 @@ func (n *Namespace) parseBackup(r io.Reader) (ApplicationSettings, ApplicationVo
 	var volSettings ApplicationVolumeSettings
 	var volumeData bytes.Buffer
 
-	gr, err := gzip.NewReader(r)
-	if err != nil {
-		return appSettings, volSettings, nil, fmt.Errorf("%w: %v", ErrInvalidBackup, err)
+	// Once wrote gzipped archives before switching to plain tar, and those
+	// files live on users' disks forever, so the format is sniffed rather than
+	// assumed: decompress only when the gzip magic bytes are present.
+	br := bufio.NewReader(r)
+	var src io.Reader = br
+	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
+		gr, err := gzip.NewReader(br)
+		if err != nil {
+			return appSettings, volSettings, nil, fmt.Errorf("%w: %v", ErrInvalidBackup, err)
+		}
+		defer gr.Close()
+		src = gr
 	}
-	defer gr.Close()
 
-	tr := tar.NewReader(gr)
+	tr := tar.NewReader(src)
 	tw := tar.NewWriter(&volumeData)
 	defer tw.Close()
 

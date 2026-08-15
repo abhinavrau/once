@@ -3,7 +3,6 @@ package docker
 import (
 	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -22,25 +21,11 @@ import (
 )
 
 const (
-	BackupDataDir   = "data"
-	BackupRetention = 30 * 24 * time.Hour
+	BackupDataDir = "data"
 
 	backupAppSettingsEntry = "once.application.json"
 	backupVolSettingsEntry = "once.volume.json"
-	backupTimeFormat       = "20060102-150405"
 )
-
-func (a *Application) Backup(ctx context.Context) error {
-	if a.Settings.Backup.Path == "" {
-		return fmt.Errorf("backup location is required")
-	}
-
-	return a.BackupToFile(ctx, a.Settings.Backup.Path, a.BackupName())
-}
-
-func (a *Application) BackupName() string {
-	return fmt.Sprintf("%s-%s.tar.gz", a.Settings.Name, time.Now().Format(backupTimeFormat))
-}
 
 func (a *Application) BackupToFile(ctx context.Context, dir string, name string) error {
 	if dir == "" {
@@ -72,43 +57,6 @@ func (a *Application) BackupToFile(ctx context.Context, dir string, name string)
 	slog.Info("Created backup file", "app", a.Settings.Name, "filename", filePath)
 
 	return nil
-}
-
-func (a *Application) TrimBackups() error {
-	if a.Settings.Backup.Path == "" {
-		return nil
-	}
-
-	entries, err := os.ReadDir(a.Settings.Backup.Path)
-	if err != nil {
-		return fmt.Errorf("reading backup directory: %w", err)
-	}
-
-	var errs []error
-	cutoff := time.Now().Add(-BackupRetention)
-
-	for _, entry := range entries {
-		if !entry.Type().IsRegular() {
-			continue
-		}
-
-		t, ok := parseBackupTime(a.Settings.Name, entry.Name())
-		if !ok {
-			continue
-		}
-
-		if t.Before(cutoff) {
-			filename := filepath.Join(a.Settings.Backup.Path, entry.Name())
-			if err := os.Remove(filename); err != nil {
-				slog.Error("Failed to remove expired backup file", "app", a.Settings.Name, "filename", filename, "error", err)
-				errs = append(errs, err)
-			} else {
-				slog.Info("Removed expired backup file", "app", a.Settings.Name, "filename", filename)
-			}
-		}
-	}
-
-	return errors.Join(errs...)
 }
 
 func (a *Application) Restore(ctx context.Context, volSettings ApplicationVolumeSettings, volumeData []byte) (returnErr error) {
@@ -167,9 +115,10 @@ func (a *Application) backupToWriter(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("getting volume: %w", err)
 	}
 
-	gw := gzip.NewWriter(w)
-	defer gw.Close()
-	tw := tar.NewWriter(gw)
+	// Plain tar, deliberately uncompressed: gzip defeats restic's
+	// content-defined chunking, re-adding the whole archive every day. restic
+	// compresses at chunk granularity itself (RESTIC_COMPRESSION=auto).
+	tw := tar.NewWriter(w)
 	defer tw.Close()
 
 	if err := writeTarEntry(tw, backupAppSettingsEntry, []byte(a.Settings.Marshal())); err != nil {
@@ -212,13 +161,14 @@ func (a *Application) copyVolumeData(ctx context.Context, containerName string, 
 		}()
 	}
 
-	reader, _, err := a.namespace.client.CopyFromContainer(ctx, containerName, AppVolumeMountTargets[0])
+	dataPath := a.Settings.Profile.MountTargets()[0]
+	reader, _, err := a.namespace.client.CopyFromContainer(ctx, containerName, dataPath)
 	if err != nil {
 		return fmt.Errorf("copying from container: %w", err)
 	}
 	defer reader.Close()
 
-	if err := copyTarEntriesWithPrefix(reader, tw, filepath.Base(AppVolumeMountTargets[0]), BackupDataDir); err != nil {
+	if err := copyTarEntriesWithPrefix(reader, tw, filepath.Base(dataPath), BackupDataDir); err != nil {
 		return fmt.Errorf("copying volume contents: %w", err)
 	}
 
@@ -239,6 +189,10 @@ func (a *Application) populateVolume(ctx context.Context, vol *ApplicationVolume
 				{
 					Type:   mount.TypeVolume,
 					Source: vol.Name(),
+					// Paired with BackupDataDir - the archive's "data/" prefix
+					// unpacks into this mount - not with the app's Profile data
+					// path, so it is correct for every App Profile. Change the
+					// two together or not at all.
 					Target: "/data",
 				},
 			},
@@ -273,12 +227,14 @@ func (a *Application) populateVolume(ctx context.Context, vol *ApplicationVolume
 func (a *Application) runRestoreHook(ctx context.Context, vol *ApplicationVolume) error {
 	containerName := fmt.Sprintf("%s-restore-hook-temp", a.namespace.name)
 
+	tailscaleEnabled, _ := a.namespace.Tailscale().Enabled(ctx)
+
 	resp, err := a.namespace.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:      a.Settings.Image,
 			Entrypoint: []string{},
 			Cmd:        []string{"sleep", "infinity"},
-			Env:        a.Settings.BuildEnv(vol.Settings),
+			Env:        a.Settings.BuildEnv(vol.Settings, a.resolvedURL(ctx, tailscaleEnabled)),
 		},
 		&container.HostConfig{Mounts: a.volumeMounts(vol)},
 		nil, nil, containerName,
@@ -328,25 +284,6 @@ func (a *Application) tryHookScript(ctx context.Context, containerName, name str
 }
 
 // Helpers
-
-func parseBackupTime(appName, filename string) (time.Time, bool) {
-	prefix := appName + "-"
-	suffix := ".tar.gz"
-
-	if !strings.HasPrefix(filename, prefix) || !strings.HasSuffix(filename, suffix) {
-		return time.Time{}, false
-	}
-
-	middle := strings.TrimPrefix(filename, prefix)
-	middle = strings.TrimSuffix(middle, suffix)
-
-	t, err := time.Parse(backupTimeFormat, middle)
-	if err != nil {
-		return time.Time{}, false
-	}
-
-	return t, true
-}
 
 func writeTarEntry(tw *tar.Writer, name string, data []byte) error {
 	header := &tar.Header{

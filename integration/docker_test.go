@@ -2,6 +2,7 @@ package integration
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -327,13 +328,24 @@ func TestBackup(t *testing.T) {
 	})
 
 	backupDir := t.TempDir()
-	require.NoError(t, app.BackupToFile(ctx, backupDir, "backup.tar.gz"))
+	require.NoError(t, app.BackupToFile(ctx, backupDir, "backup.tar"))
 
-	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar.gz"))
+	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar"))
 	require.NoError(t, err)
 	defer backupFile.Close()
 
-	entries := extractTarGz(t, backupFile)
+	// gzip is dropped: the archive is plain tar, so restic's chunker sees the
+	// same blobs from one day to the next. extractBackupArchive decompresses
+	// transparently - the old format stays restorable forever - so a re-added
+	// gzip writer would be invisible except in the bytes on disk.
+	magic := make([]byte, 2)
+	_, err = io.ReadFull(backupFile, magic)
+	require.NoError(t, err)
+	assert.NotEqual(t, []byte{0x1f, 0x8b}, magic, "the archive Once writes is plain tar, never gzipped")
+	_, err = backupFile.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+
+	entries := extractBackupArchive(t, backupFile)
 
 	assert.Contains(t, entries, "once.application.json")
 	var appSettings docker.ApplicationSettings
@@ -381,7 +393,7 @@ func TestRestore(t *testing.T) {
 	originalSecretKeyBase := vol.SecretKeyBase()
 
 	backupDir := t.TempDir()
-	require.NoError(t, app.BackupToFile(ctx, backupDir, "backup.tar.gz"))
+	require.NoError(t, app.BackupToFile(ctx, backupDir, "backup.tar"))
 
 	// Restore to a different namespace
 	ns2, err := docker.NewNamespace("once-restore-dst")
@@ -391,7 +403,7 @@ func TestRestore(t *testing.T) {
 	require.NoError(t, ns2.EnsureNetwork(ctx))
 	require.NoError(t, ns2.Proxy().Boot(ctx, getProxyPorts(t)))
 
-	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar.gz"))
+	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar"))
 	require.NoError(t, err)
 	defer backupFile.Close()
 
@@ -455,10 +467,10 @@ func TestRestoreHostnameConflictFails(t *testing.T) {
 	})
 
 	backupDir := t.TempDir()
-	require.NoError(t, app.BackupToFile(ctx, backupDir, "backup.tar.gz"))
+	require.NoError(t, app.BackupToFile(ctx, backupDir, "backup.tar"))
 
 	// Try to restore when another app already uses the same hostname
-	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar.gz"))
+	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar"))
 	require.NoError(t, err)
 	defer backupFile.Close()
 
@@ -494,7 +506,7 @@ func TestBackupHookBehavior(t *testing.T) {
 		removeHookFromContainer(t, ctx, containerName, "pre-backup")
 
 		stop := collectPauseEvents(t, ctx, containerName)
-		require.NoError(t, app.BackupToFile(ctx, backupDir, "no-hook.tar.gz"))
+		require.NoError(t, app.BackupToFile(ctx, backupDir, "no-hook.tar"))
 		actions := stop()
 		assert.Contains(t, actions, "pause")
 		assert.Contains(t, actions, "unpause")
@@ -504,7 +516,7 @@ func TestBackupHookBehavior(t *testing.T) {
 		copyHookToContainer(t, ctx, containerName, "pre-backup", []byte("#!/bin/sh\nexit 0"))
 
 		stop := collectPauseEvents(t, ctx, containerName)
-		require.NoError(t, app.BackupToFile(ctx, backupDir, "successful-hook.tar.gz"))
+		require.NoError(t, app.BackupToFile(ctx, backupDir, "successful-hook.tar"))
 		actions := stop()
 		assert.Empty(t, actions)
 	})
@@ -513,7 +525,7 @@ func TestBackupHookBehavior(t *testing.T) {
 		copyHookToContainer(t, ctx, containerName, "pre-backup", []byte("#!/bin/sh\nexit 1"))
 
 		stop := collectPauseEvents(t, ctx, containerName)
-		require.NoError(t, app.BackupToFile(ctx, backupDir, "failed-hook.tar.gz"))
+		require.NoError(t, app.BackupToFile(ctx, backupDir, "failed-hook.tar"))
 		actions := stop()
 		assert.Contains(t, actions, "pause")
 		assert.Contains(t, actions, "unpause")
@@ -549,16 +561,16 @@ func TestBackupStoppedContainer(t *testing.T) {
 	stop := collectPauseEvents(t, ctx, containerName)
 
 	backupDir := t.TempDir()
-	require.NoError(t, app.BackupToFile(ctx, backupDir, "backup.tar.gz"))
+	require.NoError(t, app.BackupToFile(ctx, backupDir, "backup.tar"))
 
 	actions := stop()
 	assert.Empty(t, actions)
 
-	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar.gz"))
+	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar"))
 	require.NoError(t, err)
 	defer backupFile.Close()
 
-	entries := extractTarGz(t, backupFile)
+	entries := extractBackupArchive(t, backupFile)
 
 	assert.Contains(t, entries, "once.application.json")
 	assert.Contains(t, entries, "once.volume.json")
@@ -724,7 +736,7 @@ func TestDeployWithSettings(t *testing.T) {
 		},
 		Resources:  docker.ContainerResources{CPUs: 1, MemoryMB: 512},
 		AutoUpdate: false,
-		Backup:     docker.BackupSettings{Path: "/backups", AutoBackup: true},
+		Backup:     docker.BackupSettings{AutoBackup: true},
 	}
 
 	app := deployApp(t, ctx, ns, settings)
@@ -741,7 +753,6 @@ func TestDeployWithSettings(t *testing.T) {
 	assert.Equal(t, "smtp.example.com", restored.Settings.SMTP.Server)
 	assert.Equal(t, "587", restored.Settings.SMTP.Port)
 	assert.False(t, restored.Settings.AutoUpdate)
-	assert.Equal(t, "/backups", restored.Settings.Backup.Path)
 	assert.True(t, restored.Settings.Backup.AutoBackup)
 
 	// Verify container env vars
@@ -1264,14 +1275,21 @@ func assertEnvAbsent(t *testing.T, envVars []string, key string) {
 	}
 }
 
-func extractTarGz(t *testing.T, r io.Reader) map[string][]byte {
+// extractBackupArchive reads a backup archive, sniffing the gzip magic bytes
+// so both legacy gzipped archives and current plain tars extract.
+func extractBackupArchive(t *testing.T, r io.Reader) map[string][]byte {
 	t.Helper()
 
-	gr, err := gzip.NewReader(r)
-	require.NoError(t, err)
-	defer gr.Close()
+	br := bufio.NewReader(r)
+	var src io.Reader = br
+	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
+		gr, err := gzip.NewReader(br)
+		require.NoError(t, err)
+		defer gr.Close()
+		src = gr
+	}
 
-	tr := tar.NewReader(gr)
+	tr := tar.NewReader(src)
 	entries := make(map[string][]byte)
 
 	for {

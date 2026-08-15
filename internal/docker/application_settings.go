@@ -2,6 +2,7 @@ package docker
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,9 +32,13 @@ type ContainerResources struct {
 	MemoryMB int `json:"memoryMB,omitempty"`
 }
 
+// BackupSettings holds an app's participation in the install-wide Backup Run.
+// The per-app path is gone: backups go to the shared Backup Repo now. The old
+// nested "path" key needs no removedSettingsFields entry - that denylist
+// operates on top-level keys, and encoding/json drops unmodelled nested keys
+// on the next rewrite anyway.
 type BackupSettings struct {
-	Path       string `json:"path,omitempty"`
-	AutoBackup bool   `json:"autoBackup,omitempty"`
+	AutoBackup bool `json:"autoBackup,omitempty"`
 }
 
 // removedSettingsFields are label fields older versions of Once wrote that no
@@ -52,6 +57,7 @@ type ApplicationSettings struct {
 	Resources  ContainerResources `json:"resources"`
 	AutoUpdate bool               `json:"autoUpdate"`
 	Backup     BackupSettings     `json:"backup"`
+	Profile    AppProfile         `json:"profile,omitzero"`
 	// FunnelExpiresAt, when set, marks the app as publicly exposed via Tailscale
 	// Funnel until this time. Written atomically with the tailscale_funnel label
 	// option in the same container recreation, so the two never drift apart.
@@ -96,8 +102,14 @@ func (s ApplicationSettings) Validate() error {
 	if s.Image == "" {
 		return ErrImageRequired
 	}
-	if s.Backup.AutoBackup && s.Backup.Path == "" {
-		return ErrAutoBackupWithoutPath
+	if p := s.Profile.DataPath; p != "" && (!strings.HasPrefix(p, "/") || p == "/") {
+		return ErrDataPathInvalid
+	}
+	if p := s.Profile.HealthPath; p != "" && !strings.HasPrefix(p, "/") {
+		return ErrHealthPathInvalid
+	}
+	if strings.Contains(s.Profile.URLEnvVar, "=") {
+		return ErrURLEnvVarInvalid
 	}
 	return nil
 }
@@ -147,6 +159,9 @@ func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 	if s.Backup != other.Backup {
 		return false
 	}
+	if s.Profile != other.Profile {
+		return false
+	}
 	if !funnelExpiryEqual(s.FunnelExpiresAt, other.FunnelExpiresAt) {
 		return false
 	}
@@ -164,7 +179,11 @@ func (s ApplicationSettings) Equal(other ApplicationSettings) bool {
 	return true
 }
 
-func (s ApplicationSettings) BuildEnv(vol ApplicationVolumeSettings) []string {
+// BuildEnv assembles the container environment. url fills the Profile's
+// URLEnvVar when both are non-empty; it is appended before the user env loop
+// so an explicit --env value for the same key wins (Docker resolves duplicate
+// keys last-wins).
+func (s ApplicationSettings) BuildEnv(vol ApplicationVolumeSettings, url string) []string {
 	env := []string{
 		"SECRET_KEY_BASE=" + vol.SecretKeyBase,
 		"VAPID_PUBLIC_KEY=" + vol.VAPIDPublicKey,
@@ -180,6 +199,10 @@ func (s ApplicationSettings) BuildEnv(vol ApplicationVolumeSettings) []string {
 	}
 
 	env = append(env, s.SMTP.BuildEnv()...)
+
+	if s.Profile.URLEnvVar != "" && url != "" {
+		env = append(env, s.Profile.URLEnvVar+"="+url)
+	}
 
 	for k, v := range s.EnvVars {
 		env = append(env, k+"="+v)

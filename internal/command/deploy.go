@@ -31,7 +31,7 @@ func newDeployCommand() *deployCommand {
 // Private
 
 func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	imageRef := catalog.Resolve(args[0])
+	entry := catalog.Resolve(args[0])
 
 	if err := d.flags.checkRemoved(cmd); err != nil {
 		return err
@@ -42,12 +42,12 @@ func (d *deployCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 		return err
 	}
 
-	host, err := docker.ResolveHost(exposure, d.flags.host, docker.NameFromImageRef(imageRef))
+	host, err := docker.ResolveHost(exposure, d.flags.host, entry.Profile.AppName(entry.ImageRef))
 	if err != nil {
 		return err
 	}
 
-	settings, err := d.flags.buildSettings(imageRef, host, exposure)
+	settings, err := d.flags.buildSettings(entry, host, exposure)
 	if err != nil {
 		return err
 	}

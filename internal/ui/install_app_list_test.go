@@ -21,7 +21,7 @@ func TestInstallAppList_SelectKnownApp(t *testing.T) {
 	msg := cmd()
 	selected, ok := msg.(InstallAppSelectedMsg)
 	require.True(t, ok, "expected InstallAppSelectedMsg, got %T", msg)
-	assert.Equal(t, "ghcr.io/basecamp/once-campfire", selected.ImageRef)
+	assert.Equal(t, "ghcr.io/basecamp/once-campfire", selected.App.ImageRef)
 }
 
 func TestInstallAppList_SelectOther(t *testing.T) {
@@ -54,7 +54,7 @@ func TestInstallAppList_NavigateAndSelect(t *testing.T) {
 	msg := cmd()
 	selected, ok := msg.(InstallAppSelectedMsg)
 	require.True(t, ok, "expected InstallAppSelectedMsg, got %T", msg)
-	assert.Equal(t, "ghcr.io/basecamp/fizzy", selected.ImageRef)
+	assert.Equal(t, "ghcr.io/basecamp/fizzy", selected.App.ImageRef)
 }
 
 func TestInstallAppList_View(t *testing.T) {

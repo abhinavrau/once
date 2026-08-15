@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -51,10 +52,15 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	d.waitForView("Exposure", 5*time.Second)
 
 	// -- Screen 3: Exposure form: local preselected (Tailscale is off) with
-	// the name-derived host suggestion prefilled; accept both. --
+	// the name-derived host suggestion prefilled; accept both. A custom image
+	// is asked the data path, the health check path (unconditionally), and
+	// the backup participation checkbox. --
 	view := d.viewContent()
 	assert.Contains(t, view, "(•) Local", "local should be preselected without Tailscale")
 	assert.Contains(t, view, "once-campfire.localhost", "host should prefill the derived suggestion")
+	assert.Contains(t, view, "Data path", "a custom image is asked its data path")
+	assert.Contains(t, view, "Health check path", "a custom image is asked its health path unconditionally")
+	assert.Contains(t, view, "Include this app in backups")
 
 	// -- Selecting tailnet exposure while Tailscale is disabled offers the
 	// enable overlay inline; dismissing it returns to the filled-in form. --
@@ -266,6 +272,141 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	assertAppLabels(t, ctx, cli, ns, tailnetApp.Settings.Name, hasDocktailLabels("whoami", ns.Name()))
 }
 
+// TestUIBackupsOverlayEnableFlow drives the dashboard's global Backups
+// overlay (the `b` key) through the full enable sequence: fill the local
+// path, submit, wait out the validation probe, then the custody moment -
+// recovery kit reveal, type-back gate fed a lowercase dashed password (the
+// gate normalizes) - and assert Enabled was persisted and the probe left no
+// snapshot behind.
+func TestUIBackupsOverlayEnableFlow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-backups-ui-test")
+	require.NoError(t, err)
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+
+	deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name:     "whoami",
+		Image:    whoamiImage,
+		Host:     "whoami.localhost",
+		Exposure: docker.ExposureLocal,
+	})
+
+	repoDir := filepath.Join(t.TempDir(), "backups")
+	t.Cleanup(func() { chownToTestUser(t, repoDir) })
+
+	app := ui.NewApp(ns, "")
+	d := newAppDriver(t, app)
+	d.start()
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	// -- esc dismisses the overlay --
+	d.send(keyMsg("b"))
+	d.waitForView("Local repository path", 5*time.Second)
+	d.send(keyMsg("esc"))
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "Local repository path")
+	}, 5*time.Second)
+
+	// -- point the local path at a fresh directory and submit: the probe
+	// runs (containerized restic against the real repo), then the custody
+	// reveal renders the recovery kit --
+	d.send(keyMsg("b"))
+	d.waitForView("Local repository path", 5*time.Second)
+	d.clearField("local-path")
+	d.typeText(repoDir)
+	d.click("submit")
+
+	// The probe runs, then custody asks how to take custody. Both deliveries
+	// are offered here; this flow takes the screen.
+	d.waitForView("Send it to my phone", 5*time.Minute)
+	d.click("delivery:screen")
+	d.waitForView("ONCE RECOVERY KIT", 10*time.Second)
+
+	password := ns.BackupRepoSettings().Password
+	require.Regexp(t, `^[A-Z2-7]{32}$`, password, "the probe persisted the generated password")
+	require.False(t, ns.BackupRepoSettings().Enabled, "Enabled is withheld until the gate passes")
+
+	// -- the gate normalizes case, dashes, and spaces --
+	d.send(keyMsg("enter"))
+	d.waitForView("Prove it's saved", 5*time.Second)
+	d.fillField("password", strings.ToLower(docker.FormatRepoPassword(password)))
+	d.click("submit")
+	d.waitForView("backups are on", 10*time.Second)
+
+	// -- closing the done screen closes the overlay; Enabled is persisted --
+	d.send(keyMsg("enter"))
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "backups are on")
+	}, 10*time.Second)
+	d.waitUntil(func() bool {
+		_ = ns.Refresh(ctx)
+		return ns.BackupRepoSettings().Enabled
+	}, 30*time.Second)
+
+	assert.Empty(t, resticSnapshotGroups(t, ctx, repoDir, password),
+		"the probe leaves no snapshot behind")
+}
+
+// TestUIInstallBackupCheckboxOffersOverlayOnce covers the install flow's
+// participation checkbox: ticking it with no Backup Repo configured opens
+// the install-wide overlay inline exactly once, and the catalog path asks
+// the same checkbox without the custom-image profile fields.
+func TestUIInstallBackupCheckboxOffersOverlayOnce(t *testing.T) {
+	ns, err := docker.NewNamespace("once-backup-checkbox-test")
+	require.NoError(t, err)
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	app := ui.NewApp(ns, "")
+	d := newAppDriver(t, app)
+	d.start()
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	// -- custom image path --
+	d.send(keyMsg("up"))
+	d.send(keyMsg("enter"))
+	d.waitForView("Image", 5*time.Second)
+	d.fillField("image", whoamiImage)
+	d.click("submit")
+	d.waitForView("Exposure", 5*time.Second)
+
+	// Ticking the checkbox with no repo configured opens the overlay inline.
+	d.clickField("auto-backup")
+	d.waitForView("Local repository path", 5*time.Second)
+
+	// Dismissing returns to the filled-in form, checkbox still ticked.
+	d.send(keyMsg("esc"))
+	d.waitUntil(func() bool {
+		return !strings.Contains(d.viewContent(), "Local repository path")
+	}, 5*time.Second)
+	assert.Contains(t, d.viewContent(), "[✓] Include this app in backups")
+
+	// The overlay is offered once, not on every toggle.
+	d.clickField("auto-backup")
+	d.clickField("auto-backup")
+	d.flush()
+	assert.NotContains(t, d.viewContent(), "Local repository path",
+		"the inline overlay opens once, not on every tick")
+
+	// -- catalog path asks the checkbox but not the profile fields --
+	d.send(keyMsg("esc"))
+	d.waitForView("Image", 5*time.Second)
+	d.send(keyMsg("esc"))
+	d.waitForView("Custom Docker image", 5*time.Second)
+	// The cursor is still on "Custom Docker image"; wrap down to the first
+	// catalog entry.
+	d.send(keyMsg("down"))
+	d.send(keyMsg("enter"))
+	d.waitForView("Exposure", 5*time.Second)
+	view := d.viewContent()
+	assert.Contains(t, view, "Include this app in backups")
+	assert.NotContains(t, view, "Data path", "catalog apps carry their profile already")
+}
+
 // appDriver drives a ui.App outside of tea.Program by manually executing
 // commands and feeding their results back through a message channel.
 type appDriver struct {
@@ -328,6 +469,13 @@ func (d *appDriver) clickField(key string) {
 func (d *appDriver) fillField(key, text string) {
 	d.clickField(key)
 	d.typeText(text)
+}
+
+// clearField focuses the keyed text field and kills any prefilled value
+// (ctrl+u is textinput's delete-before-cursor; the cursor sits at the end).
+func (d *appDriver) clearField(key string) {
+	d.clickField(key)
+	d.send(tea.KeyPressMsg(tea.Key{Code: 'u', Mod: tea.ModCtrl}))
 }
 
 // maxRadioClicks bounds selectRadioOption so a label that never appears fails

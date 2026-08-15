@@ -37,6 +37,10 @@ type ProxySettings struct {
 	HTTPPort    int `json:"httpPort"`
 	HTTPSPort   int `json:"httpsPort"`
 	MetricsPort int `json:"metricsPort"`
+	// Backups holds the install-wide Backup Repo settings. Proxy settings go
+	// on the proxy container, and the Proxy is the one container every install
+	// has - so install-wide settings live here too (ADR-0014).
+	Backups BackupRepoSettings `json:"backups,omitzero"`
 
 	labelExtra
 }
@@ -50,10 +54,17 @@ func (s ProxySettings) Marshal() string {
 }
 
 type DeployOptions struct {
-	AppName string
-	Target  string
-	Host    string
-	TLS     bool
+	AppName         string
+	Target          string
+	Host            string
+	TLS             bool
+	HealthCheckPath string
+	// TLSCertificatePath and TLSPrivateKeyPath serve a certificate Once
+	// supplies instead of one kamal-proxy provisions through ACME. Both are
+	// paths inside the proxy container. The recovery handoff uses them to
+	// serve on a LAN IP, which no public CA will ever issue for.
+	TLSCertificatePath string
+	TLSPrivateKeyPath  string
 }
 
 type Proxy struct {
@@ -147,6 +158,18 @@ func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) error {
 	return nil
 }
 
+// UpdateSettings rewrites the proxy's settings label. Docker labels are
+// immutable, so the container is removed and booted again with the new
+// settings; the named volume stays, so kamal-proxy's routes, certs and Once's
+// state file all survive the roll.
+func (p *Proxy) UpdateSettings(ctx context.Context, settings ProxySettings) error {
+	if err := p.namespace.client.ContainerRemove(ctx, p.containerName(), container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("removing proxy container: %w", err)
+	}
+	p.Settings = nil
+	return p.Boot(ctx, settings)
+}
+
 func (p *Proxy) Destroy(ctx context.Context) error {
 	containerName := p.containerName()
 
@@ -229,6 +252,16 @@ func (p *Proxy) deployArgs(opts DeployOptions) []string {
 		args = append(args, "--tls")
 	}
 
+	if opts.TLSCertificatePath != "" {
+		args = append(args,
+			"--tls-certificate-path", opts.TLSCertificatePath,
+			"--tls-private-key-path", opts.TLSPrivateKeyPath)
+	}
+
+	if opts.HealthCheckPath != "" {
+		args = append(args, "--health-check-path", opts.HealthCheckPath)
+	}
+
 	return args
 }
 
@@ -300,4 +333,37 @@ func (p *Proxy) ExecOutput(ctx context.Context, cmd []string) (string, error) {
 		return result.Stdout + result.Stderr, fmt.Errorf("exec failed with exit code %d", result.ExitCode)
 	}
 	return result.Stdout, nil
+}
+
+// proxyUID is the uid kamal-proxy runs as inside its own image. Files copied
+// in arrive owned by root otherwise, and kamal-proxy cannot read its own
+// private key - which surfaces only as "unable to load certificate".
+const proxyUID = 1001
+
+// copyFiles writes files into a directory in the proxy container, the way
+// SaveState already puts the state file there. They are readable only by
+// kamal-proxy itself, because one of them is a private key.
+func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]byte) error {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, data := range files {
+		header := &tar.Header{
+			Name: name,
+			Mode: 0o600,
+			Size: int64(len(data)),
+			Uid:  proxyUID,
+			Gid:  proxyUID,
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("writing tar header: %w", err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			return fmt.Errorf("writing tar data: %w", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("closing tar writer: %w", err)
+	}
+
+	return p.namespace.client.CopyToContainer(ctx, p.containerName(), dir, &buf, container.CopyToContainerOptions{})
 }

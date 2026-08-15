@@ -44,15 +44,15 @@ func TestDeployPreconditionsRunBeforeDockerWork(t *testing.T) {
 	_, _, err := ns.Deploy(context.Background(), settings, nil)
 	assert.ErrorIs(t, err, ErrImageRequired)
 
-	settings.Backup.AutoBackup = true
+	settings.Profile.DataPath = "relative"
 	_, _, err = ns.Deploy(context.Background(), settings, nil)
 	assert.ErrorIs(t, err, ErrImageRequired)
 
 	settings.Image = "image:latest"
 	_, _, err = ns.Deploy(context.Background(), settings, nil)
-	assert.ErrorIs(t, err, ErrAutoBackupWithoutPath)
+	assert.ErrorIs(t, err, ErrDataPathInvalid)
 
-	settings.Backup.AutoBackup = false
+	settings.Profile.DataPath = ""
 	_, _, err = ns.Deploy(context.Background(), settings, nil)
 	assert.ErrorIs(t, err, ErrHostnameInUse)
 }

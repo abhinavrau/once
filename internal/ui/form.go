@@ -110,6 +110,7 @@ type CheckboxField struct {
 	label      string
 	checked    bool
 	disabledFn func() (disabled bool, text string)
+	onToggle   func(checked bool) tea.Cmd
 }
 
 func NewCheckboxField(label string, checked bool) *CheckboxField {
@@ -124,19 +125,29 @@ func (f *CheckboxField) SetDisabledWhen(fn func() (disabled bool, text string)) 
 	f.disabledFn = fn
 }
 
-func (f *CheckboxField) Toggle() {
+// OnToggle observes every toggle with the new state; the returned command is
+// dispatched like any field command.
+func (f *CheckboxField) OnToggle(fn func(checked bool) tea.Cmd) {
+	f.onToggle = fn
+}
+
+func (f *CheckboxField) Toggle() tea.Cmd {
 	if f.disabledFn != nil {
 		if disabled, _ := f.disabledFn(); disabled {
-			return
+			return nil
 		}
 	}
 	f.checked = !f.checked
+	if f.onToggle != nil {
+		return f.onToggle(f.checked)
+	}
+	return nil
 }
 
 func (f *CheckboxField) Update(msg tea.Msg) tea.Cmd {
 	if msg, ok := msg.(tea.KeyPressMsg); ok {
 		if msg.String() == "space" || msg.String() == " " {
-			f.Toggle()
+			return f.Toggle()
 		}
 	}
 	return nil
@@ -498,13 +509,15 @@ func (f Form) handleClick(target string) (Form, tea.Cmd) {
 
 	for i, item := range f.items {
 		if target == fieldTarget(item.Key) {
+			var toggleCmd tea.Cmd
 			switch field := item.Field.(type) {
 			case *CheckboxField:
-				field.Toggle()
+				toggleCmd = field.Toggle()
 			case *RadioField:
 				field.Cycle()
 			}
-			return f.focusIndex(i)
+			form, focusCmd := f.focusIndex(i)
+			return form, tea.Batch(toggleCmd, focusCmd)
 		}
 	}
 

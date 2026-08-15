@@ -53,13 +53,19 @@ func TestProcessLineSkipsIncomplete(t *testing.T) {
 	assert.Empty(t, s.live)
 }
 
-func TestProcessLineSkipsHealthCheck(t *testing.T) {
+func TestProcessLineSkipsProxySourceAddress(t *testing.T) {
 	s := NewScraper("once")
 	ts := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 
-	s.processLine(mustMarshal(t, logEntry{Time: ts, RemoteAddr: "1.2.3.4", Service: "campfire", Path: "/up"}))
+	s.setProxyAddrs([]string{"172.18.0.2"})
 
+	// Health-check hits come from the Proxy itself, whatever path an app's
+	// Profile declares, so the filter is on the source address, not the path.
+	s.processLine(mustMarshal(t, logEntry{Time: ts, RemoteAddr: "172.18.0.2", Service: "campfire"}))
 	assert.Empty(t, s.live)
+
+	s.processLine(mustMarshal(t, logEntry{Time: ts, RemoteAddr: "1.2.3.4", Service: "campfire"}))
+	assert.Contains(t, s.live, "campfire")
 }
 
 func TestProcessLineSkipsLoopback(t *testing.T) {

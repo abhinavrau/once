@@ -30,10 +30,7 @@ func TestApplyChanges(t *testing.T) {
 			MemoryMB: 1024,
 		},
 		AutoUpdate: true,
-		Backup: docker.BackupSettings{
-			Path:       "/backups",
-			AutoBackup: true,
-		},
+		Backup:     docker.BackupSettings{AutoBackup: true},
 	}
 
 	newCmd := func() (*cobra.Command, *settingsFlags) {
@@ -104,7 +101,7 @@ func TestApplyChanges(t *testing.T) {
 		assert.ErrorIs(t, result.Validate(), docker.ErrImageRequired)
 	})
 
-	t.Run("enable auto-backup with existing path", func(t *testing.T) {
+	t.Run("enable auto-backup", func(t *testing.T) {
 		noAutoBackup := existing
 		noAutoBackup.Backup.AutoBackup = false
 
@@ -116,30 +113,24 @@ func TestApplyChanges(t *testing.T) {
 		assert.True(t, result.Backup.AutoBackup)
 	})
 
-	t.Run("auto-backup without path is left for ApplySettings to reject", func(t *testing.T) {
-		noPath := existing
-		noPath.Backup.Path = ""
-		noPath.Backup.AutoBackup = false
-
+	t.Run("removed backup-path flag names its replacement", func(t *testing.T) {
 		cmd, f := newCmd()
-		require.NoError(t, cmd.Flags().Set("auto-backup", "true"))
-
-		result, err := f.applyChanges(cmd, noPath, noPath.Image)
-		require.NoError(t, err)
-		assert.ErrorIs(t, result.Validate(), docker.ErrAutoBackupWithoutPath)
-	})
-
-	t.Run("set both auto-backup and path", func(t *testing.T) {
-		noBackup := existing
-		noBackup.Backup = docker.BackupSettings{}
-
-		cmd, f := newCmd()
-		require.NoError(t, cmd.Flags().Set("auto-backup", "true"))
 		require.NoError(t, cmd.Flags().Set("backup-path", "/backups"))
 
-		result, err := f.applyChanges(cmd, noBackup, noBackup.Image)
+		err := f.checkRemoved(cmd)
+		assert.ErrorContains(t, err, "once backup enable")
+	})
+
+	t.Run("profile flags update the App Profile", func(t *testing.T) {
+		cmd, f := newCmd()
+		require.NoError(t, cmd.Flags().Set("data-path", "/data"))
+		require.NoError(t, cmd.Flags().Set("health-check-path", "/alive"))
+		require.NoError(t, cmd.Flags().Set("url-env-var", "DOMAIN"))
+
+		result, err := f.applyChanges(cmd, existing, existing.Image)
 		require.NoError(t, err)
-		assert.True(t, result.Backup.AutoBackup)
-		assert.Equal(t, "/backups", result.Backup.Path)
+		assert.Equal(t, "/data", result.Profile.DataPath)
+		assert.Equal(t, "/alive", result.Profile.HealthPath)
+		assert.Equal(t, "DOMAIN", result.Profile.URLEnvVar)
 	})
 }

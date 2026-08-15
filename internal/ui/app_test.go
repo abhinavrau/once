@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -108,7 +109,7 @@ func TestApp_QuitNoticeClearsAfterItExpires(t *testing.T) {
 func TestApp_QuitDuringInstallActivityIsGuarded(t *testing.T) {
 	m := newTestInstall()
 	m, _ = updateInstall(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	m, _ = updateInstall(m, InstallFormSubmitMsg{ImageRef: "ghcr.io/basecamp/once-campfire:latest", Hostname: "app.example.com", Exposure: docker.ExposurePublic})
+	m, _ = updateInstall(m, InstallFormSubmitMsg{App: catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire:latest"}, Hostname: "app.example.com", Exposure: docker.ExposurePublic})
 	require.True(t, m.Busy())
 
 	app := &App{currentScreen: m, watchCancel: func() { t.Fatal("shutdown must not run while the install is in flight") }}

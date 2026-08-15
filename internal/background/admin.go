@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/handoff"
 )
 
 // AdminServer is the daemon's Admin Web App HTTP server. It listens exclusively
@@ -69,5 +70,12 @@ func adminHandler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("once-admin ok\n"))
 	})
+
+	// The one-time page that hands the Repo Password to a phone. The session
+	// it serves is created by the custody flow, which runs in the CLI or TUI
+	// process, and reaches the daemon through an owner-only file: these routes
+	// answer 410 until a handoff is actually live.
+	handoff.Mount(mux, handoff.NewStore(docker.RecoveryHandoffPath()))
+
 	return mux
 }

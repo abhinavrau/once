@@ -21,6 +21,14 @@ type Busy interface {
 	Busy() bool
 }
 
+// SecretDisplayer is implemented by a Component whose current frame may show
+// a secret. While ShowingSecret is true, App turns terminal mouse tracking
+// off so native selection works and the secret can be copied by selecting it;
+// a screen that doesn't implement it never shows one.
+type SecretDisplayer interface {
+	ShowingSecret() bool
+}
+
 // MouseEvent is dispatched to sub-components after the root App resolves
 // mouse coordinates against the mouse tracker's zone map.
 type MouseEvent struct {
@@ -28,4 +36,22 @@ type MouseEvent struct {
 	Button  tea.MouseButton
 	Target  string
 	IsClick bool
+}
+
+// Helpers
+
+// overlayShowingSecret is how a screen propagates its overlay's
+// mouse-tracking opt-out: true when the (possibly nil) overlay implements
+// SecretDisplayer and is currently showing a secret.
+func overlayShowingSecret(overlay Component) bool {
+	s, ok := overlay.(SecretDisplayer)
+	return ok && s.ShowingSecret()
+}
+
+// overlayBusy propagates an overlay's quit guard to the screen hosting it, so
+// work an overlay must not be abandoned mid-flight is protected by the same
+// key check as work a screen owns directly.
+func overlayBusy(overlay Component) bool {
+	b, ok := overlay.(Busy)
+	return ok && b.Busy()
 }

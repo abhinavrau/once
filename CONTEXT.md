@@ -10,6 +10,10 @@ A name prefix (default `once`) that scopes one Once installation — its proxy, 
 A self-hosted web app that Once manages, defined by its image, host, and settings, and run as one or more app containers.
 _Avoid_: service, deployment.
 
+**App Profile**:
+The small set of per-app deployment facts Once cannot derive from the image - base name, data path, health check path, URL env var - carried on the catalog entry, settable by flag, and persisted in the app's `once` label. The zero value means the built-in (Rails-shaped) behaviour, so apps from before App Profiles existed behave unchanged.
+_Avoid_: manifest, app config - a Profile is four facts, not a configuration subsystem.
+
 **App Container**:
 The Docker container running an Application, named `{namespace}-app-{appName}-{randomID}`. More than one may run briefly for the same Application during a zero-downtime roll.
 
@@ -89,7 +93,31 @@ _Avoid_: start.
 Resume or pause an existing app container without recreating it. Distinct from Boot and Deploy.
 
 **Backup / Restore**:
-Capture an Application's Configuration and Application Data to a `.tar.gz` file, and recreate the Application from one.
+Capture an Application's Configuration and Application Data as a plain tar archive - exported to a file the user names, or snapshotted into the install's Backup Repos by a Backup Run - and recreate the Application from a file or a snapshot. Archives from the earlier `.tar.gz` model stay restorable.
+
+## Backups
+
+**Backup Repo**:
+A restic repository holding the install's snapshots, one per Backup Run per participating Application, tagged `app:<name>` and `image:<ref>` - the only metadata a restore can read before it has an archive to open. Every install with backups has a local Backup Repo on host disk and, optionally, an Offsite Copy. Its settings ride the Proxy's `once` label (ADR-0014).
+_Avoid_: bucket, backup directory - the repo is encrypted restic state, not a folder of archive files.
+
+**Offsite Copy**:
+The optional second Backup Repo at a remote restic URL, written by its own `restic backup` in every Backup Run - never `restic copy`, so the two repos share no locks, disk, or failure modes. Its failure logs without failing the run; its staleness is surfaced instead.
+_Avoid_: mirror, replica - nothing copies from the local repo.
+
+**Backup Run**:
+The install-wide scheduled operation: for each participating Application that is due, pause, write the Staging File, unpause, and back it up to each Backup Repo; then one `forget --prune` and one `check` per repo. Runs before auto-update so the newest snapshot is of the known-good version.
+_Avoid_: backup job, per-app backup - `restic backup` is per-Application, but the run, retention, and check are per-install.
+
+**Staging File**:
+The plain-tar archive written to the Staging Directory (`<local repo path>.staging`) during the pause window, read by both backup legs, then deleted. Its in-container path `/staging/<app>.tar` is fixed forever - restic groups retention by it.
+
+**Repo Password**:
+The user-held secret (32 chars, base32) encrypting both Backup Repos. Generated when backups are configured, handed over exactly once through the custody flow, cached in the Proxy label so unattended runs work. Once cannot recover it; losing it loses the backups, by design.
+_Avoid_: passphrase, encryption key.
+
+**Recovery Kit**:
+Everything bare-metal restore needs, shown at the custody moment: the Repo Password, the offsite repo URL, the backend credential names (never their values), and the local repo path.
 
 ## Tailscale
 

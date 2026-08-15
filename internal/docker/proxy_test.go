@@ -29,6 +29,27 @@ func TestDeployArgs(t *testing.T) {
 		}, args)
 	})
 
+	t.Run("with health check path", func(t *testing.T) {
+		args := proxy.deployArgs(DeployOptions{AppName: "vault", Target: "localhost:3000", HealthCheckPath: "/alive"})
+
+		assert.Contains(t, args, "--health-check-path")
+		assert.Contains(t, args, "/alive")
+	})
+
+	// The call site passes the resolved accessor, and a zero Profile resolves
+	// to Once's own default - so the flag can never come through empty and be
+	// dropped, which is what would let verifyHTTP probe the wrong path.
+	t.Run("with a zero Profile's resolved path", func(t *testing.T) {
+		args := proxy.deployArgs(DeployOptions{
+			AppName:         "chat",
+			Target:          "localhost:3000",
+			HealthCheckPath: AppProfile{}.HealthCheckPath(),
+		})
+
+		assert.Contains(t, args, "--health-check-path")
+		assert.Contains(t, args, "/up")
+	})
+
 	t.Run("with host", func(t *testing.T) {
 		args := proxy.deployArgs(DeployOptions{AppName: "chat", Target: "localhost:3000", Host: "chat.example.com"})
 

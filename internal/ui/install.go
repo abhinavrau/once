@@ -38,9 +38,10 @@ const (
 )
 
 type InstallFormSubmitMsg struct {
-	ImageRef string
-	Hostname string
-	Exposure docker.Exposure
+	App        catalog.App
+	Hostname   string
+	Exposure   docker.Exposure
+	AutoBackup bool
 }
 
 type Install struct {
@@ -62,6 +63,10 @@ type Install struct {
 	cliMode       bool
 	customImage   bool
 	installFlag   string
+	// backupsOffered records that the inline Backups overlay was already
+	// opened from the participation checkbox: it opens once, not on every
+	// toggle, so a user who declines to configure a repo is not trapped.
+	backupsOffered bool
 }
 
 func NewInstall(ns *docker.Namespace, imageRef string) Install {
@@ -76,9 +81,10 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 	}
 
 	if imageRef != "" {
-		imageRef = catalog.Resolve(imageRef)
+		entry := catalog.Resolve(imageRef)
+		m.customImage = entry.Name == ""
 		m.state = installStateHostname
-		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag, m.tailscaleEnabled())
+		m.hostnameForm = NewInstallHostnameForm(entry, m.installFlag, m.tailscaleEnabled(), m.customImage)
 	} else {
 		m.state = installStateAppList
 		m.appList = NewInstallAppList()
@@ -95,7 +101,13 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 // App reuses this to guard its quit key, the same protection a running
 // Settings action gets.
 func (m Install) Busy() bool {
-	return m.state == installStateActivity
+	return m.state == installStateActivity || overlayBusy(m.overlay)
+}
+
+// ShowingSecret propagates the overlay's mouse-tracking opt-out (the Backups
+// overlay's custody moment can open inline from the install flow).
+func (m Install) ShowingSecret() bool {
+	return overlayShowingSecret(m.overlay)
 }
 
 func (m Install) Init() tea.Cmd {
@@ -122,7 +134,8 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 	}
 
 	if m.overlay != nil {
-		if _, ok := msg.(TailscaleFormCloseMsg); ok {
+		switch msg.(type) {
+		case TailscaleFormCloseMsg, BackupsFormCloseMsg:
 			m.overlay = nil
 			return m, nil
 		}
@@ -196,10 +209,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 				}
 			}
 			if m.state == installStateAppList && key.Matches(msg, installKeys.Tailscale) {
-				m.overlay = NewTailscaleForm(m.namespace)
-				var cmd tea.Cmd
-				m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-				return m, tea.Batch(m.overlay.Init(), cmd)
+				return m, m.openOverlay(NewTailscaleForm(m.namespace))
 			}
 			if key.Matches(msg, installKeys.Back) {
 				return m.handleBack()
@@ -207,7 +217,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case InstallAppSelectedMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled())
+		m.hostnameForm = NewInstallHostnameForm(msg.App, "", m.tailscaleEnabled(), false)
 		m.customImage = false
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -218,13 +228,22 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, m.initScreenWithSize()
 
 	case InstallImageSubmitMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled())
+		m.hostnameForm = NewInstallHostnameForm(msg.App, "", m.tailscaleEnabled(), true)
 		m.customImage = true
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
 
 	case InstallImageBackMsg:
 		m.state = installStateAppList
+		return m, nil
+
+	case InstallBackupToggledMsg:
+		// First tick with no Backup Repo configured: offer the install-wide
+		// overlay inline, once, then return to the filled-in form.
+		if !m.backupsOffered && !m.namespace.BackupRepoSettings().Configured() {
+			m.backupsOffered = true
+			return m, m.openOverlay(NewBackupsForm(m.namespace))
+		}
 		return m, nil
 
 	case InstallHostnameBackMsg:
@@ -243,18 +262,15 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		// overlay inline instead of bouncing the user to the CLI. Closing it
 		// returns to the filled-in form.
 		if msg.Exposure == docker.ExposureTailnet && !m.tailscaleEnabled() {
-			m.overlay = NewTailscaleForm(m.namespace)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, tea.Batch(m.overlay.Init(), cmd)
+			return m, m.openOverlay(NewTailscaleForm(m.namespace))
 		}
-		host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), docker.NameFromImageRef(msg.ImageRef))
+		host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), msg.App.Profile.AppName(msg.App.ImageRef))
 		if err != nil {
 			m.err = err
 			return m, nil
 		}
 		m.state = installStateActivity
-		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, host, msg.Exposure)
+		m.activity = NewInstallActivity(m.namespace, msg.App, host, msg.Exposure, msg.AutoBackup)
 		m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return m, m.activity.Init()
 
@@ -354,6 +370,14 @@ func (m *Install) initScreenWithSize() tea.Cmd {
 		m.updateCurrentScreen(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 	}
 	return initCmd
+}
+
+// openOverlay mounts an overlay sized to the screen and starts it.
+func (m *Install) openOverlay(overlay Component) tea.Cmd {
+	m.overlay = overlay
+	var cmd tea.Cmd
+	m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return tea.Batch(m.overlay.Init(), cmd)
 }
 
 func (m *Install) updateCurrentScreen(msg tea.Msg) tea.Cmd {

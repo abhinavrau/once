@@ -33,11 +33,28 @@ func TestBackupDue(t *testing.T) {
 		assert.False(t, s.BackupDue("myapp"))
 	})
 
-	t.Run("due when last backup was recent but had an error", func(t *testing.T) {
+	// A permanently failing backup must not retry on every 5-minute tick -
+	// each attempt pauses the app and writes a full staging file - so failures
+	// get a one-hour floor instead of being due immediately.
+	t.Run("failed backup does not retry inside an hour", func(t *testing.T) {
 		s := &State{Apps: map[string]*AppState{
-			"myapp": {LastBackup: OperationResult{At: time.Now().Add(-time.Second), Error: "disk full"}},
+			"myapp": {LastBackup: OperationResult{At: time.Now().Add(-30 * time.Minute), Error: "disk full"}},
+		}}
+		assert.False(t, s.BackupDue("myapp"))
+	})
+
+	t.Run("failed backup retries after an hour", func(t *testing.T) {
+		s := &State{Apps: map[string]*AppState{
+			"myapp": {LastBackup: OperationResult{At: time.Now().Add(-failedTaskRetryInterval - time.Minute), Error: "disk full"}},
 		}}
 		assert.True(t, s.BackupDue("myapp"))
+	})
+
+	t.Run("successful backup not due inside 24h", func(t *testing.T) {
+		s := &State{Apps: map[string]*AppState{
+			"myapp": {LastBackup: OperationResult{At: time.Now().Add(-23 * time.Hour)}},
+		}}
+		assert.False(t, s.BackupDue("myapp"))
 	})
 }
 
@@ -54,12 +71,36 @@ func TestUpdateDue(t *testing.T) {
 		assert.False(t, s.UpdateDue("myapp"))
 	})
 
-	t.Run("due when last update was recent but had an error", func(t *testing.T) {
+	// The retry floor applies to updates identically - one condition, one place.
+	t.Run("failed update does not retry inside an hour", func(t *testing.T) {
 		s := &State{Apps: map[string]*AppState{
 			"myapp": {LastUpdate: OperationResult{At: time.Now().Add(-time.Second), Error: "pull failed"}},
 		}}
+		assert.False(t, s.UpdateDue("myapp"))
+	})
+
+	t.Run("failed update retries after an hour", func(t *testing.T) {
+		s := &State{Apps: map[string]*AppState{
+			"myapp": {LastUpdate: OperationResult{At: time.Now().Add(-failedTaskRetryInterval - time.Minute), Error: "pull failed"}},
+		}}
 		assert.True(t, s.UpdateDue("myapp"))
 	})
+}
+
+func TestRecordArchiveBytes(t *testing.T) {
+	s := &State{}
+	s.RecordArchiveBytes("myapp", 1234)
+	assert.Equal(t, int64(1234), s.Apps["myapp"].LastArchiveBytes)
+}
+
+func TestRecordCheck(t *testing.T) {
+	s := &State{}
+	s.RecordCheck("local", errors.New("pack errors found"))
+	assert.Equal(t, "pack errors found", s.LastCheck["local"].Error)
+	assert.WithinDuration(t, time.Now(), s.LastCheck["local"].At, time.Second)
+
+	s.RecordCheck("local", nil)
+	assert.Empty(t, s.LastCheck["local"].Error)
 }
 
 func TestRecordBackup(t *testing.T) {

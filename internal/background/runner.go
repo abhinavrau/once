@@ -83,13 +83,17 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 
+	// Backups run before auto-update: when both fall due on the same tick,
+	// the newest snapshot must be of the known-good version, not of whatever
+	// the new image did to the app.
+	r.runBackups(ctx, ns, state)
+
 	for _, app := range ns.Applications() {
 		if !app.Running {
 			continue
 		}
 
 		r.checkUpdate(ctx, app, state)
-		r.checkBackup(ctx, app, state)
 		r.checkFunnelExpiry(ctx, app)
 	}
 
@@ -158,6 +162,12 @@ func (r *Runner) checkSelfUpdate(ctx context.Context, ns *docker.Namespace, stat
 	return true
 }
 
+func (r *Runner) runBackups(ctx context.Context, ns *docker.Namespace, state *docker.State) {
+	if err := ns.RunBackups(ctx, state); err != nil {
+		slog.Error("Backup run failed", "error", err)
+	}
+}
+
 func (r *Runner) checkUpdate(ctx context.Context, app *docker.Application, state *docker.State) {
 	if !app.Settings.AutoUpdate {
 		return
@@ -175,27 +185,6 @@ func (r *Runner) checkUpdate(ctx context.Context, app *docker.Application, state
 		slog.Info("Auto-update completed", "app", app.Settings.Name)
 	} else {
 		slog.Info("Already up to date", "app", app.Settings.Name)
-	}
-}
-
-func (r *Runner) checkBackup(ctx context.Context, app *docker.Application, state *docker.State) {
-	if !app.Settings.Backup.AutoBackup {
-		return
-	}
-	if !state.BackupDue(app.Settings.Name) {
-		return
-	}
-
-	slog.Info("Running auto-backup", "app", app.Settings.Name)
-
-	if err := app.Backup(ctx); err != nil {
-		slog.Error("Auto-backup failed", "app", app.Settings.Name, "error", err)
-	} else {
-		slog.Info("Auto-backup completed", "app", app.Settings.Name)
-	}
-
-	if err := app.TrimBackups(); err != nil {
-		slog.Error("Backup trim failed", "app", app.Settings.Name, "error", err)
 	}
 }
 
