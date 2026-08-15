@@ -55,6 +55,12 @@ func (p Progress) View() string {
 	return style.Render(string(p.pattern))
 }
 
+// Percent is the bar's position, or -1 when it is running the indeterminate
+// animation because nothing measurable is known.
+func (p Progress) Percent() int {
+	return p.percent
+}
+
 func (p Progress) SetPercent(pct int) Progress {
 	p.percent = pct
 	return p
