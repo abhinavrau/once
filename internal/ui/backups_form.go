@@ -48,10 +48,17 @@ type BackupsForm struct {
 	width, height int
 	running       bool
 	status        string
-	progress      Progress
-	err           error
-	custody       *Custody
-	handoff       CustodyHandoff
+	// detail is the live step under the status line: which repository is being
+	// reached, and - for the offsite upload, the one step with a person
+	// waiting on a network - what restic's own progress stream says.
+	detail   string
+	progress Progress
+	// stream pumps the probe's progress reports back onto the model. One per
+	// run: it closes when the task finishes.
+	stream  *progressStream
+	err     error
+	custody *Custody
+	handoff CustodyHandoff
 }
 
 func NewBackupsForm(ns *docker.Namespace) BackupsForm {
@@ -109,7 +116,16 @@ func (m BackupsForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case backupsEnableSubmitMsg:
-		return m.startRunning("Validating the backup repositories...", m.runProbe(msg.settings))
+		m.stream = newProgressStream()
+		return m.startRunning("Validating the backup repositories...", tea.Batch(m.runProbe(msg.settings), m.stream.Wait()))
+
+	case progressUpdateMsg:
+		if !m.running || m.stream == nil {
+			return m, nil
+		}
+		m.detail = msg.progress.Status
+		m.progress = m.progress.SetPercent(progressBarPercent(msg.progress))
+		return m, m.stream.Wait()
 
 	case backupsDisableSubmitMsg:
 		return m.startRunning("Saving...", func() tea.Msg {
@@ -175,7 +191,10 @@ func (m BackupsForm) View() string {
 	body := m.setupView()
 	if m.running {
 		status := lipgloss.NewStyle().Foreground(Colors.Muted).Render(m.status)
-		body = lipgloss.JoinVertical(lipgloss.Center, status, "", m.progress.View())
+		// The detail row is always present, empty or not: a line appearing
+		// mid-probe would shift the centered overlay under the user.
+		detail := lipgloss.NewStyle().Foreground(Colors.Border).Render(m.detail)
+		body = lipgloss.JoinVertical(lipgloss.Center, status, detail, "", m.progress.View())
 	}
 
 	helpLine := lipgloss.NewStyle().MarginTop(1).Align(lipgloss.Center).Render(m.help.View())
@@ -218,6 +237,7 @@ func (m BackupsForm) stopHandoff() tea.Cmd {
 func (m BackupsForm) startRunning(status string, cmd tea.Cmd) (Component, tea.Cmd) {
 	m.running = true
 	m.status = status
+	m.detail = ""
 	m.err = nil
 	m.progress = NewProgress(m.width, Colors.Border)
 	return m, tea.Batch(m.progress.Init(), cmd)
@@ -225,13 +245,14 @@ func (m BackupsForm) startRunning(status string, cmd tea.Cmd) (Component, tea.Cm
 
 // runProbe persists and probes; the finished message carries the settings
 // read back after ConfigureBackups, which mints the password when none
-// exists yet - the recovery kit needs it.
+// exists yet - the recovery kit needs it. It reports through the progress
+// seam, so the offsite leg's upload is visible while it happens.
 func (m BackupsForm) runProbe(settings docker.BackupRepoSettings) tea.Cmd {
 	ns := m.namespace
-	return func() tea.Msg {
-		err := ns.ConfigureBackups(context.Background(), settings)
+	return m.stream.Run(func(ctx context.Context, progress docker.DeployProgressCallback) tea.Msg {
+		err := ns.ConfigureBackups(ctx, settings, progress)
 		return backupsProbeFinishedMsg{settings: ns.BackupRepoSettings(), err: err}
-	}
+	})
 }
 
 func (m BackupsForm) runEnable() tea.Cmd {

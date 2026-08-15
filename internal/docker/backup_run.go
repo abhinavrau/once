@@ -153,12 +153,12 @@ func (n *Namespace) backupApp(ctx context.Context, app *Application, cfg BackupR
 // backupToRepo is one leg: ensure the repo exists, then back up the app's
 // Staging File into it.
 func (n *Namespace) backupToRepo(ctx context.Context, repo resticRepo, settings ApplicationSettings) error {
-	if err := n.ensureRepo(ctx, repo); err != nil {
+	if err := n.ensureRepo(ctx, repo, nil); err != nil {
 		return err
 	}
 
 	appName := settings.Name
-	res, err := n.runResticRetryLock(ctx, repo, resticBackupArgs(n.name, appName, settings.Image)...)
+	res, err := n.runResticRetryLock(ctx, repo, nil, resticBackupArgs(n.name, appName, settings.Image)...)
 	if err != nil {
 		return err
 	}
@@ -176,22 +176,22 @@ func (n *Namespace) backupToRepo(ctx context.Context, repo resticRepo, settings 
 // check result is recorded rather than folded into the run's outcome, because
 // "your repo is damaged" is a different emergency from "your backup did not
 // run", and one failure flag for both loses that.
-func (n *Namespace) maintainRepo(ctx context.Context, named namedResticRepo, state *State) {
-	if res, err := n.runResticRetryLock(ctx, named.repo, resticForgetArgs(n.name)...); err != nil {
-		slog.Error("restic forget failed", "repo", named.name, "error", err)
+func (n *Namespace) maintainRepo(ctx context.Context, repo resticRepo, state *State) {
+	if res, err := n.runResticRetryLock(ctx, repo, nil, resticForgetArgs(n.name)...); err != nil {
+		slog.Error("restic forget failed", "repo", repo.name, "error", err)
 	} else if res.exitCode != 0 {
-		slog.Error("restic forget failed", "repo", named.name, "error", res.failure())
+		slog.Error("restic forget failed", "repo", repo.name, "error", res.failure())
 	}
 
-	checkErr := n.checkRepo(ctx, named.repo)
-	state.RecordCheck(named.name, checkErr)
+	checkErr := n.checkRepo(ctx, repo)
+	state.RecordCheck(repo.name, checkErr)
 	if checkErr != nil {
-		slog.Error("restic check reported problems", "repo", named.name, "error", checkErr)
+		slog.Error("restic check reported problems", "repo", repo.name, "error", checkErr)
 	}
 }
 
 func (n *Namespace) checkRepo(ctx context.Context, repo resticRepo) error {
-	res, err := n.runResticRetryLock(ctx, repo, resticCheckArgs()...)
+	res, err := n.runResticRetryLock(ctx, repo, nil, resticCheckArgs()...)
 	if err != nil {
 		return err
 	}

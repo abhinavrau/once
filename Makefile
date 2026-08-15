@@ -21,10 +21,9 @@ build-all:
 test:
 	go test ./internal/...
 
-# The timeout is explicit because go's 10m default is now shorter than the
-# suite: a healthy run takes about that long in real Docker work, so the
-# default started reporting a passing suite as a timeout panic - which reads
-# exactly like a hung test.
+# The timeout is a hang detector, not a budget. The suite grew past Go's 600s
+# default doing real work (image pulls, deploys, restic runs), so it is stated
+# explicitly rather than left to fail as if something were stuck.
 integration:
 	go test -v -count=1 -timeout 30m ./integration/...
 

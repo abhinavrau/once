@@ -266,6 +266,20 @@ func TestBackupRunOffsiteLeg(t *testing.T) {
 		assert.Empty(t, state.LastCheck[repo].Error, repo)
 	}
 
+	// A healthy install's four facts, read off a real one: enabled, the app
+	// included with a fresh offsite copy, both checks clean, and no warnings.
+	status, err := ns.BackupStatus(ctx)
+	require.NoError(t, err)
+	assert.True(t, status.Enabled)
+	assert.Empty(t, status.FailedChecks())
+	require.Len(t, status.Apps, 1)
+	require.True(t, status.Apps[0].Included)
+	assert.Empty(t, status.Apps[0].LastBackup.Error)
+	fresh := status.OffsiteSummary()
+	assert.False(t, fresh.Missing())
+	assert.False(t, fresh.Unknown())
+	assert.WithinDuration(t, time.Now(), fresh.Latest, 10*time.Minute)
+
 	// The staleness signal is a query, never state: erase State entirely and
 	// the answer is unchanged.
 	require.NoError(t, ns.SaveState(ctx, &docker.State{}))
@@ -316,6 +330,24 @@ func TestBackupRunOffsiteLeg(t *testing.T) {
 
 	_, err = ns.LatestOffsiteSnapshot(ctx, "offsiteapp")
 	assert.Error(t, err, "staleness reports what the repo says, and says so when it cannot ask")
+
+	// A repo Once cannot open renders as unknown staleness on both surfaces -
+	// never as "no offsite copy", which would be a lie about a full repo - and
+	// the failed check alarms separately from the run, which stayed clean.
+	status, err = ns.BackupStatus(ctx)
+	require.NoError(t, err, "a failed snapshots query is a fact, not a crash")
+	summary := status.OffsiteSummary()
+	assert.True(t, summary.Unknown())
+	assert.False(t, summary.Missing())
+	require.Len(t, status.FailedChecks(), 1)
+	assert.Equal(t, docker.RepoNameOffsite, status.FailedChecks()[0].Name)
+
+	statusOut, err := captureCLIOutput("-n", nsName, "backup", "status")
+	require.NoError(t, err)
+	assert.Contains(t, statusOut, "offsite copy age unknown")
+	assert.NotContains(t, statusOut, "no offsite copy yet")
+	assert.Contains(t, statusOut, "PROBLEM", "a damaged repo is worded apart from a failed run")
+	assert.Contains(t, statusOut, "last backup ok", "the run itself stayed clean")
 }
 
 // Enabling backups runs the validation probe (initializing the repo and
@@ -334,9 +366,20 @@ func TestBackupEnableDisableCLIPersistsSettings(t *testing.T) {
 	require.NoError(t, ns.EnsureNetwork(ctx))
 	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
 
-	repoDir := filepath.Join(t.TempDir(), "backups")
-	t.Cleanup(func() { chownToTestUser(t, repoDir) })
-	require.NoError(t, runCLI("-n", nsName, "backup", "enable", "--local-path", repoDir))
+	dirs := t.TempDir()
+	t.Cleanup(func() { chownToTestUser(t, dirs) })
+	repoDir := filepath.Join(dirs, "backups")
+	offsiteDir := filepath.Join(dirs, "offsite")
+
+	enableOut, err := captureCLIOutput("-n", nsName, "backup", "enable",
+		"--local-path", repoDir, "--offsite-url", offsiteDir)
+	require.NoError(t, err)
+
+	// The probe reports through the progress seam, so a piped run still sees
+	// which repository is being reached - including the offsite one, the only
+	// step with a person waiting on a network.
+	assert.Contains(t, enableOut, "creating offsite")
+	assert.Contains(t, enableOut, "checking local")
 
 	restored, err := docker.RestoreNamespace(ctx, nsName)
 	require.NoError(t, err)
@@ -345,9 +388,20 @@ func TestBackupEnableDisableCLIPersistsSettings(t *testing.T) {
 	assert.Equal(t, repoDir, cfg.LocalPath)
 	assert.Regexp(t, `^[A-Z2-7]{32}$`, cfg.Password)
 
-	// The probe initialized the repo and forgot its own snapshot.
+	// The probe initialized both repos and forgot its own snapshots.
 	assert.FileExists(t, filepath.Join(repoDir, "config"), "the probe initializes the repo")
 	assert.Empty(t, resticSnapshotGroups(t, ctx, repoDir, cfg.Password), "the probe leaves no snapshot behind")
+	assert.Empty(t, resticSnapshotGroups(t, ctx, offsiteDir, cfg.Password), "nor in the offsite repo")
+
+	// A healthy install's happy path: enabled, both repos named, nothing
+	// shouting, and no app rows because none is deployed here.
+	statusOut, err := captureCLIOutput("-n", nsName, "backup", "status")
+	require.NoError(t, err)
+	assert.Contains(t, statusOut, "Backups: enabled")
+	assert.Contains(t, statusOut, "Local repository:   "+repoDir)
+	assert.Contains(t, statusOut, "Offsite repository: "+offsiteDir)
+	assert.NotContains(t, statusOut, "PROBLEM")
+	assert.NotContains(t, statusOut, "not enabled")
 
 	require.NoError(t, runCLI("-n", nsName, "backup", "disable"))
 
@@ -397,10 +451,12 @@ func TestBackupEnableProbeFailureWithholdsEnabled(t *testing.T) {
 	require.NotNil(t, probe)
 	assert.NotEmpty(t, probe.Error)
 
-	status, err := captureCLIOutput("-n", nsName, "backup", "status")
+	statusOut, err := captureCLIOutput("-n", nsName, "backup", "status")
 	require.NoError(t, err)
-	assert.Contains(t, status, "configured but not enabled")
-	assert.Contains(t, status, "Last validation: failed")
+	assert.Contains(t, statusOut, "Backups: configured, not enabled")
+	assert.Contains(t, statusOut, "Last validation:    failed")
+	assert.Contains(t, statusOut, "wrong password", "the probe's own error is the reason shown")
+	assert.Contains(t, statusOut, "Run `once backup enable` to finish enabling backups.")
 
 	// Retry against a fresh path: the persisted password is reused - the
 	// repo it initializes now is openable on the next enable - and only now

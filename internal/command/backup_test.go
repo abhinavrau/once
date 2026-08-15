@@ -1,9 +1,7 @@
 package command
 
 import (
-	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,20 +33,6 @@ func TestCaptureOffsiteEnvRejectsUnsetVariable(t *testing.T) {
 	_, err := captureOffsiteEnv([]string{"ONCE_TEST_UNSET_VARIABLE"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ONCE_TEST_UNSET_VARIABLE")
-}
-
-// The staleness signal is the only surface a failing offsite leg gets: the
-// run succeeds regardless, so status has to say how old the offsite copy is,
-// including when the repo cannot be asked at all.
-func TestDescribeOffsiteAge(t *testing.T) {
-	assert.Equal(t, "offsite copy is 3 days old",
-		describeOffsiteAge(time.Now().Add(-73*time.Hour), nil))
-	assert.Equal(t, "offsite copy is 6 hours old",
-		describeOffsiteAge(time.Now().Add(-6*time.Hour), nil))
-	assert.Equal(t, "offsite copy is less than an hour old",
-		describeOffsiteAge(time.Now().Add(-time.Minute), nil))
-	assert.Equal(t, "no offsite copy yet", describeOffsiteAge(time.Time{}, nil))
-	assert.Contains(t, describeOffsiteAge(time.Time{}, errors.New("unreachable")), "unknown: unreachable")
 }
 
 func TestBackupSubcommandsAreRegistered(t *testing.T) {

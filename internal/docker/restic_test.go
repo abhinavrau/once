@@ -113,7 +113,7 @@ func TestConfiguredResticRepos(t *testing.T) {
 	both := configuredResticRepos(BackupRepoSettings{LocalPath: "/repo", OffsiteURL: "s3:host/bucket"})
 	require.Len(t, both, 2)
 	assert.Equal(t, RepoNameOffsite, both[1].name)
-	assert.Equal(t, "s3:host/bucket", both[1].repo.repository)
+	assert.Equal(t, "s3:host/bucket", both[1].repository)
 }
 
 // The staleness signal is a query and must stay one: --no-lock writes nothing

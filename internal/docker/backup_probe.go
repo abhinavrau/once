@@ -34,7 +34,7 @@ const backupProbeTimeout = 2 * time.Minute
 // On probe failure everything stays persisted, password included - the
 // probe may already have initialized a repo with it, and discarding it
 // would orphan that repo. The returned error carries restic's own message.
-func (n *Namespace) ConfigureBackups(ctx context.Context, cfg BackupRepoSettings) error {
+func (n *Namespace) ConfigureBackups(ctx context.Context, cfg BackupRepoSettings, progress DeployProgressCallback) error {
 	if cfg.Password == "" {
 		cfg.Password = n.BackupRepoSettings().Password
 	}
@@ -51,7 +51,7 @@ func (n *Namespace) ConfigureBackups(ctx context.Context, cfg BackupRepoSettings
 		return fmt.Errorf("saving backup settings: %w", err)
 	}
 
-	probeErr := n.ValidateBackupRepos(ctx, cfg)
+	probeErr := n.ValidateBackupRepos(ctx, cfg, progress)
 
 	// The proxy label write above recreated the Proxy, so this reloads rather
 	// than reusing a handle. Best effort: the probe verdict is what matters,
@@ -81,7 +81,7 @@ func (n *Namespace) EnableBackups(ctx context.Context) error {
 // file with the real --host and a fixed path, and forgets the snapshot
 // without --prune. No check, no prune - both are unbounded against a large
 // pre-existing repo.
-func (n *Namespace) ValidateBackupRepos(ctx context.Context, cfg BackupRepoSettings) error {
+func (n *Namespace) ValidateBackupRepos(ctx context.Context, cfg BackupRepoSettings, progress DeployProgressCallback) error {
 	if err := ValidateOffsiteURL(cfg.OffsiteURL); err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func (n *Namespace) ValidateBackupRepos(ctx context.Context, cfg BackupRepoSetti
 	defer os.Remove(probePath)
 
 	for _, repo := range configuredResticRepos(cfg) {
-		if err := n.probeRepo(ctx, repo); err != nil {
+		if err := n.probeRepo(ctx, repo, progress); err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("%s repository did not answer within %s: check the URL and the credentials, and create the bucket if it does not exist yet", repo.name, backupProbeTimeout)
 			}
@@ -127,14 +127,18 @@ func (n *Namespace) BackupOnDataDevice(ctx context.Context) bool {
 
 // Private
 
-func (n *Namespace) probeRepo(ctx context.Context, named namedResticRepo) error {
-	name, repo := named.name, named.repo
+// probeRepo is the one restic sequence with a person waiting on the other end
+// of it, so it is the one that reports: a status line for each round trip that
+// has no output of its own, and restic's live `--json` stream for the upload
+// itself (ADR-0012 - the frontends render it, this only supplies the facts).
+func (n *Namespace) probeRepo(ctx context.Context, repo resticRepo, progress DeployProgressCallback) error {
+	name := repo.name
 
-	if err := n.ensureRepo(ctx, repo); err != nil {
+	if err := n.ensureRepo(ctx, repo, progress); err != nil {
 		return fmt.Errorf("%s repository: %w", name, err)
 	}
 
-	res, err := n.runResticRetryLock(ctx, repo, resticProbeBackupArgs(n.name)...)
+	res, err := n.runResticRetryLock(ctx, repo, resticStatusReporter(progress, name), resticProbeBackupArgs(n.name)...)
 	if err != nil {
 		return err
 	}
@@ -149,7 +153,8 @@ func (n *Namespace) probeRepo(ctx context.Context, named namedResticRepo) error 
 
 	// forget by id, never --prune: the probe must leave no snapshot behind,
 	// and prune is unbounded against a pre-existing repo.
-	forgetRes, err := n.runResticRetryLock(ctx, repo, "forget", summary.SnapshotID)
+	reportWaiting(progress, "tidying "+name)
+	forgetRes, err := n.runResticRetryLock(ctx, repo, nil, "forget", summary.SnapshotID)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -76,6 +77,43 @@ func TestBackupsFormGrowsCredentialRows(t *testing.T) {
 
 	backupsFormFill(t, &form, "cred-key-0", "B2_ACCOUNT_ID")
 	assert.Equal(t, 6, form.form.ItemCount(), "a filled name row grows a fresh empty pair")
+}
+
+// The offsite leg is the one step with a person waiting on a network, so the
+// overlay renders restic's own progress rather than a spinner (ADR-0012: the
+// frontend owns the rendering, the seam only carries the facts).
+func TestBackupsFormRendersOffsiteUploadProgress(t *testing.T) {
+	form := newBackupsForm(nil, docker.BackupRepoSettings{LocalPath: "/mnt/backups"})
+	backupsFormUpdate(t, &form, tea.WindowSizeMsg{Width: 80, Height: 24})
+	form.running = true
+	form.status = "Validating the backup repositories..."
+	form.stream = newProgressStream()
+
+	backupsFormUpdate(t, &form, progressUpdateMsg{progress: docker.DeployProgress{
+		Stage: docker.DeployStageWaiting, Status: "creating offsite",
+	}})
+	assert.Contains(t, form.View(), "creating offsite")
+
+	before := lipgloss.Height(form.View())
+	backupsFormUpdate(t, &form, progressUpdateMsg{progress: docker.DeployProgress{
+		Stage: docker.DeployStageUploading, Percentage: 42, Status: "uploading offsite",
+	}})
+
+	assert.Contains(t, form.View(), "uploading offsite")
+	assert.Equal(t, 42, form.progress.percent)
+	assert.Equal(t, before, lipgloss.Height(form.View()), "the detail row is reserved, so the overlay never shifts mid-probe")
+}
+
+// A report that arrives after the run is over belongs to nobody.
+func TestBackupsFormIgnoresProgressWhenIdle(t *testing.T) {
+	form := newBackupsForm(nil, docker.BackupRepoSettings{LocalPath: "/mnt/backups"})
+
+	cmd := backupsFormUpdate(t, &form, progressUpdateMsg{progress: docker.DeployProgress{
+		Stage: docker.DeployStageUploading, Percentage: 42, Status: "uploading offsite",
+	}})
+
+	assert.Nil(t, cmd)
+	assert.Empty(t, form.detail)
 }
 
 // Helpers

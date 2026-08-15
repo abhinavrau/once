@@ -89,11 +89,13 @@ func (s *progressStream) report(p docker.DeployProgress) {
 // Helpers
 
 // progressBarPercent maps a deploy stage onto the progress bar: only a
-// download has a meaningful percentage, so every other stage falls back to the
-// indeterminate animation.
+// measured transfer - a download in, an upload out - has a meaningful
+// percentage, so every other stage falls back to the indeterminate animation.
 func progressBarPercent(p docker.DeployProgress) int {
-	if p.Stage == docker.DeployStageDownloading {
+	switch p.Stage {
+	case docker.DeployStageDownloading, docker.DeployStageUploading:
 		return p.Percentage
+	default:
+		return -1
 	}
-	return -1
 }

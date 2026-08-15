@@ -124,7 +124,7 @@ func (n *Namespace) ListRepoSnapshots(ctx context.Context, repo RestoreRepo) (Re
 
 	// A question needs no Staging Directory, and a fresh host has none.
 	repo.StagingDir = ""
-	res, err := n.runRestic(ctx, restoreResticRepo(repo), resticRepoSnapshotsArgs()...)
+	res, err := n.runRestic(ctx, restoreResticRepo(repo), nil, resticRepoSnapshotsArgs()...)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +181,7 @@ func (n *Namespace) RestoreFromSnapshot(ctx context.Context, repo RestoreRepo, s
 		}
 	}()
 
-	res, err := n.runResticRetryLock(ctx, restoreResticRepo(repo), resticRestoreArgs(snapshot.ID)...)
+	res, err := n.runResticRetryLock(ctx, restoreResticRepo(repo), nil, resticRestoreArgs(snapshot.ID)...)
 	if err != nil {
 		return nil, err
 	}
@@ -213,11 +213,11 @@ func (n *Namespace) ResumeBackupsAfterRestore(ctx context.Context, cfg BackupRep
 		return err
 	}
 	if cfg.OffsiteURL != "" {
-		if err := n.ensureRepo(ctx, localResticRepoFrom(cfg)); err != nil {
+		if err := n.ensureRepo(ctx, localResticRepoFrom(cfg), nil); err != nil {
 			return fmt.Errorf("initializing a local repository from %s: %w", cfg.OffsiteURL, err)
 		}
 	}
-	return n.ConfigureBackups(ctx, cfg)
+	return n.ConfigureBackups(ctx, cfg, nil)
 }
 
 // Helpers
