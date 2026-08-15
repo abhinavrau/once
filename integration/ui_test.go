@@ -392,6 +392,9 @@ func TestUIInstallBackupCheckboxOffersOverlayOnce(t *testing.T) {
 	d.waitForView("Image", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitForView("Custom Docker image", 5*time.Second)
+	// The cursor is still on "Custom Docker image"; wrap down to the first
+	// catalog entry.
+	d.send(keyMsg("down"))
 	d.send(keyMsg("enter"))
 	d.waitForView("Exposure", 5*time.Second)
 	view := d.viewContent()
