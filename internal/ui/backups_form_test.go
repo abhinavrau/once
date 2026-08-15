@@ -51,6 +51,23 @@ func TestBackupsFormRejectsRelativeLocalPath(t *testing.T) {
 	assert.True(t, form.form.HasError())
 }
 
+// restic reads a relative offsite URL as a local path inside the restic
+// container, so those backups would report success and be thrown away with
+// the container. The form says so on the field rather than leaving the probe
+// to explain it.
+func TestBackupsFormRejectsUnmountableOffsiteURL(t *testing.T) {
+	form := newBackupsForm(nil, docker.BackupRepoSettings{LocalPath: "/mnt/backups"})
+	backupsFormFill(t, &form, "offsite-url", "backups/offsite")
+
+	assert.Nil(t, backupsFormSubmit(t, &form))
+	assert.True(t, form.form.HasError())
+
+	// An absolute path is a legitimate offsite target: a second disk.
+	accepted := newBackupsForm(nil, docker.BackupRepoSettings{LocalPath: "/mnt/backups"})
+	backupsFormFill(t, &accepted, "offsite-url", "/mnt/usb/once")
+	require.NotNil(t, backupsFormSubmit(t, &accepted))
+}
+
 // Typing into the last credential-name row grows a fresh empty pair, the
 // environment form's pattern.
 func TestBackupsFormGrowsCredentialRows(t *testing.T) {
