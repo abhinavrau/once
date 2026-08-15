@@ -118,6 +118,30 @@ colour profile at all, so it rendered with default colours and bubbletea's
 own guess. It now detects both the way `ui.Run` does - which the QR needs,
 since a forced colour only survives if the profile carries it.
 
+Three real defects came out of code review and are fixed:
+
+- **The LAN route pointed at a container that does not exist.** It targets
+  once-admin, but only the Tailscale enable lifecycle boots that - so on a
+  plain install, which is exactly what the LAN route exists for, the QR led
+  to a dead route. `StartRecoveryHandoff` now boots once-admin when there is
+  none and destroys it again on Close, leaving the install as it found it.
+  The integration test asserts once-admin is absent before and after, so it
+  covers the plain install rather than the Tailscale one.
+- **Degraded-profile suppression was dead in the TUI.** `ui.Run` applied the
+  palette but never recorded the colour profile, so `QRUnavailableReason`
+  always saw the TrueColor default and the QR was offered on terminals that
+  would strip its colours. Only the CLI path had it right.
+- **Quitting the TUI could strand the route.** The handoff's proxy service
+  and certificate outlive the process, and ctrl+c on the QR screen left
+  them behind (the TTL only expires the session, not the route). The
+  Backups overlay now reports `Busy` while the page is published, through
+  the same screen-to-overlay chain `ShowingSecret` already uses.
+
+Also from review: the password was kept off the phone page's details box by
+matching the label string `"Password"`, so a reworded label would have
+shipped the secret into a box beside the field. It is a `secret` flag on the
+row now, with a test that no detail can contain the password.
+
 Notes for 15-18:
 
 - `internal/handoff` is self-contained (no project imports) and
