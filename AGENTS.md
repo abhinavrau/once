@@ -64,7 +64,7 @@ make lint        # Run golangci-lint
 
 ## Testing notes
 
-- The integration suite runs under a 10-minute total `go test` timeout. A single
+- The integration suite runs under a 30-minute total `go test` timeout. A single
   hung test consumes the whole budget and the suite reports as a timeout panic,
   masking the real culprit. When this happens, read the goroutine dump for the
   goroutine stuck in the test body (e.g. `appDriver.waitUntil`), not the alarm or
