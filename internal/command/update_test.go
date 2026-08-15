@@ -30,7 +30,7 @@ func TestApplyChanges(t *testing.T) {
 			MemoryMB: 1024,
 		},
 		AutoUpdate: true,
-		Backup: docker.BackupSettings{AutoBackup: true},
+		Backup:     docker.BackupSettings{AutoBackup: true},
 	}
 
 	newCmd := func() (*cobra.Command, *settingsFlags) {

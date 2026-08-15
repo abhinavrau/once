@@ -83,6 +83,11 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 
+	// Backups run before auto-update: when both fall due on the same tick,
+	// the newest snapshot must be of the known-good version, not of whatever
+	// the new image did to the app.
+	r.runBackups(ctx, ns, state)
+
 	for _, app := range ns.Applications() {
 		if !app.Running {
 			continue
@@ -155,6 +160,12 @@ func (r *Runner) checkSelfUpdate(ctx context.Context, ns *docker.Namespace, stat
 
 	slog.Info("Self-update complete, restarting")
 	return true
+}
+
+func (r *Runner) runBackups(ctx context.Context, ns *docker.Namespace, state *docker.State) {
+	if err := ns.RunBackups(ctx, state); err != nil {
+		slog.Error("Backup run failed", "error", err)
+	}
 }
 
 func (r *Runner) checkUpdate(ctx context.Context, app *docker.Application, state *docker.State) {

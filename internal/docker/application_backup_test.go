@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,18 +22,6 @@ func TestBackupToFile_RelativePath(t *testing.T) {
 	app := &Application{Settings: ApplicationSettings{Name: "chat"}}
 	err := app.BackupToFile(context.Background(), "relative/path", "backup.tar.gz")
 	require.ErrorIs(t, err, ErrBackupPathRelative)
-}
-
-func TestBackupName(t *testing.T) {
-	app := &Application{
-		Settings: ApplicationSettings{Name: "myapp"},
-	}
-
-	name := app.BackupName()
-	assert.Contains(t, name, "myapp-")
-	assert.True(t, len(name) > len("myapp-.tar"))
-	assert.True(t, strings.HasSuffix(name, ".tar"))
-	assert.False(t, strings.HasSuffix(name, ".tar.gz"), "exports are plain tar now")
 }
 
 func TestWriteTarEntry(t *testing.T) {

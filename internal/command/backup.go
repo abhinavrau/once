@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/basecamp/once/internal/docker"
+	"github.com/basecamp/once/internal/system"
 )
 
 type backupCommand struct {
@@ -88,6 +90,18 @@ func (b *backupCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 	if err != nil {
 		return fmt.Errorf("resolving path: %w", err)
 	}
+
+	// The export pauses the app container just like the scheduled Backup Run
+	// does; two pausers racing tear the SQLite copy, so both take the same
+	// host flock.
+	lock, err := system.TryLock(docker.BackupLockPath)
+	if errors.Is(err, system.ErrLocked) {
+		return errors.New("a backup is already in progress; try again when it finishes")
+	}
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
 
 	dir := filepath.Dir(filename)
 	name := filepath.Base(filename)

@@ -377,6 +377,7 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 		n.proxy.Destroy(ctx),
 		n.tailscale.Destroy(ctx),
 		n.admin.Destroy(ctx),
+		n.removeResticCacheVolume(ctx),
 		n.client.NetworkRemove(ctx, n.name),
 	)
 	return errors.Join(errs...)

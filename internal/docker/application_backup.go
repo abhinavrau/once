@@ -25,12 +25,7 @@ const (
 
 	backupAppSettingsEntry = "once.application.json"
 	backupVolSettingsEntry = "once.volume.json"
-	backupTimeFormat       = "20060102-150405"
 )
-
-func (a *Application) BackupName() string {
-	return fmt.Sprintf("%s-%s.tar", a.Settings.Name, time.Now().Format(backupTimeFormat))
-}
 
 func (a *Application) BackupToFile(ctx context.Context, dir string, name string) error {
 	if dir == "" {

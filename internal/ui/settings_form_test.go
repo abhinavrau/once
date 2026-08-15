@@ -368,7 +368,6 @@ func backupsPressSpace(form *SettingsFormBackups) {
 	updateSettingsForm(form, keyPressMsg(" "))
 }
 
-
 func TestSettingsFormEnvironment_InitialState_Empty(t *testing.T) {
 	form := NewSettingsFormEnvironment(docker.ApplicationSettings{})
 

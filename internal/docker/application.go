@@ -19,17 +19,17 @@ import (
 )
 
 var (
-	ErrApplicationExists     = errors.New("application already exists")
-	ErrHostnameInUse         = errors.New("hostname already in use")
-	ErrHostRequired          = errors.New("host is required")
-	ErrInvalidBackup         = errors.New("invalid backup archive")
-	ErrImageRequired         = errors.New("image is required")
-	ErrBackupPathRelative    = errors.New("backup path must be absolute")
-	ErrDataPathInvalid       = errors.New("data path must be absolute and must not be /")
-	ErrHealthPathInvalid     = errors.New("health check path must begin with /")
-	ErrURLEnvVarInvalid      = errors.New("url env var must not contain =")
-	ErrSetupFailed           = errors.New("setup failed")
-	ErrPullFailed            = &describedError{
+	ErrApplicationExists  = errors.New("application already exists")
+	ErrHostnameInUse      = errors.New("hostname already in use")
+	ErrHostRequired       = errors.New("host is required")
+	ErrInvalidBackup      = errors.New("invalid backup archive")
+	ErrImageRequired      = errors.New("image is required")
+	ErrBackupPathRelative = errors.New("backup path must be absolute")
+	ErrDataPathInvalid    = errors.New("data path must be absolute and must not be /")
+	ErrHealthPathInvalid  = errors.New("health check path must begin with /")
+	ErrURLEnvVarInvalid   = errors.New("url env var must not contain =")
+	ErrSetupFailed        = errors.New("setup failed")
+	ErrPullFailed         = &describedError{
 		msg:         "pull failed",
 		description: "Failed to download the application image. Check that the image name is correct and try again.",
 	}
