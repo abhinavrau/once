@@ -88,6 +88,59 @@ func TestProxySettingsBackupsLabelRoundTrip(t *testing.T) {
 	assert.Equal(t, settings.Backups, decoded.Backups)
 }
 
+// olderProxySettings is Once as it was before install-wide backup settings
+// existed: the same label, read and rewritten by a binary that does not model
+// the key at all.
+type olderProxySettings struct {
+	labelExtra
+	HTTPPort  int `json:"httpPort,omitempty"`
+	HTTPSPort int `json:"httpsPort,omitempty"`
+}
+
+// partialProxySettings is the counterfactual ADR-0014 rejects: a binary that
+// models the backups object but not everything inside it, which is what any
+// nesting under a key an older binary already knows would look like.
+type partialProxySettings struct {
+	labelExtra
+	HTTPPort int `json:"httpPort,omitempty"`
+	Backups  struct {
+		Enabled bool `json:"enabled,omitempty"`
+	} `json:"backups,omitempty"`
+}
+
+// The whole reason the settings ride a top-level key (ADR-0014): an older
+// binary rewriting the proxy label - a status read is enough to make it - must
+// carry the Repo Password through rather than destroy the only copy of it.
+func TestOlderBinaryRewritePreservesBackupSettings(t *testing.T) {
+	current := ProxySettings{
+		HTTPPort: 80,
+		Backups: BackupRepoSettings{
+			Enabled:    true,
+			LocalPath:  "/var/lib/once/backups",
+			OffsiteURL: "s3:s3.example.com/bucket/once",
+			Password:   "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+		},
+	}
+
+	older, err := decodeLabel[olderProxySettings](current.Marshal())
+	require.NoError(t, err)
+	older.HTTPSPort = 8443
+
+	decoded, err := UnmarshalProxySettings(encodeLabel[olderProxySettings](older))
+	require.NoError(t, err)
+	assert.Equal(t, current.Backups, decoded.Backups)
+	assert.Equal(t, 8443, decoded.HTTPSPort, "the older binary's own edit still lands")
+
+	// Nested one level deeper the carry cannot save it: unknown fields are
+	// captured at the top level only, so anything inside a modelled object is
+	// gone the moment an older binary writes the label back.
+	partial, err := decodeLabel[partialProxySettings](current.Marshal())
+	require.NoError(t, err)
+	nested, err := UnmarshalProxySettings(encodeLabel[partialProxySettings](partial))
+	require.NoError(t, err)
+	assert.Empty(t, nested.Backups.Password)
+}
+
 func TestProxySettingsWithoutBackupsOmitsKey(t *testing.T) {
 	settings := ProxySettings{HTTPPort: 80}
 	assert.NotContains(t, settings.Marshal(), "backups")

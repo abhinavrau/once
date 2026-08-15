@@ -334,6 +334,17 @@ func TestBackup(t *testing.T) {
 	require.NoError(t, err)
 	defer backupFile.Close()
 
+	// gzip is dropped: the archive is plain tar, so restic's chunker sees the
+	// same blobs from one day to the next. extractBackupArchive decompresses
+	// transparently - the old format stays restorable forever - so a re-added
+	// gzip writer would be invisible except in the bytes on disk.
+	magic := make([]byte, 2)
+	_, err = io.ReadFull(backupFile, magic)
+	require.NoError(t, err)
+	assert.NotEqual(t, []byte{0x1f, 0x8b}, magic, "the archive Once writes is plain tar, never gzipped")
+	_, err = backupFile.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+
 	entries := extractBackupArchive(t, backupFile)
 
 	assert.Contains(t, entries, "once.application.json")
