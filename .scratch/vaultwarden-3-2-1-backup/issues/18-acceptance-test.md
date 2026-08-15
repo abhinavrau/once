@@ -104,7 +104,15 @@ Implemented on branch issue-18-acceptance. The journey is
 - The ticket's "10-minute budget" predates the Makefile's explicit 30m
   suite timeout (AGENTS.md carries the current note). The test holds
   itself to a 10-minute context regardless; it uses 34s of it.
-- Registry pulls remain the flakiest part of the environment: the first
-  run of this test failed on `pulling proxy image: lookup
-  registry-1.docker.io: i/o timeout` in the middle of `backup enable`,
-  which is the IPv6 flap AGENTS.md describes, not a test defect.
+- Green suite: `ok github.com/basecamp/once/integration 710.460s`, 49
+  tests, no failures; lint 0 issues; `make test` clean.
+- Registry pulls remain the flakiest part of the environment, and cost
+  three runs before a clean one: `pulling proxy image: lookup
+  registry-1.docker.io: i/o timeout`, then the same lookup as `no such
+  host`, then a UI test failing to pull `traefik/whoami`. All three are
+  the flap AGENTS.md describes - every affected test passed on rerun with
+  nothing changed. Worth noticing though: **every proxy label rewrite
+  pulls the proxy image**, since `UpdateSettings` removes the container
+  and `Boot` pulls when it finds none, so `backup enable` and every
+  settings change inherit that exposure. Nothing about rewriting a label
+  needs the registry; a ticket of its own.
