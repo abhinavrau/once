@@ -308,13 +308,7 @@ func chownToTestUser(t *testing.T, dir string) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return
-	}
-	defer cli.Close()
-
-	resp, err := cli.ContainerCreate(ctx,
+	_, _, _ = runContainerToCompletion(ctx,
 		&container.Config{
 			Image:      docker.ResticImage,
 			Entrypoint: []string{"chown"},
@@ -323,38 +317,13 @@ func chownToTestUser(t *testing.T, dir string) {
 		},
 		&container.HostConfig{
 			Mounts: []mount.Mount{{Type: mount.TypeBind, Source: dir, Target: "/target"}},
-		},
-		nil, nil, "")
-	if err != nil {
-		return
-	}
-	defer cli.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true})
-
-	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return
-	}
-	waitCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
-	select {
-	case <-waitCh:
-	case <-errCh:
-	}
+		})
 }
 
 func runResticInTest(t *testing.T, ctx context.Context, repoDir, password string, args ...string) string {
 	t.Helper()
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	require.NoError(t, err)
-	defer cli.Close()
-
-	if _, err := cli.ImageInspect(ctx, docker.ResticImage); err != nil {
-		reader, err := cli.ImagePull(ctx, docker.ResticImage, image.PullOptions{})
-		require.NoError(t, err)
-		_, _ = io.Copy(io.Discard, reader)
-		reader.Close()
-	}
-
-	resp, err := cli.ContainerCreate(ctx,
+	exitCode, stdout, err := runContainerToCompletion(ctx,
 		&container.Config{
 			Image: docker.ResticImage,
 			Cmd:   args,
@@ -363,27 +332,58 @@ func runResticInTest(t *testing.T, ctx context.Context, repoDir, password string
 		},
 		&container.HostConfig{
 			Mounts: []mount.Mount{{Type: mount.TypeBind, Source: repoDir, Target: "/repo"}},
-		},
-		nil, nil, "")
+		})
 	require.NoError(t, err)
+	require.Zero(t, exitCode, "restic %v failed", args)
+	return stdout
+}
+
+// runContainerToCompletion is the test-side create/start/wait/logs/remove
+// shape shared by the restic helpers.
+func runContainerToCompletion(ctx context.Context, config *container.Config, hostConfig *container.HostConfig) (int, string, error) {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return 0, "", err
+	}
+	defer cli.Close()
+
+	if _, err := cli.ImageInspect(ctx, config.Image); err != nil {
+		reader, err := cli.ImagePull(ctx, config.Image, image.PullOptions{})
+		if err != nil {
+			return 0, "", err
+		}
+		_, _ = io.Copy(io.Discard, reader)
+		reader.Close()
+	}
+
+	resp, err := cli.ContainerCreate(ctx, config, hostConfig, nil, nil, "")
+	if err != nil {
+		return 0, "", err
+	}
 	defer cli.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true})
 
-	require.NoError(t, cli.ContainerStart(ctx, resp.ID, container.StartOptions{}))
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return 0, "", err
+	}
 
 	waitCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+	var exitCode int
 	select {
 	case status := <-waitCh:
-		require.Zero(t, status.StatusCode, "restic %v failed", args)
+		exitCode = int(status.StatusCode)
 	case err := <-errCh:
-		require.NoError(t, err)
+		return 0, "", err
 	}
 
 	logs, err := cli.ContainerLogs(ctx, resp.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
-	require.NoError(t, err)
+	if err != nil {
+		return exitCode, "", err
+	}
 	defer logs.Close()
 
 	var stdout, stderr strings.Builder
-	_, err = stdcopy.StdCopy(&stdout, &stderr, logs)
-	require.NoError(t, err)
-	return stdout.String()
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, logs); err != nil {
+		return exitCode, "", err
+	}
+	return exitCode, stdout.String(), nil
 }

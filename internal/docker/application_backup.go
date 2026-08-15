@@ -189,6 +189,10 @@ func (a *Application) populateVolume(ctx context.Context, vol *ApplicationVolume
 				{
 					Type:   mount.TypeVolume,
 					Source: vol.Name(),
+					// Paired with BackupDataDir - the archive's "data/" prefix
+					// unpacks into this mount - not with the app's Profile data
+					// path, so it is correct for every App Profile. Change the
+					// two together or not at all.
 					Target: "/data",
 				},
 			},

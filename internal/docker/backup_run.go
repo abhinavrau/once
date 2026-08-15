@@ -76,13 +76,13 @@ func (n *Namespace) RunBackups(ctx context.Context, state *State) error {
 	// the backups above are already safe.
 	if backedUp > 0 {
 		repo := localResticRepo(cfg)
-		if res, err := n.runResticRetryLock(ctx, cfg.StagingDir(), repo, resticForgetArgs(n.name)...); err != nil {
+		if res, err := n.runResticRetryLock(ctx, repo, resticForgetArgs(n.name)...); err != nil {
 			slog.Error("restic forget failed", "error", err)
 		} else if res.exitCode != 0 {
 			slog.Error("restic forget failed", "error", res.failure())
 		}
 
-		checkErr := n.checkRepo(ctx, cfg.StagingDir(), repo)
+		checkErr := n.checkRepo(ctx, repo)
 		state.RecordCheck("local", checkErr)
 		if checkErr != nil {
 			slog.Error("restic check reported problems", "repo", "local", "error", checkErr)
@@ -135,10 +135,10 @@ func (n *Namespace) backupAppToLocalRepo(ctx context.Context, app *Application, 
 	}
 
 	repo := localResticRepo(cfg)
-	if err := n.ensureRepo(ctx, stagingDir, repo); err != nil {
+	if err := n.ensureRepo(ctx, repo); err != nil {
 		return 0, err
 	}
-	res, err := n.runResticRetryLock(ctx, stagingDir, repo, resticBackupArgs(n.name, app.Settings.Name)...)
+	res, err := n.runResticRetryLock(ctx, repo, resticBackupArgs(n.name, app.Settings.Name)...)
 	if err != nil {
 		return 0, err
 	}
@@ -157,8 +157,8 @@ func (n *Namespace) backupAppToLocalRepo(ctx context.Context, app *Application, 
 	return info.Size(), nil
 }
 
-func (n *Namespace) checkRepo(ctx context.Context, stagingDir string, repo resticRepo) error {
-	res, err := n.runResticRetryLock(ctx, stagingDir, repo, resticCheckArgs()...)
+func (n *Namespace) checkRepo(ctx context.Context, repo resticRepo) error {
+	res, err := n.runResticRetryLock(ctx, repo, resticCheckArgs()...)
 	if err != nil {
 		return err
 	}

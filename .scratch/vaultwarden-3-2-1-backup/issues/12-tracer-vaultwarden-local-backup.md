@@ -1,6 +1,6 @@
 # 12 - Tracer: Vaultwarden deploys and backs up to a local repo
 
-Status: ready-for-agent
+Status: done
 
 **What to build:** The tracer bullet - deliberately wide and thin. After this
 issue, `once deploy vaultwarden` comes up healthy and a scheduled Backup Run
@@ -63,18 +63,46 @@ Local backup engine (issues/06, 07, PRD "The Backup Run"):
 
 **Blocked by:** nothing.
 
-- [ ] `once deploy vaultwarden` (catalog) deploys healthy: named
+- [x] `once deploy vaultwarden` (catalog) deploys healthy: named
       `vaultwarden`, volume at `/data` only, proxied health check on
       `/alive`, `DOMAIN` set; a custom image with the three flags works; an
       existing Rails app deploys exactly as before
-- [ ] Old labels (no `profile` key) decode to zero Profile; label round-trip
+- [x] Old labels (no `profile` key) decode to zero Profile; label round-trip
       preserves the Profile through backup archive metadata
-- [ ] Restore reads both gzipped and plain archives
-- [ ] A scheduled run snapshots a due app into the local repo; two runs land
+- [x] Restore reads both gzipped and plain archives
+- [x] A scheduled run snapshots a due app into the local repo; two runs land
       in one `--group-by host,paths` retention group; `--host` and staging
       path constant (unit test on the argument builder)
-- [ ] Free-disk check fires below 2x baseline, skipped at zero baseline
-- [ ] Failed run retries after 1h not 5min; success after 24h; manual export
+- [x] Free-disk check fires below 2x baseline, skipped at zero baseline
+- [x] Failed run retries after 1h not 5min; success after 24h; manual export
       during a run exits non-zero on the flock
-- [ ] Backups run before auto-update in the tick
-- [ ] Lint, unit, and integration tests pass
+- [x] Backups run before auto-update in the tick
+- [x] Lint, unit, and integration tests pass
+
+## Comments
+
+Implemented on branch issue-12-tracer (5 commits). Evidence per checklist
+item:
+
+- Vaultwarden deploy: integration `TestDeployVaultwardenFromCatalog`
+  (name prefix, single `/data` mount, `DOMAIN` env, survives `/alive`
+  verify; plus the same image via the three flags) and
+  `TestDeployZeroProfileKeepsRailsShape`.
+- Zero-Profile labels and archive round-trip: unit tests in
+  `internal/docker/app_profile_test.go` and `parse_backup_test.go`.
+- Gzip + plain restore: `TestParseBackupReadsPlainTar` /
+  `TestParseBackupReadsGzippedTar`.
+- Scheduled run + retention group:
+  `TestBackupRunSnapshotsIntoOneRetentionGroup`; argument-builder unit
+  tests in `internal/docker/restic_test.go` (also adds the `app:<name>`
+  tag the PRD's staleness query needs).
+- Free-disk: `TestBackupDiskCheck`.
+- Retry cadence: `internal/docker/state_test.go`; flock refusal:
+  `TestManualExportRefusedWhileBackupLockHeld`.
+- Ordering: `runner.check` calls `runBackups` before the update loop
+  (commented in `internal/background/runner.go`).
+
+Interim enable is CLI-only as specified; probe, custody flow, TUI overlay,
+QR, offsite, restore-from-repo remain with issues 13-16. Note for issue
+15: `resticRepo` already carries `env` + URL-style repositories, and
+`runResticRetryLock`/`ensureRepo` are repo-agnostic.

@@ -44,15 +44,9 @@ type resticRepo struct {
 	// hostPath, when set, is a host directory bind-mounted read-write at
 	// /repo: the local repo. Offsite repos are plain URLs and need no mount.
 	hostPath string
-}
-
-// localResticRepo addresses the local Backup Repo on disk.
-func localResticRepo(cfg BackupRepoSettings) resticRepo {
-	return resticRepo{
-		repository: resticRepoMount,
-		password:   cfg.Password,
-		hostPath:   cfg.LocalPath,
-	}
+	// stagingDir is the host Staging Directory, bind-mounted read-only at
+	// /staging: Once writes the archive, restic only reads it.
+	stagingDir string
 }
 
 type resticResult struct {
@@ -87,7 +81,7 @@ type resticSummary struct {
 // wait, collect logs, remove. One container per command keeps the exit code
 // on the ContainerWait seam (the whole init protocol is exit-code driven) and
 // lets each command address a different repo with its own environment.
-func (n *Namespace) runRestic(ctx context.Context, stagingDir string, repo resticRepo, args ...string) (resticResult, error) {
+func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...string) (resticResult, error) {
 	if err := n.ensureResticImage(ctx); err != nil {
 		return resticResult{}, err
 	}
@@ -107,7 +101,7 @@ func (n *Namespace) runRestic(ctx context.Context, stagingDir string, repo resti
 	}
 
 	mounts := []mount.Mount{
-		{Type: mount.TypeBind, Source: stagingDir, Target: resticStagingMount, ReadOnly: true},
+		{Type: mount.TypeBind, Source: repo.stagingDir, Target: resticStagingMount, ReadOnly: true},
 		{Type: mount.TypeVolume, Source: n.resticCacheVolume(), Target: resticCacheMount},
 	}
 	if repo.hostPath != "" {
@@ -165,27 +159,27 @@ func (n *Namespace) runRestic(ctx context.Context, stagingDir string, repo resti
 // recovery: on a lock failure, unlock --remove-all against that repo, log at
 // warn, and retry the command once. Never scheduled or unconditional - a
 // shared offsite repo may hold another host's live lock.
-func (n *Namespace) runResticRetryLock(ctx context.Context, stagingDir string, repo resticRepo, args ...string) (resticResult, error) {
-	res, err := n.runRestic(ctx, stagingDir, repo, args...)
+func (n *Namespace) runResticRetryLock(ctx context.Context, repo resticRepo, args ...string) (resticResult, error) {
+	res, err := n.runRestic(ctx, repo, args...)
 	if err != nil || res.exitCode != resticExitLockFailure {
 		return res, err
 	}
 
 	slog.Warn("restic repository is locked; removing stale locks and retrying once", "repository", repo.repository)
-	if unlockRes, unlockErr := n.runRestic(ctx, stagingDir, repo, "unlock", "--remove-all"); unlockErr != nil {
+	if unlockRes, unlockErr := n.runRestic(ctx, repo, "unlock", "--remove-all"); unlockErr != nil {
 		return res, unlockErr
 	} else if unlockRes.exitCode != 0 {
 		return res, fmt.Errorf("restic unlock failed: %s", unlockRes.failure())
 	}
 
-	return n.runRestic(ctx, stagingDir, repo, args...)
+	return n.runRestic(ctx, repo, args...)
 }
 
 // ensureRepo probes the repo with cat config and initializes it on exit 10.
 // init's exit 1 is never treated as "already exists" - it also covers
 // permission and backend errors.
-func (n *Namespace) ensureRepo(ctx context.Context, stagingDir string, repo resticRepo) error {
-	res, err := n.runResticRetryLock(ctx, stagingDir, repo, "cat", "config")
+func (n *Namespace) ensureRepo(ctx context.Context, repo resticRepo) error {
+	res, err := n.runResticRetryLock(ctx, repo, "cat", "config")
 	if err != nil {
 		return err
 	}
@@ -194,7 +188,7 @@ func (n *Namespace) ensureRepo(ctx context.Context, stagingDir string, repo rest
 	case 0:
 		return nil
 	case resticExitNoRepository:
-		initRes, err := n.runRestic(ctx, stagingDir, repo, "init")
+		initRes, err := n.runRestic(ctx, repo, "init")
 		if err != nil {
 			return err
 		}
@@ -208,8 +202,6 @@ func (n *Namespace) ensureRepo(ctx context.Context, stagingDir string, repo rest
 		return fmt.Errorf("restic cat config failed: %s", res.failure())
 	}
 }
-
-// Private
 
 func (n *Namespace) resticCacheVolume() string {
 	return n.name + "-restic-cache"
@@ -250,6 +242,16 @@ func (n *Namespace) collectContainerLogs(ctx context.Context, containerID string
 }
 
 // Helpers
+
+// localResticRepo addresses the local Backup Repo on disk.
+func localResticRepo(cfg BackupRepoSettings) resticRepo {
+	return resticRepo{
+		repository: resticRepoMount,
+		password:   cfg.Password,
+		hostPath:   cfg.LocalPath,
+		stagingDir: cfg.StagingDir(),
+	}
+}
 
 // resticBackupArgs builds the backup invocation. Both --host and the staging
 // path are constants of the namespace and app name: forget groups by
