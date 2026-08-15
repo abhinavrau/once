@@ -112,3 +112,39 @@ Decisions worth carrying forward:
   did not create.
 - **`DefaultBackupLocalPath` is now a var**, like `BackupLockPath`, so the
   suite can stage a restore somewhere it can write.
+
+### Found by review, fixed here
+
+- **The declined-resume one-liner could not work.** `once restore` printed
+  ``once backup enable --offsite-url <repo>`` when the user said no or had no
+  terminal - and `backup enable` had no way to be handed an existing
+  repository's password. It minted a fresh one (`ConfigureBackups`) and then
+  failed to open the repo it had just been pointed at. `enableRepoPassword`
+  now adopts `RESTIC_PASSWORD` when nothing is stored, verbatim and by exactly
+  the rule `once restore` reads it by, so the two always agree; the printed
+  one-liner names the variable. Covered by `TestEnableRepoPassword` and, end to
+  end, by the integration test running the real one-liner against the recovered
+  repo and asserting the stored password is the recovered one.
+- **Resume clobbered a configured install.** The offer skipped only on
+  `Enabled`, so a configured-but-not-enabled install restoring from its own
+  offsite URL would have had its local path and password overwritten with the
+  defaults. `shouldOfferResume` now offers only to an install with no Backup
+  Repo of its own; anything else is an explicit `once backup enable` decision.
+- Smaller: a relative `--repo` is refused by name (`ValidateRepoURL`) instead
+  of being read inside the container, where it would look like an empty repo;
+  `--list`/`--snapshot` with no application name say so instead of being
+  silently ignored; a repository on disk reaches no backend and so no longer
+  harvests credentials the user never named for it; `backupDiskCheck`'s message
+  no longer says "backup" when it is a restore that is short of room;
+  `takeCustody` owns the whole custody moment (refusal message included) from
+  `backup_custody.go`; `ErrBackupInProgress` and the restic argument builders
+  moved to the files that own their kind.
+
+### One thing changed outside this ticket
+
+The integration suite's `go test` timeout is now explicit at **25m**
+(Makefile + the AGENTS.md note). A healthy full run takes about ten minutes of
+real Docker work, so go's 10-minute default had started reporting a **passing**
+suite as a timeout panic - indistinguishable, per that same note, from a hung
+test. This branch's test is 66s of it; issue 18's acceptance test would have
+hit the same wall.
