@@ -124,7 +124,14 @@ func TestRestoreVaultwardenFromRepo(t *testing.T) {
 	destName := "once-restore-repo-dst"
 	dest, err := docker.NewNamespace(destName)
 	require.NoError(t, err)
-	defer dest.Teardown(ctx, true)
+	// Every application here arrives through a restore this handle never saw,
+	// so tear down off a freshly read namespace or those containers are missed.
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if reread, err := docker.RestoreNamespace(cleanupCtx, destName); err == nil {
+			reread.Teardown(cleanupCtx, true)
+		}
+	})
 	require.NoError(t, dest.EnsureNetwork(ctx))
 	require.NoError(t, dest.Proxy().Boot(ctx, getProxyPorts(t)))
 	require.Empty(t, dest.Applications())
