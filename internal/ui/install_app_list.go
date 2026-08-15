@@ -9,8 +9,11 @@ import (
 
 const installAppListOtherKey = -1
 
+// InstallAppSelectedMsg carries the whole catalog entry, not a bare image ref:
+// the entry's Profile must survive to the deployed settings, and a reverse
+// lookup by image ref would break the moment two entries share an image.
 type (
-	InstallAppSelectedMsg    struct{ ImageRef string }
+	InstallAppSelectedMsg    struct{ App catalog.App }
 	InstallCustomSelectedMsg struct{}
 )
 
@@ -39,7 +42,7 @@ func (m InstallAppList) Update(msg tea.Msg) (InstallAppList, tea.Cmd) {
 			return m, func() tea.Msg { return InstallCustomSelectedMsg{} }
 		}
 		app := catalog.Apps[msg.Key]
-		return m, func() tea.Msg { return InstallAppSelectedMsg{ImageRef: app.ImageRef} }
+		return m, func() tea.Msg { return InstallAppSelectedMsg{App: app} }
 	}
 
 	var cmd tea.Cmd

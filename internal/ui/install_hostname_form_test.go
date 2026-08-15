@@ -7,25 +7,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
 func TestInstallHostnameForm_DefaultsToLocalWithSuggestion(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire"}, "", false)
 
 	assert.Equal(t, docker.ExposureLocal, form.Exposure())
 	assert.Equal(t, "once-campfire.localhost", form.Hostname())
 }
 
 func TestInstallHostnameForm_PreselectsTailnetWhenTailscaleEnabled(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", true)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire"}, "", true)
 
 	assert.Equal(t, docker.ExposureTailnet, form.Exposure())
 	assert.Equal(t, "once-campfire", form.Hostname())
 }
 
 func TestInstallHostnameForm_RadioChangeUpdatesSuggestion(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire"}, "", false)
 
 	// The radio has initial focus; right cycles local → tailnet → public → local.
 	form, _ = form.Update(keyPressMsg("right"))
@@ -42,7 +43,7 @@ func TestInstallHostnameForm_RadioChangeUpdatesSuggestion(t *testing.T) {
 }
 
 func TestInstallHostnameForm_Submit(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire"}, "", false)
 
 	// Public empties the host; type an explicit FQDN and submit.
 	form, _ = form.Update(keyPressMsg("right"))
@@ -56,13 +57,13 @@ func TestInstallHostnameForm_Submit(t *testing.T) {
 	msg := cmd()
 	submit, ok := msg.(InstallFormSubmitMsg)
 	require.True(t, ok, "expected InstallFormSubmitMsg, got %T", msg)
-	assert.Equal(t, "ghcr.io/basecamp/once-campfire", submit.ImageRef)
+	assert.Equal(t, "ghcr.io/basecamp/once-campfire", submit.App.ImageRef)
 	assert.Equal(t, "chat.example.com", submit.Hostname)
 	assert.Equal(t, docker.ExposurePublic, submit.Exposure)
 }
 
 func TestInstallHostnameForm_SubmitAcceptsSuggestion(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire"}, "", false)
 
 	hostnameFormPressTab(&form)
 	hostnameFormPressTab(&form)
@@ -76,7 +77,7 @@ func TestInstallHostnameForm_SubmitAcceptsSuggestion(t *testing.T) {
 }
 
 func TestInstallHostnameForm_Cancel(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire:latest", "", false)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire:latest"}, "", false)
 
 	// Tab past the host field and submit button to cancel
 	hostnameFormPressTab(&form)
@@ -91,7 +92,7 @@ func TestInstallHostnameForm_Cancel(t *testing.T) {
 }
 
 func TestInstallHostnameForm_PublicRequiresHostname(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire:latest", "", false)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire:latest"}, "", false)
 
 	form, _ = form.Update(keyPressMsg("right"))
 	form, _ = form.Update(keyPressMsg("right"))
@@ -105,13 +106,13 @@ func TestInstallHostnameForm_PublicRequiresHostname(t *testing.T) {
 }
 
 func TestInstallHostnameForm_ShowsTitleWhenSet(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "campfire", false)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire"}, "campfire", false)
 	view := ansi.Strip(form.View())
 	assert.Contains(t, view, "Installing campfire")
 }
 
 func TestInstallHostnameForm_NoTitleWhenEmpty(t *testing.T) {
-	form := NewInstallHostnameForm("ghcr.io/basecamp/once-campfire", "", false)
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire"}, "", false)
 	view := ansi.Strip(form.View())
 	assert.NotContains(t, view, "Installing")
 }

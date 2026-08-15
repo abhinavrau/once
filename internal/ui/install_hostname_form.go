@@ -4,19 +4,20 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
 type InstallHostnameBackMsg struct{}
 
 type InstallHostnameForm struct {
-	form     Form
-	imageRef string
-	title    string
+	form  Form
+	app   catalog.App
+	title string
 }
 
-func NewInstallHostnameForm(imageRef, title string, tailscaleEnabled bool) InstallHostnameForm {
-	appName := docker.NameFromImageRef(imageRef)
+func NewInstallHostnameForm(app catalog.App, title string, tailscaleEnabled bool) InstallHostnameForm {
+	appName := app.Profile.AppName(app.ImageRef)
 
 	exposureField := NewExposureRadioField()
 	if tailscaleEnabled {
@@ -34,14 +35,14 @@ func NewInstallHostnameForm(imageRef, title string, tailscaleEnabled bool) Insta
 			FormItem{Key: "exposure", Label: "Exposure", Field: exposureField},
 			FormItem{Key: "host", Label: "Host", Field: hostField, Required: true},
 		),
-		imageRef: imageRef,
-		title:    title,
+		app:   app,
+		title: title,
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		return func() tea.Msg {
 			return InstallFormSubmitMsg{
-				ImageRef: imageRef,
+				App:      app,
 				Hostname: f.TextField("host").Value(),
 				Exposure: exposureAt(f.RadioField("exposure").Selected()),
 			}

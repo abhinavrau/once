@@ -38,7 +38,7 @@ const (
 )
 
 type InstallFormSubmitMsg struct {
-	ImageRef string
+	App      catalog.App
 	Hostname string
 	Exposure docker.Exposure
 }
@@ -76,9 +76,9 @@ func NewInstall(ns *docker.Namespace, imageRef string) Install {
 	}
 
 	if imageRef != "" {
-		imageRef = catalog.Resolve(imageRef)
+		entry := catalog.Resolve(imageRef)
 		m.state = installStateHostname
-		m.hostnameForm = NewInstallHostnameForm(imageRef, m.installFlag, m.tailscaleEnabled())
+		m.hostnameForm = NewInstallHostnameForm(entry, m.installFlag, m.tailscaleEnabled())
 	} else {
 		m.state = installStateAppList
 		m.appList = NewInstallAppList()
@@ -207,7 +207,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case InstallAppSelectedMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled())
+		m.hostnameForm = NewInstallHostnameForm(msg.App, "", m.tailscaleEnabled())
 		m.customImage = false
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -218,7 +218,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, m.initScreenWithSize()
 
 	case InstallImageSubmitMsg:
-		m.hostnameForm = NewInstallHostnameForm(msg.ImageRef, "", m.tailscaleEnabled())
+		m.hostnameForm = NewInstallHostnameForm(msg.App, "", m.tailscaleEnabled())
 		m.customImage = true
 		m.state = installStateHostname
 		return m, m.initScreenWithSize()
@@ -248,13 +248,13 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			return m, tea.Batch(m.overlay.Init(), cmd)
 		}
-		host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), docker.NameFromImageRef(msg.ImageRef))
+		host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), msg.App.Profile.AppName(msg.App.ImageRef))
 		if err != nil {
 			m.err = err
 			return m, nil
 		}
 		m.state = installStateActivity
-		m.activity = NewInstallActivity(m.namespace, msg.ImageRef, host, msg.Exposure)
+		m.activity = NewInstallActivity(m.namespace, msg.App, host, msg.Exposure)
 		m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return m, m.activity.Init()
 

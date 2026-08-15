@@ -50,10 +50,11 @@ func (s ProxySettings) Marshal() string {
 }
 
 type DeployOptions struct {
-	AppName string
-	Target  string
-	Host    string
-	TLS     bool
+	AppName         string
+	Target          string
+	Host            string
+	TLS             bool
+	HealthCheckPath string
 }
 
 type Proxy struct {
@@ -227,6 +228,10 @@ func (p *Proxy) deployArgs(opts DeployOptions) []string {
 
 	if opts.TLS {
 		args = append(args, "--tls")
+	}
+
+	if opts.HealthCheckPath != "" {
+		args = append(args, "--health-check-path", opts.HealthCheckPath)
 	}
 
 	return args

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -61,11 +62,11 @@ func TestParseEnvVars(t *testing.T) {
 
 func TestBuildSettingsStoresExposure(t *testing.T) {
 	f := &settingsFlags{}
-	s, err := f.buildSettings("image:latest", "app.localhost", docker.ExposureLocal)
+	s, err := f.buildSettings(catalog.App{ImageRef: "image:latest"}, "app.localhost", docker.ExposureLocal)
 	require.NoError(t, err)
 	assert.Equal(t, docker.ExposureLocal, s.Exposure)
 
-	s, err = f.buildSettings("image:latest", "app.example.com", docker.ExposurePublic)
+	s, err = f.buildSettings(catalog.App{ImageRef: "image:latest"}, "app.example.com", docker.ExposurePublic)
 	require.NoError(t, err)
 	assert.Equal(t, docker.ExposurePublic, s.Exposure)
 }
@@ -155,7 +156,7 @@ func TestFlaglessDeploySettingsAreTheDefaults(t *testing.T) {
 	exposure, err := docker.ParseExposure(f.expose)
 	require.NoError(t, err)
 
-	s, err := f.buildSettings("image:latest", "app.localhost", exposure)
+	s, err := f.buildSettings(catalog.App{ImageRef: "image:latest"}, "app.localhost", exposure)
 	require.NoError(t, err)
 
 	want := docker.DefaultApplicationSettings()

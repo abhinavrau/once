@@ -26,6 +26,9 @@ var (
 	ErrImageRequired         = errors.New("image is required")
 	ErrBackupPathRelative    = errors.New("backup path must be absolute")
 	ErrAutoBackupWithoutPath = errors.New("auto-backup requires a backup path")
+	ErrDataPathInvalid       = errors.New("data path must be absolute and must not be /")
+	ErrHealthPathInvalid     = errors.New("health check path must begin with /")
+	ErrURLEnvVarInvalid      = errors.New("url env var must not contain =")
 	ErrSetupFailed           = errors.New("setup failed")
 	ErrPullFailed            = &describedError{
 		msg:         "pull failed",
@@ -43,13 +46,17 @@ var (
 
 const (
 	AutomaticTaskInterval = 24 * time.Hour
-	HealthCheckPath       = "/up"
-	httpVerifyTimeout     = 30 * time.Second
+	// DefaultHealthCheckPath is the path probed when an app's Profile does not
+	// declare one; read through AppProfile.HealthCheckPath, never directly.
+	DefaultHealthCheckPath = "/up"
+	httpVerifyTimeout      = 30 * time.Second
 )
 
-// AppVolumeMountTargets defines the paths where the app data volume is mounted
-// inside the container. The first entry is the primary path used for backups.
-var AppVolumeMountTargets = []string{"/storage", "/rails/storage"}
+// DefaultAppVolumeMountTargets are the paths the app data volume is mounted at
+// when an app's Profile does not declare a data path; read through
+// AppProfile.MountTargets, never directly. The first entry is the primary path
+// used for backups.
+var DefaultAppVolumeMountTargets = []string{"/storage", "/rails/storage"}
 
 type Application struct {
 	namespace    *Namespace
@@ -326,6 +333,21 @@ func (a *Application) validateTailnetExposure(ctx context.Context) error {
 	return nil
 }
 
+// resolvedURL is the address the Profile's URLEnvVar is filled with: the
+// proxy-routed URL, or the tailnet service URL under Tailnet exposure. Best
+// effort - a live daemon read must never fail a deploy - so it may be empty,
+// which Deploy surfaces as a warning rather than an error.
+func (a *Application) resolvedURL(ctx context.Context, tailscaleEnabled bool) string {
+	if a.Settings.Exposure == ExposureTailnet {
+		if !tailscaleEnabled {
+			return ""
+		}
+		suffix, _ := a.namespace.Tailscale().DomainSuffix(ctx)
+		return TailscaleSettings{DomainSuffix: suffix}.TailnetURL(a.Settings.Host)
+	}
+	return a.URL()
+}
+
 // funnelBackend returns the proxy destination docktail programs for this app's
 // Funnel: http://<container-IP-on-namespace-network>:80, per the
 // docktail.funnel.port label. Matching it in the daemon's serve config is what
@@ -411,7 +433,7 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 		return fmt.Errorf("checking tailscale: %w", err)
 	}
 
-	env := a.Settings.BuildEnv(vol.Settings)
+	env := a.Settings.BuildEnv(vol.Settings, a.resolvedURL(ctx, tailscaleEnabled))
 
 	hostConfig := &container.HostConfig{
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyAlways},
@@ -473,10 +495,11 @@ func (a *Application) registerRouting(ctx context.Context, containerID string) e
 	}
 
 	if err := a.namespace.Proxy().Deploy(ctx, DeployOptions{
-		AppName: a.Settings.Name,
-		Target:  containerID[:12],
-		Host:    a.Settings.Host,
-		TLS:     a.Settings.TLSEnabled(),
+		AppName:         a.Settings.Name,
+		Target:          containerID[:12],
+		Host:            a.Settings.Host,
+		TLS:             a.Settings.TLSEnabled(),
+		HealthCheckPath: a.Settings.Profile.HealthCheckPath(),
 	}); err != nil {
 		if strings.Contains(err.Error(), "target not healthy") || strings.Contains(err.Error(), "deploy timed out") {
 			slog.Error("Application failed to start", "app", a.Settings.Name, "error", err)
@@ -494,7 +517,7 @@ func (a *Application) verifyHTTP(ctx context.Context) error {
 	}
 
 	client := &http.Client{Timeout: httpVerifyTimeout}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+HealthCheckPath, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+a.Settings.Profile.HealthCheckPath(), nil)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrVerificationFailed, err)
 	}
@@ -535,7 +558,7 @@ func (a *Application) removeContainersExcept(ctx context.Context, keep string) e
 
 func (a *Application) volumeMounts(vol *ApplicationVolume) []mount.Mount {
 	var mounts []mount.Mount
-	for _, target := range AppVolumeMountTargets {
+	for _, target := range a.Settings.Profile.MountTargets() {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeVolume,
 			Source: vol.Name(),

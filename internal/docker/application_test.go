@@ -24,7 +24,7 @@ func TestVerifyHTTP_Success(t *testing.T) {
 
 	err := app.verifyHTTP(context.Background())
 	assert.NoError(t, err)
-	assert.Equal(t, HealthCheckPath, requestPath)
+	assert.Equal(t, DefaultHealthCheckPath, requestPath)
 }
 
 func TestVerifyHTTP_RedirectToSuccess(t *testing.T) {

@@ -18,7 +18,7 @@ func TestInstallImageForm_SubmitWithAlias(t *testing.T) {
 	msg := cmd()
 	submit, ok := msg.(InstallImageSubmitMsg)
 	require.True(t, ok, "expected InstallImageSubmitMsg, got %T", msg)
-	assert.Equal(t, "ghcr.io/basecamp/once-campfire", submit.ImageRef)
+	assert.Equal(t, "ghcr.io/basecamp/once-campfire", submit.App.ImageRef)
 }
 
 func TestInstallImageForm_SubmitWithCustomImage(t *testing.T) {
@@ -32,7 +32,7 @@ func TestInstallImageForm_SubmitWithCustomImage(t *testing.T) {
 	msg := cmd()
 	submit, ok := msg.(InstallImageSubmitMsg)
 	require.True(t, ok, "expected InstallImageSubmitMsg, got %T", msg)
-	assert.Equal(t, "ghcr.io/basecamp/once-campfire:latest", submit.ImageRef)
+	assert.Equal(t, "ghcr.io/basecamp/once-campfire:latest", submit.App.ImageRef)
 }
 
 func TestInstallImageForm_Cancel(t *testing.T) {

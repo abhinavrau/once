@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -36,7 +37,7 @@ type InstallActivityFailedMsg struct {
 
 type InstallActivity struct {
 	namespace     *docker.Namespace
-	imageRef      string
+	app           catalog.App
 	hostname      string
 	exposure      docker.Exposure
 	width, height int
@@ -45,10 +46,10 @@ type InstallActivity struct {
 	stream        *progressStream
 }
 
-func NewInstallActivity(ns *docker.Namespace, imageRef, hostname string, exposure docker.Exposure) *InstallActivity {
+func NewInstallActivity(ns *docker.Namespace, app catalog.App, hostname string, exposure docker.Exposure) *InstallActivity {
 	return &InstallActivity{
 		namespace: ns,
-		imageRef:  imageRef,
+		app:       app,
 		hostname:  hostname,
 		exposure:  exposure,
 		stage:     stagePreparing,
@@ -120,7 +121,7 @@ func (m *InstallActivity) runInstall(ctx context.Context, progress docker.Deploy
 		}
 	}()
 
-	app, warnings, err := m.namespace.Deploy(ctx, installSettings(m.imageRef, m.hostname, m.exposure), progress)
+	app, warnings, err := m.namespace.Deploy(ctx, installSettings(m.app, m.hostname, m.exposure), progress)
 	if err != nil {
 		return installDoneMsg{err: err}
 	}
@@ -146,10 +147,11 @@ func installStageFor(stage docker.DeployStage, current installStage) installStag
 // installSettings builds a freshly installed app's settings from the shared
 // defaults, so TUI installs and flagless CLI deploys start life identically.
 // The deploy spine assigns the app's unique name.
-func installSettings(image, host string, exposure docker.Exposure) docker.ApplicationSettings {
+func installSettings(app catalog.App, host string, exposure docker.Exposure) docker.ApplicationSettings {
 	s := docker.DefaultApplicationSettings()
-	s.Image = image
+	s.Image = app.ImageRef
 	s.Host = host
 	s.Exposure = exposure
+	s.Profile = app.Profile
 	return s
 }

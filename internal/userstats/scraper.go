@@ -14,8 +14,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
-
-	"github.com/basecamp/once/internal/docker"
 )
 
 const (
@@ -25,7 +23,6 @@ const (
 	initialFlushDelay  = 10 * time.Second
 	scannerBufSize     = 64 * 1024
 	scannerMaxSize     = 1024 * 1024
-	healthCheckPath    = docker.HealthCheckPath
 )
 
 type dockerClient interface {
@@ -38,9 +35,10 @@ type Scraper struct {
 	namespace     string
 	containerName string
 
-	mu    sync.RWMutex
-	store *BucketStore
-	live  map[string]*liveServiceData
+	mu         sync.RWMutex
+	store      *BucketStore
+	live       map[string]*liveServiceData
+	proxyAddrs map[string]struct{}
 }
 
 type liveServiceData struct {
@@ -52,7 +50,6 @@ type logEntry struct {
 	Time       time.Time `json:"time"`
 	RemoteAddr string    `json:"remote_addr"`
 	Service    string    `json:"service"`
-	Path       string    `json:"path"`
 }
 
 func (e logEntry) visit() (service, addr string, unixHour int64, ok bool) {
@@ -62,10 +59,6 @@ func (e logEntry) visit() (service, addr string, unixHour int64, ok bool) {
 
 	addr = cleanRemoteAddr(e.RemoteAddr)
 	if isLoopback(addr) {
-		return
-	}
-
-	if e.Path == healthCheckPath {
 		return
 	}
 
@@ -202,11 +195,31 @@ func (s *Scraper) flushLoop(ctx context.Context, c copyClient) {
 	}
 }
 
+func (s *Scraper) setProxyAddrs(addrs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.proxyAddrs = make(map[string]struct{}, len(addrs))
+	for _, addr := range addrs {
+		s.proxyAddrs[addr] = struct{}{}
+	}
+}
+
 func (s *Scraper) consumeStream(ctx context.Context, c dockerClient, reader io.ReadCloser) {
 	info, err := c.ContainerInspect(ctx, s.containerName)
 	if err != nil {
 		s.scanLines(ctx, reader)
 		return
+	}
+
+	if info.NetworkSettings != nil {
+		var addrs []string
+		for _, endpoint := range info.NetworkSettings.Networks {
+			if endpoint != nil && endpoint.IPAddress != "" {
+				addrs = append(addrs, endpoint.IPAddress)
+			}
+		}
+		s.setProxyAddrs(addrs)
 	}
 
 	if info.Config != nil && info.Config.Tty {
@@ -255,6 +268,12 @@ func (s *Scraper) processLine(line []byte) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Health-check probes originate from the Proxy itself; dropping its source
+	// address filters them for every app's health path at once.
+	if _, fromProxy := s.proxyAddrs[addr]; fromProxy {
+		return
+	}
 
 	live, ok := s.live[service]
 	if !ok {

@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -13,7 +14,7 @@ import (
 // and flagless CLI deploys (anchored by TestFlaglessDeploySettingsAreTheDefaults
 // in internal/command) from drifting apart.
 func TestInstallSettingsStartFromDefaults(t *testing.T) {
-	s := installSettings("image:latest", "books.localhost", docker.ExposureLocal)
+	s := installSettings(catalog.App{ImageRef: "image:latest"}, "books.localhost", docker.ExposureLocal)
 
 	want := docker.DefaultApplicationSettings()
 	want.Image = "image:latest"

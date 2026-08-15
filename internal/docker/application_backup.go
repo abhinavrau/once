@@ -212,13 +212,14 @@ func (a *Application) copyVolumeData(ctx context.Context, containerName string, 
 		}()
 	}
 
-	reader, _, err := a.namespace.client.CopyFromContainer(ctx, containerName, AppVolumeMountTargets[0])
+	dataPath := a.Settings.Profile.MountTargets()[0]
+	reader, _, err := a.namespace.client.CopyFromContainer(ctx, containerName, dataPath)
 	if err != nil {
 		return fmt.Errorf("copying from container: %w", err)
 	}
 	defer reader.Close()
 
-	if err := copyTarEntriesWithPrefix(reader, tw, filepath.Base(AppVolumeMountTargets[0]), BackupDataDir); err != nil {
+	if err := copyTarEntriesWithPrefix(reader, tw, filepath.Base(dataPath), BackupDataDir); err != nil {
 		return fmt.Errorf("copying volume contents: %w", err)
 	}
 
@@ -273,12 +274,14 @@ func (a *Application) populateVolume(ctx context.Context, vol *ApplicationVolume
 func (a *Application) runRestoreHook(ctx context.Context, vol *ApplicationVolume) error {
 	containerName := fmt.Sprintf("%s-restore-hook-temp", a.namespace.name)
 
+	tailscaleEnabled, _ := a.namespace.Tailscale().Enabled(ctx)
+
 	resp, err := a.namespace.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:      a.Settings.Image,
 			Entrypoint: []string{},
 			Cmd:        []string{"sleep", "infinity"},
-			Env:        a.Settings.BuildEnv(vol.Settings),
+			Env:        a.Settings.BuildEnv(vol.Settings, a.resolvedURL(ctx, tailscaleEnabled)),
 		},
 		&container.HostConfig{Mounts: a.volumeMounts(vol)},
 		nil, nil, containerName,

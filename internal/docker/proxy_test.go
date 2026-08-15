@@ -29,6 +29,13 @@ func TestDeployArgs(t *testing.T) {
 		}, args)
 	})
 
+	t.Run("with health check path", func(t *testing.T) {
+		args := proxy.deployArgs(DeployOptions{AppName: "vault", Target: "localhost:3000", HealthCheckPath: "/alive"})
+
+		assert.Contains(t, args, "--health-check-path")
+		assert.Contains(t, args, "/alive")
+	})
+
 	t.Run("with host", func(t *testing.T) {
 		args := proxy.deployArgs(DeployOptions{AppName: "chat", Target: "localhost:3000", Host: "chat.example.com"})
 

@@ -236,7 +236,7 @@ func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, pr
 		return nil, nil, fmt.Errorf("%w: %w", ErrSetupFailed, err)
 	}
 
-	name, err := n.UniqueName(NameFromImageRef(settings.Image))
+	name, err := n.UniqueName(settings.Profile.AppName(settings.Image))
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating app name: %w", err)
 	}
@@ -453,7 +453,7 @@ func (n *Namespace) Restore(ctx context.Context, r io.Reader) (*Application, err
 		return nil, ErrHostnameInUse
 	}
 
-	name, err := n.UniqueName(NameFromImageRef(appSettings.Image))
+	name, err := n.UniqueName(appSettings.Profile.AppName(appSettings.Image))
 	if err != nil {
 		return nil, fmt.Errorf("generating app name: %w", err)
 	}
@@ -503,6 +503,12 @@ func (n *Namespace) deployWarnings(ctx context.Context, settings ApplicationSett
 	}
 	if w := PublicDNSWarning(ctx, settings.Exposure, settings.Host); w != "" {
 		warnings = append(warnings, w)
+	}
+	if settings.Profile.URLEnvVar != "" {
+		tailscaleEnabled, _ := n.tailscale.Enabled(ctx)
+		if NewApplication(n, settings).resolvedURL(ctx, tailscaleEnabled) == "" {
+			warnings = append(warnings, fmt.Sprintf("no URL could be resolved for %s, so the %s environment variable will not be set", settings.Host, settings.Profile.URLEnvVar))
+		}
 	}
 	return warnings
 }

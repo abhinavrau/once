@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/basecamp/once/internal/catalog"
 	"github.com/basecamp/once/internal/docker"
 )
 
@@ -26,6 +27,9 @@ type settingsFlags struct {
 	autoUpdate   bool
 	backupPath   string
 	autoBackup   bool
+	dataPath     string
+	healthPath   string
+	urlEnvVar    string
 }
 
 func (f *settingsFlags) register(cmd *cobra.Command) {
@@ -45,6 +49,9 @@ func (f *settingsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&f.autoUpdate, "auto-update", defaults.AutoUpdate, "automatically update the application")
 	cmd.Flags().StringVar(&f.backupPath, "backup-path", defaults.Backup.Path, "path for backups")
 	cmd.Flags().BoolVar(&f.autoBackup, "auto-backup", defaults.Backup.AutoBackup, "enable automatic backups")
+	cmd.Flags().StringVar(&f.dataPath, "data-path", defaults.Profile.DataPath, "path where the application keeps its data (default: /storage and /rails/storage)")
+	cmd.Flags().StringVar(&f.healthPath, "health-check-path", defaults.Profile.HealthPath, "path the application answers health checks on (default: /up)")
+	cmd.Flags().StringVar(&f.urlEnvVar, "url-env-var", defaults.Profile.URLEnvVar, "environment variable to fill with the application's URL")
 
 	// Removed flag, kept registered (hidden) so it fails with a clean-break
 	// error naming its replacement instead of cobra's "unknown flag".
@@ -61,7 +68,9 @@ func (f *settingsFlags) checkRemoved(cmd *cobra.Command) error {
 	return nil
 }
 
-func (f *settingsFlags) buildSettings(image, host string, exposure docker.Exposure) (docker.ApplicationSettings, error) {
+// buildSettings layers a deploy's settings: defaults, then the catalog entry's
+// Profile, then any flags the user set.
+func (f *settingsFlags) buildSettings(entry catalog.App, host string, exposure docker.Exposure) (docker.ApplicationSettings, error) {
 	envVars, err := f.parseEnvVars()
 	if err != nil {
 		return docker.ApplicationSettings{}, err
@@ -73,8 +82,18 @@ func (f *settingsFlags) buildSettings(image, host string, exposure docker.Exposu
 
 	// Start from the defaults so fields without a flag keep their default value.
 	s := docker.DefaultApplicationSettings()
-	s.Image = image
+	s.Image = entry.ImageRef
 	s.Host = host
+	s.Profile = entry.Profile
+	if f.dataPath != "" {
+		s.Profile.DataPath = f.dataPath
+	}
+	if f.healthPath != "" {
+		s.Profile.HealthPath = f.healthPath
+	}
+	if f.urlEnvVar != "" {
+		s.Profile.URLEnvVar = f.urlEnvVar
+	}
 	s.Exposure = exposure
 	s.DisableTLS = f.disableTLS
 	s.EnvVars = envVars
@@ -161,8 +180,17 @@ func (f *settingsFlags) applyChanges(cmd *cobra.Command, existing docker.Applica
 	if cmd.Flags().Changed("auto-backup") {
 		s.Backup.AutoBackup = f.autoBackup
 	}
+	if cmd.Flags().Changed("data-path") {
+		s.Profile.DataPath = f.dataPath
+	}
+	if cmd.Flags().Changed("health-check-path") {
+		s.Profile.HealthPath = f.healthPath
+	}
+	if cmd.Flags().Changed("url-env-var") {
+		s.Profile.URLEnvVar = f.urlEnvVar
+	}
 
-	host, err := docker.ResolveHost(s.Exposure, s.Host, docker.NameFromImageRef(s.Image))
+	host, err := docker.ResolveHost(s.Exposure, s.Host, s.Profile.AppName(s.Image))
 	if err != nil {
 		return s, err
 	}
