@@ -98,7 +98,7 @@ Capture an Application's Configuration and Application Data as a plain tar archi
 ## Backups
 
 **Backup Repo**:
-A restic repository holding the install's snapshots, one per Backup Run per participating Application, tagged `app:<name>`. Every install with backups has a local Backup Repo on host disk and, optionally, an Offsite Copy. Its settings ride the Proxy's `once` label (ADR-0014).
+A restic repository holding the install's snapshots, one per Backup Run per participating Application, tagged `app:<name>` and `image:<ref>` - the only metadata a restore can read before it has an archive to open. Every install with backups has a local Backup Repo on host disk and, optionally, an Offsite Copy. Its settings ride the Proxy's `once` label (ADR-0014).
 _Avoid_: bucket, backup directory - the repo is encrypted restic state, not a folder of archive files.
 
 **Offsite Copy**:
