@@ -3,6 +3,7 @@ package docker
 import (
 	"crypto/rand"
 	"encoding/base32"
+	"strings"
 )
 
 // DefaultBackupLocalPath is where the local Backup Repo lives unless the user
@@ -49,4 +50,21 @@ func GenerateRepoPassword() (string, error) {
 		return "", err
 	}
 	return base32.StdEncoding.EncodeToString(b), nil
+}
+
+// FormatRepoPassword groups the password in 4s for reading and typing; the
+// separators are cosmetic and NormalizeRepoPassword strips them on entry.
+func FormatRepoPassword(p string) string {
+	var groups []string
+	for i := 0; i < len(p); i += 4 {
+		groups = append(groups, p[i:min(i+4, len(p))])
+	}
+	return strings.Join(groups, "-")
+}
+
+// NormalizeRepoPassword reverses what display formatting and phone keyboards
+// do to a typed-back password: case, dashes, and spaces never count.
+func NormalizeRepoPassword(s string) string {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	return strings.NewReplacer("-", "", " ", "").Replace(s)
 }

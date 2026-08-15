@@ -19,6 +19,17 @@ func TestGenerateRepoPassword(t *testing.T) {
 	assert.NotEqual(t, p1, p2)
 }
 
+func TestFormatAndNormalizeRepoPassword(t *testing.T) {
+	password := "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	formatted := FormatRepoPassword(password)
+	assert.Equal(t, "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567", formatted)
+
+	// The gate strips what display formatting and phone keyboards introduce:
+	// dashes, spaces, and case.
+	assert.Equal(t, password, NormalizeRepoPassword(formatted))
+	assert.Equal(t, password, NormalizeRepoPassword("  abcd-efgh ijkl MNOP qrst uvwx yz23 4567 "))
+}
+
 func TestBackupRepoSettingsStagingDir(t *testing.T) {
 	s := BackupRepoSettings{LocalPath: "/var/lib/once/backups"}
 	// A suffix, never a child: nothing Once writes can be mistaken for repo

@@ -28,6 +28,48 @@ func TestResticBackupArgsAreConstant(t *testing.T) {
 	}, first)
 }
 
+// The probe backs up the same fixed path with the same --host every time, so
+// repeated failed probes land in a single host,paths retention group instead
+// of minting one group per attempt.
+func TestResticProbeBackupArgsAreConstant(t *testing.T) {
+	args := resticProbeBackupArgs("once")
+
+	assert.Equal(t, args, resticProbeBackupArgs("once"))
+	assert.Equal(t, []string{
+		"backup", "--json",
+		"--host", "once",
+		"/staging/.once-probe",
+	}, args)
+}
+
+// The offsite repo is addressed by URL with the backend credentials splatted
+// into the environment, and carries the local repo mounted at /repo so init
+// can copy its chunker params - which keeps a later `copy` a one-shot
+// backfill instead of a full re-chunk.
+func TestOffsiteResticRepo(t *testing.T) {
+	cfg := BackupRepoSettings{
+		LocalPath:  "/var/lib/once/backups",
+		OffsiteURL: "s3:s3.example.com/bucket/once",
+		OffsiteEnv: map[string]string{"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "key"},
+		Password:   "secret",
+	}
+
+	repo := offsiteResticRepo(cfg)
+
+	assert.Equal(t, "s3:s3.example.com/bucket/once", repo.repository)
+	assert.Equal(t, "secret", repo.password)
+	assert.Equal(t, "/var/lib/once/backups", repo.hostPath)
+	assert.Equal(t, "/var/lib/once/backups.staging", repo.stagingDir)
+	assert.Equal(t, []string{"init", "--copy-chunker-params"}, repo.initArgs)
+	assert.Equal(t, "id", repo.env["AWS_ACCESS_KEY_ID"])
+	assert.Equal(t, "key", repo.env["AWS_SECRET_ACCESS_KEY"])
+	assert.Equal(t, resticRepoMount, repo.env["RESTIC_FROM_REPOSITORY"])
+	assert.Equal(t, "secret", repo.env["RESTIC_FROM_PASSWORD"])
+
+	// The settings' own env map is never mutated.
+	assert.NotContains(t, cfg.OffsiteEnv, "RESTIC_FROM_PASSWORD")
+}
+
 func TestResticForgetArgsFixedPolicy(t *testing.T) {
 	args := resticForgetArgs("once")
 

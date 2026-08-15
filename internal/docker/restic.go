@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
@@ -47,6 +48,9 @@ type resticRepo struct {
 	// stagingDir is the host Staging Directory, bind-mounted read-only at
 	// /staging: Once writes the archive, restic only reads it.
 	stagingDir string
+	// initArgs overrides the plain "init" ensureRepo runs when the repo does
+	// not exist yet; empty means []string{"init"}.
+	initArgs []string
 }
 
 type resticResult struct {
@@ -188,7 +192,11 @@ func (n *Namespace) ensureRepo(ctx context.Context, repo resticRepo) error {
 	case 0:
 		return nil
 	case resticExitNoRepository:
-		initRes, err := n.runRestic(ctx, repo, "init")
+		initArgs := repo.initArgs
+		if len(initArgs) == 0 {
+			initArgs = []string{"init"}
+		}
+		initRes, err := n.runRestic(ctx, repo, initArgs...)
 		if err != nil {
 			return err
 		}
@@ -197,7 +205,7 @@ func (n *Namespace) ensureRepo(ctx context.Context, repo resticRepo) error {
 		}
 		return nil
 	case resticExitWrongPassword:
-		return fmt.Errorf("wrong password for restic repository %s - is the local path aimed at a repository Once did not create?", repo.repository)
+		return fmt.Errorf("wrong password for restic repository %s - is it aimed at a repository Once did not create?", repo.repository)
 	default:
 		return fmt.Errorf("restic cat config failed: %s", res.failure())
 	}
@@ -250,6 +258,38 @@ func localResticRepo(cfg BackupRepoSettings) resticRepo {
 		password:   cfg.Password,
 		hostPath:   cfg.LocalPath,
 		stagingDir: cfg.StagingDir(),
+	}
+}
+
+// offsiteResticRepo addresses the Offsite Repo by URL, with the backend
+// credentials splatted into the environment. The local repo rides along
+// mounted at /repo, and the RESTIC_FROM_* variables point at it, so that
+// init runs with --copy-chunker-params: matching chunker params keep a later
+// `copy` a one-shot backfill instead of a full re-chunk. Both are inert on
+// every other command.
+func offsiteResticRepo(cfg BackupRepoSettings) resticRepo {
+	env := make(map[string]string, len(cfg.OffsiteEnv)+2)
+	maps.Copy(env, cfg.OffsiteEnv)
+	env["RESTIC_FROM_REPOSITORY"] = resticRepoMount
+	env["RESTIC_FROM_PASSWORD"] = cfg.Password
+	return resticRepo{
+		repository: cfg.OffsiteURL,
+		password:   cfg.Password,
+		env:        env,
+		hostPath:   cfg.LocalPath,
+		stagingDir: cfg.StagingDir(),
+		initArgs:   []string{"init", "--copy-chunker-params"},
+	}
+}
+
+// resticProbeBackupArgs builds the validation probe's backup invocation: the
+// real --host and a fixed path, like the real run, so repeated failed probes
+// land in one host,paths retention group.
+func resticProbeBackupArgs(namespace string) []string {
+	return []string{
+		"backup", "--json",
+		"--host", namespace,
+		resticStagingMount + "/" + backupProbeFile,
 	}
 }
 

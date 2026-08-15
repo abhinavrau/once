@@ -13,6 +13,9 @@ type State struct {
 	// LastCheck records the latest restic check result per repo ("local" or
 	// "offsite") - a repo-wide fact, so it lives beside the per-app states.
 	LastCheck map[string]OperationResult `json:"lastCheck,omitempty"`
+	// LastProbe records the latest enable-time validation probe, so `once
+	// backup status` can show configured-but-not-enabled with its error.
+	LastProbe OperationResult `json:"lastProbe,omitzero"`
 }
 
 type AppState struct {
@@ -78,6 +81,17 @@ func (s *State) RecordUpdate(appName string, err error) {
 
 func (s *State) RecordArchiveBytes(appName string, n int64) {
 	s.ensureApp(appName).LastArchiveBytes = n
+}
+
+func (s *State) RecordProbe(err error) {
+	s.LastProbe = newResult(err)
+}
+
+func (s *State) LastProbeResult() *OperationResult {
+	if s.LastProbe.At.IsZero() {
+		return nil
+	}
+	return &s.LastProbe
 }
 
 func (s *State) RecordCheck(repo string, err error) {
