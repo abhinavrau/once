@@ -26,7 +26,7 @@ func TestBackupsFormSubmitCollectsSettings(t *testing.T) {
 	assert.Equal(t, docker.DefaultBackupLocalPath, msg.settings.LocalPath)
 	assert.Equal(t, "s3:s3.example.com/bucket/once", msg.settings.OffsiteURL)
 	assert.Equal(t, map[string]string{"AWS_ACCESS_KEY_ID": "the-key-id"}, msg.settings.OffsiteEnv)
-	assert.Regexp(t, `^[A-Z2-7]{32}$`, msg.settings.Password, "submitting mints the password when none exists")
+	assert.Empty(t, msg.settings.Password, "the password is ConfigureBackups' to mint or reuse, never the form's")
 	assert.False(t, msg.settings.Enabled, "Enabled is the probe's and the gate's to grant")
 }
 

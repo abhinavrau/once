@@ -17,10 +17,25 @@ const backupProbeFile = ".once-probe"
 
 // ConfigureBackups persists cfg with Enabled withheld, then validates every
 // configured repo with the bounded probe and records the outcome in State.
-// On probe failure everything stays persisted, password included - the probe
-// may already have initialized a repo with it, and discarding it would
-// orphan that repo. The returned error carries restic's own message.
+// The password is owned here, not by the callers: a cfg without one takes
+// the persisted password first - a retry must reuse the password the repos
+// were initialized with, never regenerate it - and only mints a fresh one
+// when none has ever existed. Callers read it back via BackupRepoSettings.
+// On probe failure everything stays persisted, password included - the
+// probe may already have initialized a repo with it, and discarding it
+// would orphan that repo. The returned error carries restic's own message.
 func (n *Namespace) ConfigureBackups(ctx context.Context, cfg BackupRepoSettings) error {
+	if cfg.Password == "" {
+		cfg.Password = n.BackupRepoSettings().Password
+	}
+	if cfg.Password == "" {
+		password, err := GenerateRepoPassword()
+		if err != nil {
+			return fmt.Errorf("generating repository password: %w", err)
+		}
+		cfg.Password = password
+	}
+
 	cfg.Enabled = false
 	if err := n.SetBackupRepoSettings(ctx, cfg); err != nil {
 		return fmt.Errorf("saving backup settings: %w", err)

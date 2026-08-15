@@ -107,8 +107,7 @@ func (m Install) Busy() bool {
 // ShowingSecret propagates the overlay's mouse-tracking opt-out (the Backups
 // overlay's custody moment can open inline from the install flow).
 func (m Install) ShowingSecret() bool {
-	s, ok := m.overlay.(SecretDisplayer)
-	return ok && s.ShowingSecret()
+	return overlayShowingSecret(m.overlay)
 }
 
 func (m Install) Init() tea.Cmd {
@@ -210,10 +209,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 				}
 			}
 			if m.state == installStateAppList && key.Matches(msg, installKeys.Tailscale) {
-				m.overlay = NewTailscaleForm(m.namespace)
-				var cmd tea.Cmd
-				m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-				return m, tea.Batch(m.overlay.Init(), cmd)
+				return m, m.openOverlay(NewTailscaleForm(m.namespace))
 			}
 			if key.Matches(msg, installKeys.Back) {
 				return m.handleBack()
@@ -246,10 +242,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		// overlay inline, once, then return to the filled-in form.
 		if !m.backupsOffered && !m.namespace.BackupRepoSettings().Configured() {
 			m.backupsOffered = true
-			m.overlay = NewBackupsForm(m.namespace)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, tea.Batch(m.overlay.Init(), cmd)
+			return m, m.openOverlay(NewBackupsForm(m.namespace))
 		}
 		return m, nil
 
@@ -269,10 +262,7 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		// overlay inline instead of bouncing the user to the CLI. Closing it
 		// returns to the filled-in form.
 		if msg.Exposure == docker.ExposureTailnet && !m.tailscaleEnabled() {
-			m.overlay = NewTailscaleForm(m.namespace)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, tea.Batch(m.overlay.Init(), cmd)
+			return m, m.openOverlay(NewTailscaleForm(m.namespace))
 		}
 		host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), msg.App.Profile.AppName(msg.App.ImageRef))
 		if err != nil {
@@ -380,6 +370,14 @@ func (m *Install) initScreenWithSize() tea.Cmd {
 		m.updateCurrentScreen(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 	}
 	return initCmd
+}
+
+// openOverlay mounts an overlay sized to the screen and starts it.
+func (m *Install) openOverlay(overlay Component) tea.Cmd {
+	m.overlay = overlay
+	var cmd tea.Cmd
+	m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return tea.Batch(m.overlay.Init(), cmd)
 }
 
 func (m *Install) updateCurrentScreen(msg tea.Msg) tea.Cmd {

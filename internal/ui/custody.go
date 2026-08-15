@@ -43,21 +43,32 @@ func NewRecoveryKit(cfg docker.BackupRepoSettings) RecoveryKit {
 // Text is the plain-text kit: the ctrl+k clipboard payload, and the block the
 // no-TTY banner prints.
 func (k RecoveryKit) Text() string {
-	lines := []string{
-		"ONCE RECOVERY KIT - keep this whole block",
-		"Backup password:  " + docker.FormatRepoPassword(k.Password),
+	lines := []string{"ONCE RECOVERY KIT - keep this whole block"}
+	for _, row := range k.rows() {
+		lines = append(lines, fmt.Sprintf("%-13s %s", row.label+":", row.value))
 	}
+	return strings.Join(lines, "\n")
+}
+
+type kitRow struct {
+	label, value string
+}
+
+// rows is the kit's single row source: the reveal block and the plain-text
+// kit render the same facts, with the offsite lines omitted when there is no
+// offsite repo.
+func (k RecoveryKit) rows() []kitRow {
+	rows := []kitRow{{"Password", docker.FormatRepoPassword(k.Password)}}
 	if k.OffsiteURL != "" {
-		lines = append(lines, "Offsite repo:     "+k.OffsiteURL)
+		rows = append(rows, kitRow{"Offsite repo", k.OffsiteURL})
 	}
 	if len(k.CredentialNames) > 0 {
-		lines = append(lines, "Credential names: "+strings.Join(k.CredentialNames, ", ")+" (values are at your provider)")
+		rows = append(rows, kitRow{"Credentials", strings.Join(k.CredentialNames, ", ") + " (names only)"})
 	}
-	lines = append(lines,
-		"Local repo:       "+k.LocalPath,
-		"Created:          "+k.CreatedAt.Format("2006-01-02")+" on "+k.Hostname,
+	return append(rows,
+		kitRow{"Local repo", k.LocalPath},
+		kitRow{"Created", k.CreatedAt.Format("2006-01-02") + " on " + k.Hostname},
 	)
-	return strings.Join(lines, "\n")
 }
 
 // The custody flow: the one moment the user takes custody of the Repo
@@ -187,7 +198,9 @@ func (m Custody) handleKey(msg tea.KeyPressMsg) (Custody, tea.Cmd) {
 	switch m.step {
 	case custodyStepChoice:
 		switch msg.String() {
-		case "up", "down", "j", "k", "tab":
+		case "up", "k":
+			m.choice = (m.choice + len(custodyDeliveries) - 1) % len(custodyDeliveries)
+		case "down", "j", "tab":
 			m.choice = (m.choice + 1) % len(custodyDeliveries)
 		case "enter":
 			m.step = custodyStepReveal
@@ -284,26 +297,15 @@ func (m Custody) revealView() string {
 
 func (m Custody) kitBlock() string {
 	label := lipgloss.NewStyle().Bold(true)
-	row := func(k, v string) string { return label.Render(fmt.Sprintf("%-13s", k)) + v }
 
-	rows := []string{
-		lipgloss.NewStyle().Bold(true).Foreground(Colors.Primary).Render("ONCE RECOVERY KIT"),
-		row("Password", docker.FormatRepoPassword(m.kit.Password)),
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(Colors.Primary).Render("ONCE RECOVERY KIT")}
+	for _, row := range m.kit.rows() {
+		lines = append(lines, label.Render(fmt.Sprintf("%-13s", row.label))+row.value)
 	}
-	if m.kit.OffsiteURL != "" {
-		rows = append(rows, row("Offsite repo", m.kit.OffsiteURL))
-	}
-	if len(m.kit.CredentialNames) > 0 {
-		rows = append(rows, row("Credentials", strings.Join(m.kit.CredentialNames, ", ")+" (names only)"))
-	}
-	rows = append(rows,
-		row("Local repo", m.kit.LocalPath),
-		row("Created", m.kit.CreatedAt.Format("2006-01-02")+" on "+m.kit.Hostname),
-	)
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).BorderForeground(Colors.Primary).Padding(0, 2).
-		Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
+		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
 func (m Custody) gateView() string {

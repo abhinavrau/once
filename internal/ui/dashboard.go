@@ -118,6 +118,12 @@ func NewDashboard(ns *docker.Namespace, apps []*docker.Application, selectedInde
 	return d
 }
 
+// ShowingSecret propagates the overlay's mouse-tracking opt-out (the custody
+// moment inside the Backups overlay shows the repo password).
+func (m Dashboard) ShowingSecret() bool {
+	return overlayShowingSecret(m.overlay)
+}
+
 func (m Dashboard) Init() tea.Cmd {
 	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
 }
@@ -171,33 +177,19 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, func() tea.Msg { return NavigateToInstallMsg{} }
 		}
 		if key.Matches(msg, dashboardKeys.Settings) && len(m.apps) > 0 {
-			app := m.apps[m.selectedIndex]
-			m.overlay = NewSettingsMenu(app)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, cmd
+			return m, m.openOverlay(NewSettingsMenu(m.apps[m.selectedIndex]))
 		}
 		if key.Matches(msg, dashboardKeys.Actions) && len(m.apps) > 0 && !m.toggling {
-			app := m.apps[m.selectedIndex]
-			m.overlay = NewActionsMenu(app)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, cmd
+			return m, m.openOverlay(NewActionsMenu(m.apps[m.selectedIndex]))
 		}
 		if key.Matches(msg, dashboardKeys.Logs) && len(m.apps) > 0 {
 			return m, func() tea.Msg { return NavigateToLogsMsg{App: m.apps[m.selectedIndex]} }
 		}
 		if key.Matches(msg, dashboardKeys.Tailscale) {
-			m.overlay = NewTailscaleForm(m.namespace)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, tea.Batch(m.overlay.Init(), cmd)
+			return m, m.openOverlay(NewTailscaleForm(m.namespace))
 		}
 		if key.Matches(msg, dashboardKeys.Backups) {
-			m.overlay = NewBackupsForm(m.namespace)
-			var cmd tea.Cmd
-			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-			return m, tea.Batch(m.overlay.Init(), cmd)
+			return m, m.openOverlay(NewBackupsForm(m.namespace))
 		}
 		if key.Matches(msg, dashboardKeys.Details) && len(m.apps) > 0 {
 			dashboardShowDetails = !dashboardShowDetails
@@ -338,14 +330,15 @@ func (m Dashboard) View() string {
 	return content
 }
 
-// ShowingSecret propagates the overlay's mouse-tracking opt-out (the custody
-// moment inside the Backups overlay shows the repo password).
-func (m Dashboard) ShowingSecret() bool {
-	s, ok := m.overlay.(SecretDisplayer)
-	return ok && s.ShowingSecret()
-}
-
 // Private
+
+// openOverlay mounts an overlay sized to the dashboard and starts it.
+func (m *Dashboard) openOverlay(overlay Component) tea.Cmd {
+	m.overlay = overlay
+	var cmd tea.Cmd
+	m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return tea.Batch(m.overlay.Init(), cmd)
+}
 
 func (m Dashboard) helpBindings() []key.Binding {
 	if len(m.apps) > 0 {

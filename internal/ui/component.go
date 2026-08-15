@@ -37,3 +37,13 @@ type MouseEvent struct {
 	Target  string
 	IsClick bool
 }
+
+// Helpers
+
+// overlayShowingSecret is how a screen propagates its overlay's
+// mouse-tracking opt-out: true when the (possibly nil) overlay implements
+// SecretDisplayer and is currently showing a secret.
+func overlayShowingSecret(overlay Component) bool {
+	s, ok := overlay.(SecretDisplayer)
+	return ok && s.ShowingSecret()
+}

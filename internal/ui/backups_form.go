@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -208,11 +209,14 @@ func (m BackupsForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
 	return m, tea.Batch(m.progress.Init(), cmd)
 }
 
+// runProbe persists and probes; the finished message carries the settings
+// read back after ConfigureBackups, which mints the password when none
+// exists yet - the recovery kit needs it.
 func (m BackupsForm) runProbe(settings docker.BackupRepoSettings) tea.Cmd {
 	ns := m.namespace
 	return func() tea.Msg {
 		err := ns.ConfigureBackups(context.Background(), settings)
-		return backupsProbeFinishedMsg{settings: settings, err: err}
+		return backupsProbeFinishedMsg{settings: ns.BackupRepoSettings(), err: err}
 	}
 }
 
@@ -249,12 +253,12 @@ func newBackupsForm(ns *docker.Namespace, settings docker.BackupRepoSettings) Ba
 	}
 	m.help.SetBindings([]key.Binding{backupsFormCloseKey})
 
-	localPathField := NewTextField(docker.DefaultBackupLocalPath)
-	if settings.LocalPath != "" {
-		localPathField.SetValue(settings.LocalPath)
-	} else {
-		localPathField.SetValue(docker.DefaultBackupLocalPath)
+	localPath := settings.LocalPath
+	if localPath == "" {
+		localPath = docker.DefaultBackupLocalPath
 	}
+	localPathField := NewTextField(docker.DefaultBackupLocalPath)
+	localPathField.SetValue(localPath)
 
 	offsiteURLField := NewTextField("s3:s3.amazonaws.com/bucket/once (optional)")
 	offsiteURLField.SetValue(settings.OffsiteURL)
@@ -296,19 +300,15 @@ func newBackupsForm(ns *docker.Namespace, settings docker.BackupRepoSettings) Ba
 			s.OffsiteEnv[name] = f.TextField(credValueFieldKey(row)).Value()
 		}
 
-		if !strings.HasPrefix(s.LocalPath, "/") {
+		if !filepath.IsAbs(s.LocalPath) {
 			f.SetError("local-path", "The local repository path must be absolute")
 			return nil
 		}
 
-		if s.Password == "" {
-			password, err := docker.GenerateRepoPassword()
-			if err != nil {
-				f.SetError("local-path", "generating repository password: "+err.Error())
-				return nil
-			}
-			s.Password = password
-		}
+		// The password is deliberately not touched here: ConfigureBackups
+		// owns it - reusing the persisted one, minting only when none has
+		// ever existed - so a resubmit after a failed probe can never
+		// overwrite the password a repo was already initialized with.
 		return func() tea.Msg { return backupsEnableSubmitMsg{settings: s} }
 	})
 	if settings.Enabled {

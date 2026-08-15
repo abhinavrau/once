@@ -141,13 +141,15 @@ func (e *backupEnableCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 	}
 	enabledBefore := ns.BackupRepoSettings().Enabled
 
-	// The probe error comes back verbatim from restic; the settings and the
-	// password are already persisted so a retry reuses them.
+	// The probe error comes back verbatim from restic; the settings - and
+	// the password ConfigureBackups mints when none exists - are already
+	// persisted, so a retry reuses them. Read them back for the kit.
 	if err := runWithProgress("Validating backup repositories", func(docker.DeployProgressCallback) error {
 		return ns.ConfigureBackups(ctx, settings)
 	}); err != nil {
 		return err
 	}
+	settings = ns.BackupRepoSettings()
 
 	if !enabledBefore {
 		if isTerminal() {
@@ -177,9 +179,10 @@ func (e *backupEnableCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 }
 
 // collectSettings merges the flags over the stored settings: an untouched
-// flag keeps what is configured, and the password is reused, never
-// regenerated - a retry after a failed probe or a skipped custody must hand
-// over the same password the repos were initialized with.
+// flag keeps what is configured. The password stays as stored (empty on a
+// first enable) - ConfigureBackups mints it when missing and reuses it
+// otherwise, so a retry hands over the same password the repos were
+// initialized with.
 func (e *backupEnableCommand) collectSettings(ns *docker.Namespace, cmd *cobra.Command) (docker.BackupRepoSettings, error) {
 	settings := ns.BackupRepoSettings()
 
@@ -198,14 +201,6 @@ func (e *backupEnableCommand) collectSettings(ns *docker.Namespace, cmd *cobra.C
 			return settings, err
 		}
 		settings.OffsiteEnv = env
-	}
-
-	if settings.Password == "" {
-		password, err := docker.GenerateRepoPassword()
-		if err != nil {
-			return settings, fmt.Errorf("generating repository password: %w", err)
-		}
-		settings.Password = password
 	}
 	return settings, nil
 }
