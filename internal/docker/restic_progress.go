@@ -44,12 +44,12 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 
 // Helpers
 
-// resticBackupProgress adapts restic's status stream to the progress seam: the
+// resticStatusReporter adapts restic's status stream to the progress seam: the
 // offsite upload is the one backup step a person waits on, so it is the one
 // that reports a transfer percentage rather than a spinner. Returns nil when
 // there is nobody to report to - nil is the legitimate headless adapter
 // (ADR-0012), and it must cost nothing.
-func resticBackupProgress(progress DeployProgressCallback, repoName string) func(string) {
+func resticStatusReporter(progress DeployProgressCallback, repoName string) func(string) {
 	if progress == nil {
 		return nil
 	}

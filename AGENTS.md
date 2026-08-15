@@ -64,8 +64,11 @@ make lint        # Run golangci-lint
 
 ## Testing notes
 
-- The integration suite runs under a 10-minute total `go test` timeout. A single
-  hung test consumes the whole budget and the suite reports as a timeout panic,
+- The integration suite runs under a 20-minute total `go test` timeout, set
+  explicitly in the Makefile. It is a hang detector, not a budget: the suite
+  legitimately takes ~11 minutes of real work (image pulls, deploys, restic
+  runs), which is why it outgrew Go's 600s default. A single hung test still
+  consumes the whole timeout and the suite reports as a timeout panic,
   masking the real culprit. When this happens, read the goroutine dump for the
   goroutine stuck in the test body (e.g. `appDriver.waitUntil`), not the alarm or
   the background `scraper.go` stats-stream goroutines that always appear.

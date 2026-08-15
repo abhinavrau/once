@@ -96,7 +96,9 @@ func TestRenderBackupStatusCheckAlarm(t *testing.T) {
 		},
 	})
 
-	assert.Contains(t, out, "local    PROBLEM 2026-08-14 03:04: restic check found problems: 2 errors")
+	// The verdict on the row, the unbounded restic reason on its own line.
+	assert.Contains(t, out, "  local    PROBLEM 2026-08-14 03:04\n")
+	assert.Contains(t, out, "\n           restic check found problems: 2 errors\n")
 	assert.Contains(t, out, "A repository that fails its check may not restore.")
 }
 

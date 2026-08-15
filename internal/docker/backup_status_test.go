@@ -29,6 +29,22 @@ func TestOffsiteAgeStates(t *testing.T) {
 	assert.InDelta(t, 90*time.Minute, fresh.Age(), float64(time.Minute))
 }
 
+// The duration is worded once, in the facts, so `once backup status` and the
+// dashboard can never disagree about how old the same copy is.
+func TestOffsiteAgeText(t *testing.T) {
+	age := func(d time.Duration) OffsiteAge {
+		return OffsiteAge{Queried: true, Latest: time.Now().Add(-d)}
+	}
+
+	assert.Equal(t, "less than an hour", age(time.Minute).AgeText())
+	assert.Equal(t, "6 hours", age(6*time.Hour).AgeText())
+	assert.Equal(t, "3 days", age(73*time.Hour).AgeText())
+
+	// Two missed daily runs is where reassurance turns into a warning.
+	assert.False(t, age(47*time.Hour).Stale())
+	assert.True(t, age(49*time.Hour).Stale())
+}
+
 // The dashboard has room for one staleness answer, so the install-wide summary
 // has to be the worst one: a definite gap outranks an unreachable repo, which
 // outranks the oldest copy that does exist.

@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// offsiteStaleAfter is when an offsite copy's age stops being a reassurance.
+// Backups run daily (AutomaticTaskInterval), so this is two missed runs.
+const offsiteStaleAfter = 48 * time.Hour
+
 // BackupStatus is the install-wide answer to "are my backups safe?", gathered
 // once and rendered per frontend: `once backup status` prints all of it, the
 // dashboard prints the part that earns the space (ADR-0012 - rendering differs
@@ -68,6 +72,27 @@ func (a OffsiteAge) Missing() bool {
 // with a snapshot.
 func (a OffsiteAge) Age() time.Duration {
 	return time.Since(a.Latest)
+}
+
+// Stale reports an offsite copy old enough to be a warning rather than a
+// reassurance: backups run daily, so this is two missed runs.
+func (a OffsiteAge) Stale() bool {
+	return a.Age() >= offsiteStaleAfter
+}
+
+// AgeText words the duration once, for every surface. How a frontend frames
+// the sentence is its own business (ADR-0012), but two surfaces disagreeing
+// about how old the same copy is would just be a bug.
+func (a OffsiteAge) AgeText() string {
+	d := a.Age()
+	switch {
+	case d < time.Hour:
+		return "less than an hour"
+	case d < offsiteStaleAfter:
+		return fmt.Sprintf("%d hours", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d days", int(d.Hours()/24))
+	}
 }
 
 // RepoCheck pairs a repository name with its last check result.

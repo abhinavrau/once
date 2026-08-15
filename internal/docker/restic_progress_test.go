@@ -12,9 +12,9 @@ import (
 // summary line is still what decides the outcome, everywhere.
 const resticStatusLine = `{"message_type":"status","seconds_elapsed":1,"percent_done":0.42,"total_files":1,"files_done":0,"total_bytes":1024,"bytes_done":430}`
 
-func TestResticBackupProgressReportsPercentages(t *testing.T) {
+func TestResticStatusReporterReportsPercentages(t *testing.T) {
 	var reports []DeployProgress
-	onLine := resticBackupProgress(func(p DeployProgress) { reports = append(reports, p) }, "offsite")
+	onLine := resticStatusReporter(func(p DeployProgress) { reports = append(reports, p) }, "offsite")
 	require.NotNil(t, onLine)
 
 	onLine(resticStatusLine)
@@ -29,8 +29,8 @@ func TestResticBackupProgressReportsPercentages(t *testing.T) {
 
 // nil is the legitimate headless adapter (ADR-0012), and it must cost nothing
 // rather than being papered over with a no-op hook.
-func TestResticBackupProgressIsNilWithoutACallback(t *testing.T) {
-	assert.Nil(t, resticBackupProgress(nil, "offsite"))
+func TestResticStatusReporterIsNilWithoutACallback(t *testing.T) {
+	assert.Nil(t, resticStatusReporter(nil, "offsite"))
 }
 
 func TestParseResticStatus(t *testing.T) {

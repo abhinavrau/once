@@ -137,8 +137,10 @@ func (m Dashboard) Busy() bool {
 }
 
 func (m Dashboard) Init() tea.Cmd {
+	// The backup gather arms its own next run when it returns, so no schedule
+	// is started here: one gather at a time, however slow a repository is.
 	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh(),
-		m.fetchBackupStatus(), m.scheduleBackupStatusRefresh())
+		m.fetchBackupStatus())
 }
 
 func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
@@ -272,9 +274,10 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		m.backupStatus = msg.status
 		m.updateViewportSize()
 		m.rebuildViewportContent()
+		cmds = append(cmds, m.scheduleBackupStatusRefresh())
 
 	case backupStatusRefreshMsg:
-		cmds = append(cmds, m.fetchBackupStatus(), m.scheduleBackupStatusRefresh())
+		cmds = append(cmds, m.fetchBackupStatus())
 
 	case ProgressTickMsg:
 		if m.toggling {

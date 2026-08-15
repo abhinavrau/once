@@ -138,7 +138,7 @@ func (n *Namespace) probeRepo(ctx context.Context, repo resticRepo, progress Dep
 		return fmt.Errorf("%s repository: %w", name, err)
 	}
 
-	res, err := n.runResticRetryLock(ctx, repo, resticBackupProgress(progress, name), resticProbeBackupArgs(n.name)...)
+	res, err := n.runResticRetryLock(ctx, repo, resticStatusReporter(progress, name), resticProbeBackupArgs(n.name)...)
 	if err != nil {
 		return err
 	}

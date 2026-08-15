@@ -60,6 +60,17 @@ func TestBackupNoteStaleness(t *testing.T) {
 	assert.Equal(t, []string{"Backups: enabled, no offsite copy configured"}, noteTexts(local))
 }
 
+// Whether an offsite repository exists is a setting, not something the
+// snapshots query can answer: an install with one configured but no app
+// participating yet must not read as though none were configured.
+func TestBackupNoteOffsiteConfiguredComesFromTheSetting(t *testing.T) {
+	noApps := enabledBackupStatus()
+	assert.Equal(t, []string{"Backups: enabled, no app is included yet"}, noteTexts(noApps))
+
+	excluded := enabledBackupStatus(docker.AppBackupStatus{Name: "writebook"})
+	assert.Equal(t, []string{"Backups: enabled, no app is included yet"}, noteTexts(excluded))
+}
+
 // An unreachable repo is unknown, never "no offsite copy": a flaky uplink must
 // not tell the user their offsite repository is empty.
 func TestBackupNoteUnknownStalenessIsNotMissing(t *testing.T) {
@@ -97,7 +108,9 @@ func TestBackupNoteConfiguredButNotEnabled(t *testing.T) {
 	status := enabledBackupStatus(includedApp(docker.OffsiteAge{Queried: true, Latest: time.Now()}))
 	status.Enabled = false
 
-	assert.Equal(t, []string{"⚠ Backups are configured but not enabled - run `once backup enable`"}, noteTexts(status))
+	// Worded as the CLI words it: two surfaces disagreeing about the same
+	// state is just a bug.
+	assert.Equal(t, []string{"⚠ Backups are configured, not enabled - run `once backup enable`"}, noteTexts(status))
 }
 
 // Every line has to survive the dashboard's narrowest supported terminal
@@ -129,6 +142,24 @@ func TestBackupNoteTruncatesRatherThanWraps(t *testing.T) {
 	note := renderBackupNote(status, 20)
 	assert.Equal(t, 1, lipgloss.Height(note))
 	assert.Contains(t, ansi.Strip(note), "…")
+}
+
+// The gather runs a restic container per participating app and an unreachable
+// backend can keep one alive for minutes, so the next one is armed by the
+// arrival of a result, never by a fixed interval - otherwise a dead uplink
+// would stack gathers for as long as it stayed down.
+func TestDashboardBackupRefreshIsArmedByTheResult(t *testing.T) {
+	d := testDashboard(1)
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	// A refresh tick starts a gather and arms nothing itself, so the only
+	// thing that can schedule the next one is a result coming back. With no
+	// namespace there is nothing to gather, and the chain simply stops.
+	_, refreshCmd := updateDashboard(d, backupStatusRefreshMsg{})
+	assert.Nil(t, refreshCmd)
+
+	_, resultCmd := updateDashboard(d, backupStatusMsg{status: enabledBackupStatus()})
+	assert.NotNil(t, resultCmd, "the arriving result is what arms the next gather")
 }
 
 func TestDashboardBackupNoteShrinksTheViewport(t *testing.T) {

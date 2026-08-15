@@ -129,8 +129,16 @@ func (m *cliProgress) barWidth() int {
 
 func (m *cliProgress) runTask() tea.Cmd {
 	return func() tea.Msg {
+		// A report is dropped rather than queued once the buffer is full. The
+		// callback runs on the task's own goroutine - inside restic's log
+		// demux, for an upload reporting ten times a second - so a blocking
+		// send would let a stalled render loop stall the work itself. A bar is
+		// a lossy view of a monotonic percentage anyway.
 		callback := func(p docker.DeployProgress) {
-			m.progressChan <- p
+			select {
+			case m.progressChan <- p:
+			default:
+			}
 		}
 		err := m.task(callback)
 		return cliProgressDoneMsg{err: err}

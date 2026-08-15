@@ -3,7 +3,6 @@ package command
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/basecamp/once/internal/docker"
 )
@@ -36,7 +35,7 @@ func renderBackupStatus(s docker.BackupStatus) string {
 	return b.String()
 }
 
-// Private
+// Helpers
 
 func writeBackupSummary(b *strings.Builder, s docker.BackupStatus) {
 	if s.Enabled {
@@ -103,9 +102,13 @@ func writeBackupChecks(b *strings.Builder, s docker.BackupStatus) {
 		return
 	}
 
+	detail := statusIndent + strings.Repeat(" ", statusRepoWidth+2)
 	fmt.Fprintln(b, "\nRepository checks")
 	for _, check := range checks {
 		fmt.Fprintf(b, "%s%-*s  %s\n", statusIndent, statusRepoWidth, check.Name, describeCheckResult(check.Result))
+		if check.Result.Error != "" {
+			fmt.Fprintln(b, detail+check.Result.Error)
+		}
 	}
 	if len(s.FailedChecks()) > 0 {
 		fmt.Fprintln(b, "\nA repository that fails its check may not restore. This is a separate")
@@ -116,8 +119,6 @@ func writeBackupChecks(b *strings.Builder, s docker.BackupStatus) {
 func writeLabelled(b *strings.Builder, label, value string) {
 	fmt.Fprintf(b, "%s%-*s %s\n", statusIndent, statusLabelWidth, label, value)
 }
-
-// Helpers
 
 // describeAppBackup is one application's row: the local leg's last result and,
 // when an offsite repository is configured, the staleness answer beside it.
@@ -141,10 +142,11 @@ func describeLastBackup(r *docker.OperationResult) string {
 
 // describeCheckResult words a check apart from a run: "your repo is damaged"
 // is a different emergency from "your backup did not run", and sharing the
-// word "failed" for both is exactly how that distinction gets lost.
+// word "failed" for both is exactly how that distinction gets lost. The reason
+// goes on a continuation line, as everywhere else.
 func describeCheckResult(r docker.OperationResult) string {
 	if r.Error != "" {
-		return fmt.Sprintf("PROBLEM %s: %s", formatOperationTime(r), r.Error)
+		return "PROBLEM " + formatOperationTime(r)
 	}
 	return "ok " + formatOperationTime(r)
 }
@@ -173,18 +175,7 @@ func describeOffsiteAge(age docker.OffsiteAge) string {
 	case age.Missing():
 		return "no offsite copy yet"
 	default:
-		return "offsite copy is " + describeAge(age.Age()) + " old"
-	}
-}
-
-func describeAge(d time.Duration) string {
-	switch {
-	case d < time.Hour:
-		return "less than an hour"
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%d hours", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%d days", int(d.Hours()/24))
+		return "offsite copy is " + age.AgeText() + " old"
 	}
 }
 
