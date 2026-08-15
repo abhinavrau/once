@@ -55,6 +55,17 @@ func (s BackupRepoSettings) StagingDir() string {
 	return s.LocalPath + ".staging"
 }
 
+// StagingDirOrDefault is the Staging Directory when there may be no
+// configuration at all: a restore onto a fresh install has no local repo to
+// hang it off, and "".staging is a relative path in whatever directory the
+// user happened to run from.
+func (s BackupRepoSettings) StagingDirOrDefault() string {
+	if s.LocalPath == "" {
+		return BackupRepoSettings{LocalPath: DefaultBackupLocalPath}.StagingDir()
+	}
+	return s.StagingDir()
+}
+
 // Private
 
 // offsiteDir is the host directory an offsite repository lives in when it is

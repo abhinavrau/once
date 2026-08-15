@@ -473,8 +473,13 @@ func (n *Namespace) Restore(ctx context.Context, r io.Reader) (*Application, err
 		return nil, fmt.Errorf("parsing backup: %w", err)
 	}
 
-	if n.HostInUse(appSettings.Host) {
-		return nil, ErrHostnameInUse
+	// Restore is additive - it always creates a new application - so the one
+	// thing it cannot share is a hostname. The refusal names the occupant and
+	// how to clear it: the alternative, restoring under a different host,
+	// changes the app's own idea of its URL and belongs to rollback, not here.
+	if existing := n.ApplicationByHost(appSettings.Host); existing != nil {
+		return nil, fmt.Errorf("%w: %s already serves %s; remove it first with `once remove %s`",
+			ErrHostnameInUse, existing.Settings.Name, appSettings.Host, appSettings.Host)
 	}
 
 	name, err := n.UniqueName(appSettings.Profile.AppName(appSettings.Image))

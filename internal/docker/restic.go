@@ -55,9 +55,14 @@ type resticRepo struct {
 	// at /offsite: an offsite repository that is a filesystem path - a second
 	// disk or a network mount - rather than a backend URL.
 	offsiteRepoDir string
-	// stagingDir is the host Staging Directory, bind-mounted read-only at
-	// /staging: Once writes the archive, restic only reads it.
+	// stagingDir is the host Staging Directory, bind-mounted at /staging:
+	// Once writes the archive, restic only reads it.
 	stagingDir string
+	// stagingWritable makes that mount read-write. Only a restore needs it -
+	// it is restic that writes the archive back out - and backing up under a
+	// read-only mount is the guarantee that a backup can never alter the file
+	// it is preserving.
+	stagingWritable bool
 	// initArgs overrides the plain "init" ensureRepo runs when the repo does
 	// not exist yet; empty means []string{"init"}.
 	initArgs []string
@@ -132,7 +137,7 @@ func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...stri
 	}
 
 	mounts := []mount.Mount{
-		{Type: mount.TypeBind, Source: repo.stagingDir, Target: resticStagingMount, ReadOnly: true},
+		{Type: mount.TypeBind, Source: repo.stagingDir, Target: resticStagingMount, ReadOnly: !repo.stagingWritable},
 		{Type: mount.TypeVolume, Source: n.resticCacheVolume(), Target: resticCacheMount},
 	}
 	if repo.localRepoDir != "" {
@@ -368,15 +373,20 @@ func resticProbeBackupArgs(namespace string) []string {
 // resticBackupArgs builds the backup invocation. Both --host and the staging
 // path are constants of the namespace and app name: forget groups by
 // host,paths, so any variation would mint a new retention group per run and
-// retention would silently keep everything forever. The app tag is what the
-// staleness query (`snapshots --latest 1 --tag app:<name>`) selects on.
-func resticBackupArgs(namespace, appName string) []string {
-	return []string{
+// retention would silently keep everything forever. Tags carry what a restore
+// must read before it has an archive to open, and are not part of the
+// grouping. The app tag is also what the staleness query
+// (`snapshots --latest 1 --tag app:<name>`) selects on.
+func resticBackupArgs(namespace, appName, image string) []string {
+	args := []string{
 		"backup", "--json",
 		"--host", namespace,
-		"--tag", "app:" + appName,
-		resticStagingMount + "/" + appName + ".tar",
+		"--tag", snapshotAppTag + appName,
 	}
+	if image != "" {
+		args = append(args, "--tag", snapshotImageTag+image)
+	}
+	return append(args, resticStagingMount+"/"+appName+".tar")
 }
 
 // resticLatestSnapshotArgs asks a repo for one app's newest snapshot - the
@@ -389,7 +399,7 @@ func resticLatestSnapshotArgs(namespace, appName string) []string {
 		"snapshots", "--json", "--no-lock",
 		"--latest", "1",
 		"--host", namespace,
-		"--tag", "app:" + appName,
+		"--tag", snapshotAppTag + appName,
 	}
 }
 

@@ -122,7 +122,7 @@ func (n *Namespace) backupApp(ctx context.Context, app *Application, cfg BackupR
 		return 0, fmt.Errorf("sizing staging file: %w", err)
 	}
 
-	if err := n.backupToRepo(ctx, localResticRepo(cfg), app.Settings.Name); err != nil {
+	if err := n.backupToRepo(ctx, localResticRepo(cfg), app.Settings); err != nil {
 		return 0, err
 	}
 
@@ -135,7 +135,7 @@ func (n *Namespace) backupApp(ctx context.Context, app *Application, cfg BackupR
 	// would retry hourly and re-pause the app over a network that will be
 	// back in twenty minutes. The staleness signal is what surfaces this.
 	if cfg.OffsiteURL != "" {
-		if err := n.backupToRepo(ctx, offsiteResticRepo(cfg), app.Settings.Name); err != nil {
+		if err := n.backupToRepo(ctx, offsiteResticRepo(cfg), app.Settings); err != nil {
 			slog.Error("Offsite backup failed; the local backup is intact and the run stands",
 				"app", app.Settings.Name, "repository", cfg.OffsiteURL, "error", err)
 		}
@@ -152,12 +152,13 @@ func (n *Namespace) backupApp(ctx context.Context, app *Application, cfg BackupR
 
 // backupToRepo is one leg: ensure the repo exists, then back up the app's
 // Staging File into it.
-func (n *Namespace) backupToRepo(ctx context.Context, repo resticRepo, appName string) error {
+func (n *Namespace) backupToRepo(ctx context.Context, repo resticRepo, settings ApplicationSettings) error {
 	if err := n.ensureRepo(ctx, repo); err != nil {
 		return err
 	}
 
-	res, err := n.runResticRetryLock(ctx, repo, resticBackupArgs(n.name, appName)...)
+	appName := settings.Name
+	res, err := n.runResticRetryLock(ctx, repo, resticBackupArgs(n.name, appName, settings.Image)...)
 	if err != nil {
 		return err
 	}

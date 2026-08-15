@@ -16,16 +16,27 @@ import (
 // reporting success. Hence: both are constants of the namespace and app name
 // alone.
 func TestResticBackupArgsAreConstant(t *testing.T) {
-	first := resticBackupArgs("once", "vaultwarden")
-	second := resticBackupArgs("once", "vaultwarden")
+	first := resticBackupArgs("once", "vaultwarden", "vaultwarden/server:1.32")
+	second := resticBackupArgs("once", "vaultwarden", "vaultwarden/server:1.32")
 
 	assert.Equal(t, first, second)
 	assert.Equal(t, []string{
 		"backup", "--json",
 		"--host", "once",
 		"--tag", "app:vaultwarden",
+		"--tag", "image:vaultwarden/server:1.32",
 		"/staging/vaultwarden.tar",
 	}, first)
+
+	// The image is the one part that legitimately changes between runs, so it
+	// rides a tag: tags play no part in forget's host,paths grouping, so an
+	// upgraded app keeps its single retention group while a restore can still
+	// tell the user which version a snapshot holds.
+	upgraded := resticBackupArgs("once", "vaultwarden", "vaultwarden/server:1.33")
+	assert.Equal(t, "--tag", upgraded[len(upgraded)-3])
+	assert.Equal(t, "image:vaultwarden/server:1.33", upgraded[len(upgraded)-2])
+	assert.Equal(t, "/staging/vaultwarden.tar", upgraded[len(upgraded)-1])
+	assert.Equal(t, first[:len(first)-3], upgraded[:len(upgraded)-3])
 }
 
 // The probe backs up the same fixed path with the same --host every time, so

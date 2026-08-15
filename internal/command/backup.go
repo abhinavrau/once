@@ -105,7 +105,7 @@ func (b *backupCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 	// host flock.
 	lock, err := system.TryLock(docker.BackupLockPath)
 	if errors.Is(err, system.ErrLocked) {
-		return errors.New("a backup is already in progress; try again when it finishes")
+		return docker.ErrBackupInProgress
 	}
 	if err != nil {
 		return err
@@ -153,19 +153,15 @@ func (e *backupEnableCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 	settings = ns.BackupRepoSettings()
 
 	if !enabledBefore {
-		if isTerminal() {
-			confirmed, err := runCustodyFlow(ui.NewRecoveryKit(settings))
-			if err != nil {
-				return err
-			}
-			if !confirmed {
-				fmt.Println("Backups are NOT enabled. The password and settings are saved; run `once backup enable` to confirm the password and turn them on.")
-				return nil
-			}
-		} else {
-			// No TTY: the banner is the custody fallback - print, no gate,
-			// and never hang a scripted run on a prompt.
-			printRepoPasswordBanner(ui.NewRecoveryKit(settings))
+		// No TTY: the banner is the custody fallback - print, no gate, and
+		// never hang a scripted run on a prompt.
+		confirmed, err := takeCustody(settings)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			fmt.Println("Backups are NOT enabled. The password and settings are saved; run `once backup enable` to confirm the password and turn them on.")
+			return nil
 		}
 	}
 
