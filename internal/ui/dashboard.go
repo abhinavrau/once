@@ -73,6 +73,11 @@ type Dashboard struct {
 	// of the Tailscale info. A URL that is absent has either resolved or not
 	// been checked yet, and neither renders a warning.
 	tailnetWarnings map[string]string
+
+	// backupStatus caches the install-wide backup facts, refreshed on its own
+	// slow schedule because the staleness answer costs a restic container per
+	// app. The zero value is "not configured", which renders nothing.
+	backupStatus docker.BackupStatus
 }
 
 type dashboardTickMsg struct{}
@@ -132,7 +137,8 @@ func (m Dashboard) Busy() bool {
 }
 
 func (m Dashboard) Init() tea.Cmd {
-	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
+	return tea.Batch(m.scheduleNextDashboardTick(), m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh(),
+		m.fetchBackupStatus(), m.scheduleBackupStatusRefresh())
 }
 
 func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
@@ -262,6 +268,14 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case tailscaleRefreshMsg:
 		cmds = append(cmds, m.fetchTailscaleInfo(), m.scheduleTailscaleRefresh())
 
+	case backupStatusMsg:
+		m.backupStatus = msg.status
+		m.updateViewportSize()
+		m.rebuildViewportContent()
+
+	case backupStatusRefreshMsg:
+		cmds = append(cmds, m.fetchBackupStatus(), m.scheduleBackupStatusRefresh())
+
 	case ProgressTickMsg:
 		if m.toggling {
 			var cmd tea.Cmd
@@ -325,6 +339,9 @@ func (m Dashboard) View() string {
 		parts = append(parts, m.progress.View())
 	}
 	if note := m.tailnetWarningNote(); note != "" {
+		parts = append(parts, note)
+	}
+	if note := m.backupNote(); note != "" {
 		parts = append(parts, note)
 	}
 	parts = append(parts, helpLine)
@@ -457,6 +474,9 @@ func (m *Dashboard) updateViewportSize() {
 	noteHeight := 0
 	if note := m.tailnetWarningNote(); note != "" {
 		noteHeight = lipgloss.Height(note)
+	}
+	if note := m.backupNote(); note != "" {
+		noteHeight += lipgloss.Height(note)
 	}
 	vpHeight := max(m.height-titleHeight-headerHeight-helpHeight-progressHeight-noteHeight, 0)
 	m.viewport.SetHeight(vpHeight)
