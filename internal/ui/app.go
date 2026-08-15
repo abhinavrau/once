@@ -286,7 +286,11 @@ func (m *App) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeAllMotion
+	// Mouse tracking is off on any frame showing a secret, so native terminal
+	// selection keeps working and the secret can be copied by selecting it.
+	if s, ok := m.currentScreen.(SecretDisplayer); !ok || !s.ShowingSecret() {
+		v.MouseMode = tea.MouseModeAllMotion
+	}
 	return v
 }
 

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -10,13 +12,24 @@ import (
 
 type InstallHostnameBackMsg struct{}
 
+// InstallBackupToggledMsg reports the participation checkbox being ticked, so
+// the install screen can offer the install-wide Backups overlay inline when
+// no Backup Repo is configured yet.
+type InstallBackupToggledMsg struct{}
+
 type InstallHostnameForm struct {
-	form  Form
-	app   catalog.App
-	title string
+	form        Form
+	app         catalog.App
+	title       string
+	customImage bool
 }
 
-func NewInstallHostnameForm(app catalog.App, title string, tailscaleEnabled bool) InstallHostnameForm {
+// NewInstallHostnameForm builds the install form: exposure and host for every
+// app, plus the backup participation checkbox. A custom image also asks the
+// data path and - unconditionally, backups or not - the health check path:
+// verifyHTTP's destructive default must never apply to an app that answers
+// elsewhere. Catalog apps carry both in their Profile already.
+func NewInstallHostnameForm(app catalog.App, title string, tailscaleEnabled, customImage bool) InstallHostnameForm {
 	appName := app.Profile.AppName(app.ImageRef)
 
 	exposureField := NewExposureRadioField()
@@ -30,21 +43,54 @@ func NewInstallHostnameForm(app catalog.App, title string, tailscaleEnabled bool
 		hostField.SetValue(exposureHostSuggestion(exposureAt(selected), appName))
 	})
 
+	autoBackupField := NewCheckboxField("Include this app in backups", false)
+	autoBackupField.OnToggle(func(checked bool) tea.Cmd {
+		if !checked {
+			return nil
+		}
+		return func() tea.Msg { return InstallBackupToggledMsg{} }
+	})
+
+	items := []FormItem{
+		{Key: "exposure", Label: "Exposure", Field: exposureField},
+		{Key: "host", Label: "Host", Field: hostField, Required: true},
+	}
+	if customImage {
+		dataPathField := NewTextField("/data")
+		healthPathField := NewTextField(docker.DefaultHealthCheckPath)
+		items = append(items,
+			FormItem{Key: "data-path", Label: "Data path", Field: dataPathField},
+			FormItem{Key: "health-path", Label: "Health check path", Field: healthPathField},
+		)
+	}
+	items = append(items, FormItem{Key: "auto-backup", Label: "Backups", Field: autoBackupField})
+
 	m := InstallHostnameForm{
-		form: NewForm("Install",
-			FormItem{Key: "exposure", Label: "Exposure", Field: exposureField},
-			FormItem{Key: "host", Label: "Host", Field: hostField, Required: true},
-		),
-		app:   app,
-		title: title,
+		form:        NewForm("Install", items...),
+		app:         app,
+		title:       title,
+		customImage: customImage,
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
+		submitted := app
+		autoBackup := f.CheckboxField("auto-backup").Checked()
+		if customImage {
+			submitted.Profile.DataPath = strings.TrimSpace(f.TextField("data-path").Value())
+			submitted.Profile.HealthPath = strings.TrimSpace(f.TextField("health-path").Value())
+			// A wrong data path archives an empty directory, which is worse
+			// than no backup because it looks like one.
+			if autoBackup && submitted.Profile.DataPath == "" {
+				f.SetError("data-path", "A data path is required to back up a custom image")
+				return nil
+			}
+		}
 		return func() tea.Msg {
 			return InstallFormSubmitMsg{
-				App:      app,
-				Hostname: f.TextField("host").Value(),
-				Exposure: exposureAt(f.RadioField("exposure").Selected()),
+				App:        submitted,
+				Hostname:   f.TextField("host").Value(),
+				Exposure:   exposureAt(f.RadioField("exposure").Selected()),
+				AutoBackup: autoBackup,
 			}
 		}
 	})

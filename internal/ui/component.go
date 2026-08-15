@@ -21,6 +21,14 @@ type Busy interface {
 	Busy() bool
 }
 
+// SecretDisplayer is implemented by a Component whose current frame may show
+// a secret. While ShowingSecret is true, App turns terminal mouse tracking
+// off so native selection works and the secret can be copied by selecting it;
+// a screen that doesn't implement it never shows one.
+type SecretDisplayer interface {
+	ShowingSecret() bool
+}
+
 // MouseEvent is dispatched to sub-components after the root App resolves
 // mouse coordinates against the mouse tracker's zone map.
 type MouseEvent struct {

@@ -187,14 +187,14 @@ func runCLI(args ...string) error {
 	return command.NewRootCommand().ExecuteArgs(args...)
 }
 
-// unmarshalCLI runs a CLI command capturing os.Stdout and unmarshals the
-// output, proving it is valid JSON as any consumer like jq would see it.
-func unmarshalCLI(t *testing.T, v any, args ...string) {
-	t.Helper()
-
+// captureCLIOutput runs a CLI command capturing what it prints to os.Stdout,
+// returning the output alongside the command's error.
+func captureCLIOutput(args ...string) (string, error) {
 	orig := os.Stdout
 	r, w, err := os.Pipe()
-	require.NoError(t, err)
+	if err != nil {
+		return "", err
+	}
 	os.Stdout = w
 	defer func() { os.Stdout = orig }()
 
@@ -207,8 +207,15 @@ func unmarshalCLI(t *testing.T, v any, args ...string) {
 
 	runErr := runCLI(args...)
 	w.Close()
-	out := <-outCh
+	return string(<-outCh), runErr
+}
 
-	require.NoError(t, runErr)
-	require.NoError(t, json.Unmarshal(out, v), "output was: %s", out)
+// unmarshalCLI runs a CLI command capturing os.Stdout and unmarshals the
+// output, proving it is valid JSON as any consumer like jq would see it.
+func unmarshalCLI(t *testing.T, v any, args ...string) {
+	t.Helper()
+
+	out, err := captureCLIOutput(args...)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(out), v), "output was: %s", out)
 }

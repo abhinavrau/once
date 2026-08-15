@@ -30,6 +30,7 @@ var dashboardKeys = struct {
 	Logs      key.Binding
 	Details   key.Binding
 	Tailscale key.Binding
+	Backups   key.Binding
 	Quit      key.Binding
 }{
 	Up:        WithHelp(NewKeyBinding("up", "k"), "↑/k", "up"),
@@ -40,6 +41,7 @@ var dashboardKeys = struct {
 	Logs:      WithHelp(NewKeyBinding("g"), "g", "logs"),
 	Details:   WithHelp(NewKeyBinding("d"), "d", "toggle details"),
 	Tailscale: WithHelp(NewKeyBinding("t", "T"), "t", "tailscale"),
+	Backups:   WithHelp(NewKeyBinding("b", "B"), "b", "backups"),
 	Quit:      WithHelp(NewKeyBinding("esc"), "esc", "quit"),
 }
 
@@ -191,6 +193,12 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			return m, tea.Batch(m.overlay.Init(), cmd)
 		}
+		if key.Matches(msg, dashboardKeys.Backups) {
+			m.overlay = NewBackupsForm(m.namespace)
+			var cmd tea.Cmd
+			m.overlay, cmd = m.overlay.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			return m, tea.Batch(m.overlay.Init(), cmd)
+		}
 		if key.Matches(msg, dashboardKeys.Details) && len(m.apps) > 0 {
 			dashboardShowDetails = !dashboardShowDetails
 			m.updateViewportSize()
@@ -202,6 +210,9 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		m.overlay = nil
 
 	case TailscaleFormCloseMsg:
+		m.overlay = nil
+
+	case BackupsFormCloseMsg:
 		m.overlay = nil
 
 	case SettingsMenuSelectMsg:
@@ -327,16 +338,23 @@ func (m Dashboard) View() string {
 	return content
 }
 
+// ShowingSecret propagates the overlay's mouse-tracking opt-out (the custody
+// moment inside the Backups overlay shows the repo password).
+func (m Dashboard) ShowingSecret() bool {
+	s, ok := m.overlay.(SecretDisplayer)
+	return ok && s.ShowingSecret()
+}
+
 // Private
 
 func (m Dashboard) helpBindings() []key.Binding {
 	if len(m.apps) > 0 {
 		return []key.Binding{
 			dashboardKeys.Up, dashboardKeys.Down, dashboardKeys.Actions,
-			dashboardKeys.Settings, dashboardKeys.Logs, dashboardKeys.Details, dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Quit,
+			dashboardKeys.Settings, dashboardKeys.Logs, dashboardKeys.Details, dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Backups, dashboardKeys.Quit,
 		}
 	}
-	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Quit}
+	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Backups, dashboardKeys.Quit}
 }
 
 // tailnetURL is the app's service URL: computed from the stored Magic DNS

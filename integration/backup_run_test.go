@@ -198,10 +198,12 @@ func TestBackupRunSnapshotsIntoOneRetentionGroup(t *testing.T) {
 	assert.Len(t, groups[0].Snapshots, 2)
 }
 
-// Enabling backups persists BackupRepoSettings on the proxy label through a
-// real proxy roll; disabling withdraws only Enabled, keeping the password.
+// Enabling backups runs the validation probe (initializing the repo and
+// leaving no snapshot behind), prints the no-TTY banner without prompting,
+// and persists BackupRepoSettings on the proxy label through a real proxy
+// roll; disabling withdraws only Enabled, keeping the password.
 func TestBackupEnableDisableCLIPersistsSettings(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
 	nsName := "once-backup-enable-test"
@@ -213,6 +215,7 @@ func TestBackupEnableDisableCLIPersistsSettings(t *testing.T) {
 	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
 
 	repoDir := filepath.Join(t.TempDir(), "backups")
+	t.Cleanup(func() { chownToTestUser(t, repoDir) })
 	require.NoError(t, runCLI("-n", nsName, "backup", "enable", "--local-path", repoDir))
 
 	restored, err := docker.RestoreNamespace(ctx, nsName)
@@ -222,6 +225,10 @@ func TestBackupEnableDisableCLIPersistsSettings(t *testing.T) {
 	assert.Equal(t, repoDir, cfg.LocalPath)
 	assert.Regexp(t, `^[A-Z2-7]{32}$`, cfg.Password)
 
+	// The probe initialized the repo and forgot its own snapshot.
+	assert.FileExists(t, filepath.Join(repoDir, "config"), "the probe initializes the repo")
+	assert.Empty(t, resticSnapshotGroups(t, ctx, repoDir, cfg.Password), "the probe leaves no snapshot behind")
+
 	require.NoError(t, runCLI("-n", nsName, "backup", "disable"))
 
 	restored, err = docker.RestoreNamespace(ctx, nsName)
@@ -229,6 +236,65 @@ func TestBackupEnableDisableCLIPersistsSettings(t *testing.T) {
 	disabled := restored.BackupRepoSettings()
 	assert.False(t, disabled.Enabled)
 	assert.Equal(t, cfg.Password, disabled.Password, "disable keeps the password - re-enabling must not mint a new one")
+}
+
+// A failed probe persists everything including the password, withholds only
+// Enabled, and surfaces in status with restic's error; the retry reuses the
+// persisted password, never regenerating it. The failure is a local repo
+// initialized under a different password: restic's wrong-password exit fails
+// fast, with no backend retry backoff.
+func TestBackupEnableProbeFailureWithholdsEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+
+	nsName := "once-backup-probe-test"
+	ns, err := docker.NewNamespace(nsName)
+	require.NoError(t, err)
+	defer ns.Teardown(ctx, true)
+
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+
+	foreignRepo := filepath.Join(t.TempDir(), "foreign")
+	require.NoError(t, os.MkdirAll(foreignRepo, 0o755))
+	t.Cleanup(func() { chownToTestUser(t, foreignRepo) })
+	runResticInTest(t, ctx, foreignRepo, "not-the-generated-password", "init")
+
+	err = runCLI("-n", nsName, "backup", "enable", "--local-path", foreignRepo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrong password", "the restic error is reported verbatim")
+
+	restored, err := docker.RestoreNamespace(ctx, nsName)
+	require.NoError(t, err)
+	cfg := restored.BackupRepoSettings()
+	assert.False(t, cfg.Enabled, "Enabled is withheld on probe failure")
+	assert.Equal(t, foreignRepo, cfg.LocalPath)
+	require.Regexp(t, `^[A-Z2-7]{32}$`, cfg.Password, "the password persists so a retry reuses it")
+
+	state, err := restored.LoadState(ctx)
+	require.NoError(t, err)
+	probe := state.LastProbeResult()
+	require.NotNil(t, probe)
+	assert.NotEmpty(t, probe.Error)
+
+	status, err := captureCLIOutput("-n", nsName, "backup", "status")
+	require.NoError(t, err)
+	assert.Contains(t, status, "configured but not enabled")
+	assert.Contains(t, status, "Last validation: failed")
+
+	// Retry against a fresh path: the persisted password is reused - the
+	// repo it initializes now is openable on the next enable - and only now
+	// does Enabled flip.
+	freshRepo := filepath.Join(t.TempDir(), "backups")
+	t.Cleanup(func() { chownToTestUser(t, freshRepo) })
+	require.NoError(t, runCLI("-n", nsName, "backup", "enable", "--local-path", freshRepo))
+
+	restored, err = docker.RestoreNamespace(ctx, nsName)
+	require.NoError(t, err)
+	enabled := restored.BackupRepoSettings()
+	assert.True(t, enabled.Enabled)
+	assert.Equal(t, freshRepo, enabled.LocalPath)
+	assert.Equal(t, cfg.Password, enabled.Password, "retry reuses the persisted password")
 }
 
 // The flock is honoured: a manual export during a run exits non-zero instead

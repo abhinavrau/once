@@ -40,21 +40,23 @@ type InstallActivity struct {
 	app           catalog.App
 	hostname      string
 	exposure      docker.Exposure
+	autoBackup    bool
 	width, height int
 	stage         installStage
 	progress      Progress
 	stream        *progressStream
 }
 
-func NewInstallActivity(ns *docker.Namespace, app catalog.App, hostname string, exposure docker.Exposure) *InstallActivity {
+func NewInstallActivity(ns *docker.Namespace, app catalog.App, hostname string, exposure docker.Exposure, autoBackup bool) *InstallActivity {
 	return &InstallActivity{
-		namespace: ns,
-		app:       app,
-		hostname:  hostname,
-		exposure:  exposure,
-		stage:     stagePreparing,
-		progress:  NewProgress(0, Colors.Primary),
-		stream:    newProgressStream(),
+		namespace:  ns,
+		app:        app,
+		hostname:   hostname,
+		exposure:   exposure,
+		autoBackup: autoBackup,
+		stage:      stagePreparing,
+		progress:   NewProgress(0, Colors.Primary),
+		stream:     newProgressStream(),
 	}
 }
 
@@ -121,7 +123,7 @@ func (m *InstallActivity) runInstall(ctx context.Context, progress docker.Deploy
 		}
 	}()
 
-	app, warnings, err := m.namespace.Deploy(ctx, installSettings(m.app, m.hostname, m.exposure), progress)
+	app, warnings, err := m.namespace.Deploy(ctx, installSettings(m.app, m.hostname, m.exposure, m.autoBackup), progress)
 	if err != nil {
 		return installDoneMsg{err: err}
 	}
@@ -147,11 +149,12 @@ func installStageFor(stage docker.DeployStage, current installStage) installStag
 // installSettings builds a freshly installed app's settings from the shared
 // defaults, so TUI installs and flagless CLI deploys start life identically.
 // The deploy spine assigns the app's unique name.
-func installSettings(app catalog.App, host string, exposure docker.Exposure) docker.ApplicationSettings {
+func installSettings(app catalog.App, host string, exposure docker.Exposure, autoBackup bool) docker.ApplicationSettings {
 	s := docker.DefaultApplicationSettings()
 	s.Image = app.ImageRef
 	s.Host = host
 	s.Exposure = exposure
 	s.Profile = app.Profile
+	s.Backup.AutoBackup = autoBackup
 	return s
 }
