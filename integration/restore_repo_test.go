@@ -183,8 +183,6 @@ func TestRestoreVaultwardenFromRepo(t *testing.T) {
 
 	// Clear the host and restore the older snapshot in its place.
 	require.NoError(t, dest.Application(restored.Settings.Name).Remove(ctx, true))
-	dest, err = docker.RestoreNamespace(ctx, destName)
-	require.NoError(t, err)
 
 	out, err = captureCLIOutput("-n", destName, "restore", appName, "--repo", offsiteRepo, "--snapshot", olderID)
 	require.NoError(t, err)
