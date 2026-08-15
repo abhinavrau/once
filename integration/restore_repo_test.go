@@ -161,8 +161,8 @@ func TestRestoreVaultwardenFromRepo(t *testing.T) {
 	assert.Contains(t, out, "on host "+sourceName, "the pick names the install that is gone")
 	assert.Contains(t, out, "image "+entry.ImageRef)
 	assert.Regexp(t, `Restored vaultwarden-\w+ from snapshot `+newerID+` \(\d{4}-\d{2}-\d{2}, `+regexp.QuoteMeta(entry.ImageRef)+`\)`, out)
-	assert.Contains(t, out, "Run `once backup enable --offsite-url "+offsiteRepo+"`",
-		"with no terminal to ask on, the resume-backups prompt becomes its one-liner")
+	assert.Contains(t, out, "Run `RESTIC_PASSWORD=<the password you just used> once backup enable --offsite-url "+offsiteRepo+"`",
+		"with no terminal to ask on, the resume-backups prompt becomes a one-liner that names the password variable - without it, enable would mint a password it cannot open this repo with")
 
 	dest, err = docker.RestoreNamespace(ctx, destName)
 	require.NoError(t, err)
