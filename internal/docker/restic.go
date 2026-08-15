@@ -137,8 +137,14 @@ func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, args ...stri
 	}
 
 	mounts := []mount.Mount{
-		{Type: mount.TypeBind, Source: repo.stagingDir, Target: resticStagingMount, ReadOnly: !repo.stagingWritable},
 		{Type: mount.TypeVolume, Source: n.resticCacheVolume(), Target: resticCacheMount},
+	}
+	// Only commands that carry an archive mount the Staging Directory. A
+	// question about a repo must not require one to exist: on a fresh host
+	// nothing has created it, and Docker refuses a missing bind source with an
+	// error naming a path the user never typed.
+	if repo.stagingDir != "" {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: repo.stagingDir, Target: resticStagingMount, ReadOnly: !repo.stagingWritable})
 	}
 	if repo.localRepoDir != "" {
 		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: repo.localRepoDir, Target: resticRepoMount})

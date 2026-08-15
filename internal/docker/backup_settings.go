@@ -9,8 +9,9 @@ import (
 )
 
 // DefaultBackupLocalPath is where the local Backup Repo lives unless the user
-// points it elsewhere (typically at a second disk).
-const DefaultBackupLocalPath = "/var/lib/once/backups"
+// points it elsewhere (typically at a second disk). A var so tests can point
+// it at a writable location, as with BackupLockPath.
+var DefaultBackupLocalPath = "/var/lib/once/backups"
 
 // The names per-repo results are recorded under - in State.LastCheck, and in
 // the log lines and status output that report on one repo rather than one app.

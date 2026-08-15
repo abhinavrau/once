@@ -131,6 +131,12 @@ func (s RepoSnapshots) Find(name, id string) (RepoSnapshot, bool) {
 // namespace, so scoping the question to this host would answer "empty" to the
 // person who needs it most.
 func (n *Namespace) ListRepoSnapshots(ctx context.Context, repo RestoreRepo) (RepoSnapshots, error) {
+	if err := checkRepoReachable(repo.URL); err != nil {
+		return nil, err
+	}
+
+	// A question needs no Staging Directory, and a fresh host has none.
+	repo.StagingDir = ""
 	res, err := n.runRestic(ctx, restoreResticRepo(repo), resticRepoSnapshotsArgs()...)
 	if err != nil {
 		return nil, err
@@ -157,6 +163,10 @@ func (n *Namespace) ListRepoSnapshots(ctx context.Context, repo RestoreRepo) (Re
 // It takes the same host flock a Backup Run takes, and applies the same
 // free-disk rule against the size the snapshot itself records.
 func (n *Namespace) RestoreFromSnapshot(ctx context.Context, repo RestoreRepo, snapshot RepoSnapshot) (*Application, error) {
+	if err := checkRepoReachable(repo.URL); err != nil {
+		return nil, err
+	}
+
 	lock, err := system.TryLock(BackupLockPath)
 	if errors.Is(err, system.ErrLocked) {
 		return nil, ErrBackupInProgress
@@ -224,6 +234,21 @@ func (n *Namespace) ResumeBackupsAfterRestore(ctx context.Context, cfg BackupRep
 }
 
 // Helpers
+
+// checkRepoReachable answers the one question Docker would otherwise answer
+// badly: a repository that is a filesystem path has to exist before it can be
+// bind-mounted, and a missing bind source comes back as a daemon error naming
+// an in-container path the user never typed.
+func checkRepoReachable(url string) error {
+	dir := offsiteDirFromURL(url)
+	if dir == "" {
+		return nil
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("no backup repository at %s", url)
+	}
+	return nil
+}
 
 // restoreResticRepo addresses the repo a restore reads. A filesystem path is
 // bind-mounted and addressed by its in-container path, exactly as an offsite
