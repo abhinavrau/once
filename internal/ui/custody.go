@@ -104,11 +104,11 @@ var custodyKeys = struct {
 	Continue:     WithHelp(NewKeyBinding("enter"), "enter", "continue"),
 }
 
-// CustodyResultMsg reports the flow's verdict the moment it is decided: the
-// gate passed, or the skip was confirmed. The parent flips Enabled here.
-type CustodyResultMsg struct{ Confirmed bool }
-
-// CustodyClosedMsg reports that the user dismissed the final screen.
+// CustodyClosedMsg reports that the user dismissed the final screen, and is
+// the flow's single outcome message: Confirmed is component state set
+// synchronously when the gate passed, so no parent ever has to order two
+// concurrently-delivered messages to learn the verdict. The parent flips
+// Enabled on Confirmed.
 type CustodyClosedMsg struct{ Confirmed bool }
 
 type (
@@ -156,7 +156,7 @@ func (m Custody) Update(msg tea.Msg) (Custody, tea.Cmd) {
 	case custodyGatePassedMsg:
 		m.step = custodyStepDone
 		m.confirmed = true
-		return m, func() tea.Msg { return CustodyResultMsg{Confirmed: true} }
+		return m, nil
 
 	case custodyGateCancelMsg:
 		m.step = custodyStepSkipConfirm
@@ -240,7 +240,6 @@ func (m Custody) handleKey(msg tea.KeyPressMsg) (Custody, tea.Cmd) {
 			return m, m.gate.Init()
 		case "s":
 			m.step = custodyStepSkipped
-			return m, func() tea.Msg { return CustodyResultMsg{Confirmed: false} }
 		}
 		return m, nil
 

@@ -57,9 +57,8 @@ func TestCustodyGateNormalizesTypedPassword(t *testing.T) {
 	c := custodyAtGate(t)
 
 	c.gate.TextField("password").SetValue("abcd-efgh ijkl mnop-qrst-uvwx-yz23-4567")
-	msgs := custodySubmitGate(t, &c)
+	custodySubmitGate(t, &c)
 
-	assert.Contains(t, msgs, tea.Msg(CustodyResultMsg{Confirmed: true}))
 	assert.Contains(t, c.View(), "backups are on")
 
 	closed := custodyPressKey(t, &c, "enter")
@@ -70,10 +69,11 @@ func TestCustodyGateRejectsMismatch(t *testing.T) {
 	c := custodyAtGate(t)
 
 	c.gate.TextField("password").SetValue("wrong")
-	msgs := custodySubmitGate(t, &c)
+	custodySubmitGate(t, &c)
 
-	assert.NotContains(t, msgs, tea.Msg(CustodyResultMsg{Confirmed: true}))
 	assert.Contains(t, c.View(), "That doesn't match")
+	custodyPressKey(t, &c, "enter")
+	assert.NotContains(t, c.View(), "backups are on", "a mismatch never reaches the done screen")
 }
 
 // esc opens a loud skip confirm; skipping reports an unconfirmed result and
@@ -88,8 +88,7 @@ func TestCustodySkipHatch(t *testing.T) {
 	assert.Contains(t, c.View(), "Prove it's saved", "enter returns to the gate")
 
 	custodyPressKey(t, &c, "esc")
-	msgs := custodyPressKey(t, &c, "s")
-	assert.Contains(t, msgs, tea.Msg(CustodyResultMsg{Confirmed: false}))
+	custodyPressKey(t, &c, "s")
 	assert.Contains(t, c.View(), "NOT enabled")
 
 	closed := custodyPressKey(t, &c, "enter")

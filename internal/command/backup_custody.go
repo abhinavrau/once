@@ -37,11 +37,10 @@ func (m *custodyProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 
-	case ui.CustodyResultMsg:
-		m.confirmed = msg.Confirmed
-		return m, nil
-
 	case ui.CustodyClosedMsg:
+		// The closed message carries the verdict as component state, so no
+		// ordering between separate messages can lose a passed gate.
+		m.confirmed = msg.Confirmed
 		return m, tea.Quit
 
 	case tea.KeyPressMsg:

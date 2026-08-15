@@ -47,6 +47,7 @@ type BackupsForm struct {
 	help          Help
 	width, height int
 	running       bool
+	status        string
 	progress      Progress
 	err           error
 	custody       *Custody
@@ -100,10 +101,10 @@ func (m BackupsForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 
 	case backupsEnableSubmitMsg:
-		return m.startRunning(m.runProbe(msg.settings))
+		return m.startRunning("Validating the backup repositories...", m.runProbe(msg.settings))
 
 	case backupsDisableSubmitMsg:
-		return m.startRunning(func() tea.Msg {
+		return m.startRunning("Saving...", func() tea.Msg {
 			settings := m.namespace.BackupRepoSettings()
 			settings.Enabled = false
 			err := m.namespace.SetBackupRepoSettings(context.Background(), settings)
@@ -121,7 +122,7 @@ func (m BackupsForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if m.enabled {
 			// Custody was proven when backups were first enabled; a
 			// reconfigure only revalidates.
-			return m.startRunning(m.runEnable())
+			return m.startRunning("Enabling backups...", m.runEnable())
 		}
 		custody := NewCustody(NewRecoveryKit(msg.settings))
 		c, _ := custody.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
@@ -164,7 +165,7 @@ func (m BackupsForm) View() string {
 
 	body := m.setupView()
 	if m.running {
-		status := lipgloss.NewStyle().Foreground(Colors.Muted).Render("Validating the backup repositories...")
+		status := lipgloss.NewStyle().Foreground(Colors.Muted).Render(m.status)
 		body = lipgloss.JoinVertical(lipgloss.Center, status, "", m.progress.View())
 	}
 
@@ -176,24 +177,16 @@ func (m BackupsForm) View() string {
 // Private
 
 func (m BackupsForm) updateCustody(msg tea.Msg) (Component, tea.Cmd) {
-	switch msg := msg.(type) {
-	case CustodyResultMsg:
-		if msg.Confirmed {
-			return m, m.runEnable()
+	// The closed message alone carries the verdict (it is custody component
+	// state, not a separately racing message). Confirmed hands the overlay
+	// back to the running path: EnableBackups completes - or fails onto the
+	// form, where a retry is possible - before the overlay may close.
+	if closed, ok := msg.(CustodyClosedMsg); ok {
+		m.custody = nil
+		if !closed.Confirmed {
+			return m, func() tea.Msg { return BackupsFormCloseMsg{} }
 		}
-		return m, nil
-
-	case CustodyClosedMsg:
-		return m, func() tea.Msg { return BackupsFormCloseMsg{} }
-
-	case backupsEnabledMsg:
-		if msg.err != nil {
-			// Enabling after a passed gate failed - surface it on the form
-			// rather than behind the custody's done screen.
-			m.custody = nil
-			m.err = msg.err
-		}
-		return m, nil
+		return m.startRunning("Enabling backups...", m.runEnable())
 	}
 
 	c, cmd := m.custody.Update(msg)
@@ -202,8 +195,9 @@ func (m BackupsForm) updateCustody(msg tea.Msg) (Component, tea.Cmd) {
 }
 
 // startRunning switches to the progress view and runs cmd in the background.
-func (m BackupsForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
+func (m BackupsForm) startRunning(status string, cmd tea.Cmd) (Component, tea.Cmd) {
 	m.running = true
+	m.status = status
 	m.err = nil
 	m.progress = NewProgress(m.width, Colors.Border)
 	return m, tea.Batch(m.progress.Init(), cmd)
