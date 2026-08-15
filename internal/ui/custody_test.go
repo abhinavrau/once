@@ -29,6 +29,33 @@ func testRecoveryKit() RecoveryKit {
 	}
 }
 
+// The kit is built from the settings the enable flow has just persisted, and
+// it is everything the operator carries off the machine: lose a fact here and
+// a recovered host cannot open the repo.
+func TestNewRecoveryKitCarriesTheSettings(t *testing.T) {
+	kit := NewRecoveryKit(docker.BackupRepoSettings{
+		Enabled:    true,
+		LocalPath:  "/var/lib/once/backups",
+		OffsiteURL: "s3:s3.eu-central-1.amazonaws.com/my-bucket/once",
+		OffsiteEnv: map[string]string{"AWS_SECRET_ACCESS_KEY": "s3cr3t-value", "AWS_ACCESS_KEY_ID": "AKIA-value"},
+		Password:   "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+	})
+
+	assert.Equal(t, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", kit.Password)
+	assert.Equal(t, "/var/lib/once/backups", kit.LocalPath)
+	assert.Equal(t, "s3:s3.eu-central-1.amazonaws.com/my-bucket/once", kit.OffsiteURL)
+	assert.Equal(t, []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}, kit.CredentialNames,
+		"sorted, so two runs of the same install read alike")
+	assert.WithinDuration(t, time.Now(), kit.CreatedAt, time.Minute)
+	assert.NotEmpty(t, kit.Hostname)
+
+	text := kit.Text()
+	assert.Contains(t, text, docker.FormatRepoPassword(kit.Password))
+	assert.Contains(t, text, "/var/lib/once/backups")
+	assert.NotContains(t, text, "s3cr3t-value", "credential values stay in Once's environment; the kit names them only")
+	assert.NotContains(t, text, "AKIA-value")
+}
+
 // The reveal screen must fit the 80x24 terminal floor with a representative
 // kit - an offsite URL and two credential names.
 func TestCustodyRevealFitsTerminalFloor(t *testing.T) {

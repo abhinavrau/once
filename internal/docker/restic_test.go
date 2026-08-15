@@ -219,6 +219,84 @@ func TestReclaimResticTmpFiles(t *testing.T) {
 	assert.FileExists(t, realPack, "pack files are never touched")
 }
 
+// Stale-lock recovery is evidence-triggered: it fires on a lock failure and on
+// nothing else, clears the locks once, and retries once. Anything more eager
+// could remove another host's live lock on a shared offsite repo.
+func TestRetryOnStaleLock(t *testing.T) {
+	// recorder replays one result per call - the last repeats - and records the
+	// commands it was asked to run.
+	recorder := func(results ...resticResult) (func(...string) (resticResult, error), *[][]string) {
+		var calls [][]string
+		run := func(args ...string) (resticResult, error) {
+			calls = append(calls, args)
+			return results[min(len(calls)-1, len(results)-1)], nil
+		}
+		return run, &calls
+	}
+
+	t.Run("a command that succeeds runs once", func(t *testing.T) {
+		run, calls := recorder(resticResult{exitCode: 0})
+
+		res, err := retryOnStaleLock(run, "local", "cat", "config")
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, res.exitCode)
+		assert.Equal(t, [][]string{{"cat", "config"}}, *calls, "no unlock without the evidence of a lock failure")
+	})
+
+	t.Run("a failure that is not a lock failure", func(t *testing.T) {
+		run, calls := recorder(resticResult{exitCode: resticExitWrongPassword})
+
+		res, err := retryOnStaleLock(run, "local", "cat", "config")
+
+		require.NoError(t, err)
+		assert.Equal(t, resticExitWrongPassword, res.exitCode)
+		assert.Len(t, *calls, 1)
+	})
+
+	t.Run("a lock failure is unlocked and retried once", func(t *testing.T) {
+		run, calls := recorder(
+			resticResult{exitCode: resticExitLockFailure},
+			resticResult{exitCode: 0},
+		)
+
+		res, err := retryOnStaleLock(run, "local", "cat", "config")
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, res.exitCode)
+		assert.Equal(t, [][]string{{"cat", "config"}, {"unlock", "--remove-all"}, {"cat", "config"}}, *calls)
+	})
+
+	// The unlock clears what it can and the lock is still there on the retry:
+	// another host is holding it, which is the case the whole rule exists for.
+	t.Run("a lock that outlives the unlock is reported", func(t *testing.T) {
+		run, calls := recorder(
+			resticResult{exitCode: resticExitLockFailure},
+			resticResult{exitCode: 0},
+			resticResult{exitCode: resticExitLockFailure},
+		)
+
+		res, err := retryOnStaleLock(run, "local", "backup", "/staging/app.tar")
+
+		require.NoError(t, err)
+		assert.Equal(t, resticExitLockFailure, res.exitCode, "the caller still sees the failure it has to report")
+		assert.Len(t, *calls, 3, "one retry, never a loop against a lock that is someone else's")
+	})
+
+	t.Run("an unlock that fails surfaces its own error", func(t *testing.T) {
+		run, calls := recorder(
+			resticResult{exitCode: resticExitLockFailure},
+			resticResult{exitCode: 1, stderr: "unlock: permission denied"},
+		)
+
+		_, err := retryOnStaleLock(run, "local", "cat", "config")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unlock: permission denied")
+		assert.Len(t, *calls, 2, "the command is not retried while its locks are still there")
+	})
+}
+
 func TestResticCheckResultErrors(t *testing.T) {
 	assert.NoError(t, resticCheckError(0, `{"message_type":"summary","num_errors":0}`))
 	assert.Error(t, resticCheckError(1, `{"message_type":"summary","num_errors":2}`))

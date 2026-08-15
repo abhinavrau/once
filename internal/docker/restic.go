@@ -225,19 +225,15 @@ func (n *Namespace) runRestic(ctx context.Context, repo resticRepo, onLine func(
 // warn, and retry the command once. Never scheduled or unconditional - a
 // shared offsite repo may hold another host's live lock.
 func (n *Namespace) runResticRetryLock(ctx context.Context, repo resticRepo, onLine func(string), args ...string) (resticResult, error) {
-	res, err := n.runRestic(ctx, repo, onLine, args...)
-	if err != nil || res.exitCode != resticExitLockFailure {
-		return res, err
-	}
-
-	slog.Warn("restic repository is locked; removing stale locks and retrying once", "repository", repo.displayName)
-	if unlockRes, unlockErr := n.runRestic(ctx, repo, nil, "unlock", "--remove-all"); unlockErr != nil {
-		return res, unlockErr
-	} else if unlockRes.exitCode != 0 {
-		return res, fmt.Errorf("restic unlock failed: %s", unlockRes.failure())
-	}
-
-	return n.runRestic(ctx, repo, onLine, args...)
+	return retryOnStaleLock(func(args ...string) (resticResult, error) {
+		// The unlock leg stays silent: onLine is for the command's own
+		// progress, not recovery chatter.
+		stream := onLine
+		if len(args) > 0 && args[0] == "unlock" {
+			stream = nil
+		}
+		return n.runRestic(ctx, repo, stream, args...)
+	}, repo.displayName, args...)
 }
 
 // ensureRepo probes the repo with cat config and initializes it on exit 10.
@@ -346,6 +342,27 @@ func reportWaiting(progress DeployProgressCallback, status string) {
 	if progress != nil {
 		progress(DeployProgress{Stage: DeployStageWaiting, Status: status})
 	}
+}
+
+// retryOnStaleLock is the stale-lock policy, separated from the container that
+// carries it out: run the command, and only on the evidence of a lock failure
+// clear the repo's locks and run it once more. The recovery is never scheduled
+// and never unconditional, because a shared offsite repo may hold another
+// host's live lock - so "once, after a lock error" is the whole of the rule.
+func retryOnStaleLock(run func(args ...string) (resticResult, error), repoName string, args ...string) (resticResult, error) {
+	res, err := run(args...)
+	if err != nil || res.exitCode != resticExitLockFailure {
+		return res, err
+	}
+
+	slog.Warn("restic repository is locked; removing stale locks and retrying once", "repository", repoName)
+	if unlockRes, unlockErr := run("unlock", "--remove-all"); unlockErr != nil {
+		return res, unlockErr
+	} else if unlockRes.exitCode != 0 {
+		return res, fmt.Errorf("restic unlock failed: %s", unlockRes.failure())
+	}
+
+	return run(args...)
 }
 
 // configuredResticRepos lists the repos a Backup Run addresses, in order. A

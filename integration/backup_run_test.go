@@ -566,6 +566,28 @@ func resticSnapshotGroups(t *testing.T, ctx context.Context, repoDir, password s
 	return groups
 }
 
+// stageBackupDirs gives a test a writable home for everything a Backup Run and
+// a restore reach for outside the namespace: the host flock and the default
+// local repo both live under /var/lib/once on a real install, which the suite
+// cannot create. Returns the directory the test hangs its repos off; restic
+// writes into it as root, so it is handed back before cleanup.
+func stageBackupDirs(t *testing.T) string {
+	t.Helper()
+
+	origLock := docker.BackupLockPath
+	docker.BackupLockPath = filepath.Join(t.TempDir(), "backup.lock")
+	t.Cleanup(func() { docker.BackupLockPath = origLock })
+
+	dirs := t.TempDir()
+	t.Cleanup(func() { chownToTestUser(t, dirs) })
+
+	origDefault := docker.DefaultBackupLocalPath
+	docker.DefaultBackupLocalPath = filepath.Join(dirs, "default")
+	t.Cleanup(func() { docker.DefaultBackupLocalPath = origDefault })
+
+	return dirs
+}
+
 // chownToTestUser hands a root-owned directory tree back to the test user so
 // t.TempDir cleanup can remove it. Best effort: the dir may not exist when
 // the test failed early.
