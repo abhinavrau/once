@@ -8,7 +8,6 @@ import (
 	"io"
 	"maps"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/x/term"
@@ -271,7 +270,7 @@ func shouldOfferResume(repoURL string, cfg docker.BackupRepoSettings) bool {
 // no backend, so it carries no credentials - harvesting them would store
 // values the user never named against a repo that cannot use them.
 func restoreRepoEnv(repoURL string, cfg docker.BackupRepoSettings) map[string]string {
-	if filepath.IsAbs(strings.TrimPrefix(repoURL, "local:")) {
+	if docker.RepoOnDisk(repoURL) {
 		return nil
 	}
 

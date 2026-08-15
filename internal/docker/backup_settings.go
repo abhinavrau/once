@@ -90,6 +90,13 @@ func ValidateOffsiteURL(url string) error {
 	return ErrOffsiteURLInvalid
 }
 
+// RepoOnDisk reports whether a repository is a filesystem path Once mounts -
+// a second disk, a network mount - rather than a backend it reaches over the
+// network and hands credentials to.
+func RepoOnDisk(url string) bool {
+	return offsiteDirFromURL(url) != ""
+}
+
 // ValidateRepoURL accepts a repository Once can actually address: a filesystem
 // path it can bind-mount, or anything naming a restic backend by scheme. A
 // relative path is the one that has to be refused loudly - restic would read
