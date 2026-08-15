@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -226,56 +225,11 @@ func (d *backupDisableCommand) run(ctx context.Context, ns *docker.Namespace, cm
 }
 
 func (s *backupStatusCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	settings := ns.BackupRepoSettings()
-	if !settings.Configured() {
-		fmt.Println("Backups are not configured. Run `once backup enable` to set them up.")
-		return nil
-	}
-
-	state, err := ns.LoadState(ctx)
+	status, err := ns.BackupStatus(ctx)
 	if err != nil {
-		return fmt.Errorf("loading state: %w", err)
+		return err
 	}
-
-	if settings.Enabled {
-		fmt.Println("Backups: enabled")
-	} else {
-		fmt.Println("Backups: configured but not enabled")
-		if probe := state.LastProbeResult(); probe != nil && probe.Error != "" {
-			fmt.Printf("Last validation: %s\n", describeOperationResult(probe))
-		}
-		fmt.Println("Run `once backup enable` to finish enabling backups.")
-	}
-	fmt.Printf("Local repository: %s\n", settings.LocalPath)
-	if ns.BackupOnDataDevice(ctx) {
-		fmt.Println("Warning: the local repository is on the same disk as your application data; an offsite copy is the only protection if that disk fails.")
-	}
-	if settings.OffsiteURL != "" {
-		fmt.Printf("Offsite repository: %s\n", settings.OffsiteURL)
-	}
-
-	for _, app := range ns.Applications() {
-		name := app.Settings.Name
-		if !app.Settings.Backup.AutoBackup {
-			fmt.Printf("  %s: not included in backups\n", name)
-			continue
-		}
-		line := fmt.Sprintf("  %s: %s", name, describeOperationResult(state.AppState(name).LastBackupResult()))
-		if settings.OffsiteURL != "" {
-			// Asked of the repo, never of State: State dies with the install,
-			// and the user reading a rebuilt host's status is precisely the
-			// one who must not be told "never" about a repo full of snapshots.
-			line += "; " + describeOffsiteAge(ns.LatestOffsiteSnapshot(ctx, name))
-		}
-		fmt.Println(line)
-	}
-
-	for _, repo := range []string{docker.RepoNameLocal, docker.RepoNameOffsite} {
-		if check, ok := state.LastCheck[repo]; ok {
-			fmt.Printf("Last %s repository check: %s\n", repo, describeOperationResult(&check))
-		}
-	}
-
+	fmt.Print(renderBackupStatus(status))
 	return nil
 }
 
@@ -337,38 +291,3 @@ func printRepoPasswordBanner(kit ui.RecoveryKit) {
 	fmt.Println()
 }
 
-// describeOffsiteAge renders the staleness signal from the offsite snapshots
-// query - the raw fact, so a flaky uplink shows up somewhere even though it
-// never fails a run. Issue 17 owns how status and the dashboard word it.
-func describeOffsiteAge(latest time.Time, err error) string {
-	switch {
-	case err != nil:
-		return "offsite copy age unknown: " + docker.ErrorMessage(err)
-	case latest.IsZero():
-		return "no offsite copy yet"
-	default:
-		return "offsite copy is " + describeAge(time.Since(latest)) + " old"
-	}
-}
-
-func describeAge(d time.Duration) string {
-	switch {
-	case d < time.Hour:
-		return "less than an hour"
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%d hours", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%d days", int(d.Hours()/24))
-	}
-}
-
-func describeOperationResult(r *docker.OperationResult) string {
-	if r == nil {
-		return "never backed up"
-	}
-	when := r.At.Format("2006-01-02 15:04")
-	if r.Error != "" {
-		return fmt.Sprintf("failed at %s: %s", when, r.Error)
-	}
-	return "ok at " + when
-}
