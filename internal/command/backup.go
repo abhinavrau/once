@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/basecamp/once/internal/docker"
 	"github.com/basecamp/once/internal/system"
+	"github.com/basecamp/once/internal/ui"
 )
 
 type backupCommand struct {
@@ -36,8 +38,11 @@ func newBackupCommand() *backupCommand {
 }
 
 type backupEnableCommand struct {
-	cmd       *cobra.Command
-	localPath string
+	cmd              *cobra.Command
+	localPath        string
+	offsiteURL       string
+	offsiteEnv       []string
+	passwordDelivery string
 }
 
 func newBackupEnableCommand() *backupEnableCommand {
@@ -49,6 +54,9 @@ func newBackupEnableCommand() *backupEnableCommand {
 		RunE:  WithNamespace(e.run),
 	}
 	e.cmd.Flags().StringVar(&e.localPath, "local-path", docker.DefaultBackupLocalPath, "path for the local backup repository")
+	e.cmd.Flags().StringVar(&e.offsiteURL, "offsite-url", "", "restic repository URL for the offsite copy (empty disables the offsite leg)")
+	e.cmd.Flags().StringSliceVar(&e.offsiteEnv, "offsite-env", nil, "names of environment variables holding the offsite backend credentials; values are read from the environment, never the command line")
+	e.cmd.Flags().StringVar(&e.passwordDelivery, "password-delivery", "", "how to take custody of the repository password without being asked (screen)")
 	return e
 }
 
@@ -117,32 +125,89 @@ func (b *backupCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 	return nil
 }
 
+// run is the enable sequence: generate password -> validation probe ->
+// custody flow -> Enabled = true. The probe needs the password (it inits the
+// repos with it); the custody ritual is never demanded for a configuration
+// that then fails its probe. On probe failure everything persists, password
+// included, with only Enabled withheld.
 func (e *backupEnableCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-	if !filepath.IsAbs(e.localPath) {
-		return docker.ErrBackupPathRelative
+	if err := validatePasswordDelivery(e.passwordDelivery); err != nil {
+		return err
 	}
 
+	settings, err := e.collectSettings(ns, cmd)
+	if err != nil {
+		return err
+	}
+	enabledBefore := ns.BackupRepoSettings().Enabled
+
+	// The probe error comes back verbatim from restic; the settings and the
+	// password are already persisted so a retry reuses them.
+	if err := runWithProgress("Validating backup repositories", func(docker.DeployProgressCallback) error {
+		return ns.ConfigureBackups(ctx, settings)
+	}); err != nil {
+		return err
+	}
+
+	if !enabledBefore {
+		if isTerminal() {
+			confirmed, err := runCustodyFlow(ui.NewRecoveryKit(settings))
+			if err != nil {
+				return err
+			}
+			if !confirmed {
+				fmt.Println("Backups are NOT enabled. The password and settings are saved; run `once backup enable` to confirm the password and turn them on.")
+				return nil
+			}
+		} else {
+			// No TTY: the banner is the custody fallback - print, no gate,
+			// and never hang a scripted run on a prompt.
+			printRepoPasswordBanner(ui.NewRecoveryKit(settings))
+		}
+	}
+
+	if err := ns.EnableBackups(ctx); err != nil {
+		return fmt.Errorf("enabling backups: %w", err)
+	}
+	fmt.Printf("Backups enabled. Local repository: %s\n", settings.LocalPath)
+	if settings.OffsiteURL != "" {
+		fmt.Printf("Offsite repository: %s\n", settings.OffsiteURL)
+	}
+	return nil
+}
+
+// collectSettings merges the flags over the stored settings: an untouched
+// flag keeps what is configured, and the password is reused, never
+// regenerated - a retry after a failed probe or a skipped custody must hand
+// over the same password the repos were initialized with.
+func (e *backupEnableCommand) collectSettings(ns *docker.Namespace, cmd *cobra.Command) (docker.BackupRepoSettings, error) {
 	settings := ns.BackupRepoSettings()
-	newPassword := settings.Password == ""
-	if newPassword {
+
+	if cmd.Flags().Changed("local-path") || settings.LocalPath == "" {
+		settings.LocalPath = e.localPath
+	}
+	if !filepath.IsAbs(settings.LocalPath) {
+		return settings, docker.ErrBackupPathRelative
+	}
+	if cmd.Flags().Changed("offsite-url") {
+		settings.OffsiteURL = e.offsiteURL
+	}
+	if cmd.Flags().Changed("offsite-env") {
+		env, err := captureOffsiteEnv(e.offsiteEnv)
+		if err != nil {
+			return settings, err
+		}
+		settings.OffsiteEnv = env
+	}
+
+	if settings.Password == "" {
 		password, err := docker.GenerateRepoPassword()
 		if err != nil {
-			return fmt.Errorf("generating repository password: %w", err)
+			return settings, fmt.Errorf("generating repository password: %w", err)
 		}
 		settings.Password = password
 	}
-	settings.LocalPath = e.localPath
-	settings.Enabled = true
-
-	if err := ns.SetBackupRepoSettings(ctx, settings); err != nil {
-		return fmt.Errorf("saving backup settings: %w", err)
-	}
-
-	fmt.Printf("Backups enabled. Local repository: %s\n", settings.LocalPath)
-	if newPassword {
-		printRepoPasswordBanner(settings)
-	}
-	return nil
+	return settings, nil
 }
 
 func (d *backupDisableCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
@@ -168,16 +233,26 @@ func (s *backupStatusCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 		return nil
 	}
 
+	state, err := ns.LoadState(ctx)
+	if err != nil {
+		return fmt.Errorf("loading state: %w", err)
+	}
+
 	if settings.Enabled {
 		fmt.Println("Backups: enabled")
 	} else {
 		fmt.Println("Backups: configured but not enabled")
+		if probe := state.LastProbeResult(); probe != nil && probe.Error != "" {
+			fmt.Printf("Last validation: %s\n", describeOperationResult(probe))
+		}
+		fmt.Println("Run `once backup enable` to finish enabling backups.")
 	}
 	fmt.Printf("Local repository: %s\n", settings.LocalPath)
-
-	state, err := ns.LoadState(ctx)
-	if err != nil {
-		return fmt.Errorf("loading state: %w", err)
+	if ns.BackupOnDataDevice(ctx) {
+		fmt.Println("Warning: the local repository is on the same disk as your application data; an offsite copy is the only protection if that disk fails.")
+	}
+	if settings.OffsiteURL != "" {
+		fmt.Printf("Offsite repository: %s\n", settings.OffsiteURL)
 	}
 
 	for _, app := range ns.Applications() {
@@ -198,33 +273,61 @@ func (s *backupStatusCommand) run(ctx context.Context, ns *docker.Namespace, cmd
 
 // Helpers
 
-// printRepoPasswordBanner is the no-TTY custody fallback: it prints the
-// password loudly, once. The interactive custody flow (type-it-back gate, QR
-// delivery) builds on top of this and never replaces it - scripted enables
-// must keep working.
-func printRepoPasswordBanner(settings docker.BackupRepoSettings) {
-	line := strings.Repeat("=", 64)
-	fmt.Println()
-	fmt.Println(line)
-	fmt.Println("  BACKUP REPOSITORY PASSWORD - shown once, never recoverable")
-	fmt.Println()
-	fmt.Printf("      %s\n", formatRepoPassword(settings.Password))
-	fmt.Println()
-	fmt.Println("  Store it somewhere safe now (a password manager, printed).")
-	fmt.Println("  Without it, no backup made to this repository can ever be")
-	fmt.Println("  restored - not by you, and not by Once.")
-	fmt.Println(line)
-	fmt.Println()
+// validatePasswordDelivery gates the --password-delivery flag: "screen" is
+// the only delivery that ships today; "qr" arrives with the phone handoff.
+func validatePasswordDelivery(delivery string) error {
+	switch delivery {
+	case "", "screen":
+		return nil
+	case "qr":
+		return errors.New("--password-delivery=qr is not available yet; use screen")
+	default:
+		return fmt.Errorf("unknown password delivery %q (supported: screen)", delivery)
+	}
 }
 
-// formatRepoPassword groups the password for reading; separators are cosmetic
-// and stripped on entry.
-func formatRepoPassword(p string) string {
-	var groups []string
-	for i := 0; i < len(p); i += 4 {
-		groups = append(groups, p[i:min(i+4, len(p))])
+// captureOffsiteEnv reads the named variables from Once's own environment:
+// names are not secrets, values never touch a command line (ADR-0013).
+func captureOffsiteEnv(names []string) (map[string]string, error) {
+	if len(names) == 0 {
+		return nil, nil
 	}
-	return strings.Join(groups, "-")
+	env := make(map[string]string, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		value, ok := os.LookupEnv(name)
+		if !ok || value == "" {
+			return nil, fmt.Errorf("environment variable %s is not set; --offsite-env takes names and reads the values from the environment", name)
+		}
+		env[name] = value
+	}
+	return env, nil
+}
+
+// printRepoPasswordBanner is the no-TTY custody fallback: it prints the
+// recovery kit loudly, once, and never prompts - scripted enables must keep
+// working. The interactive custody flow builds on top of this and never
+// replaces it.
+func printRepoPasswordBanner(kit ui.RecoveryKit) {
+	line := strings.Repeat("=", 68)
+	fmt.Println()
+	fmt.Println(line)
+	fmt.Println("  BACKUP PASSWORD - SHOWN ONCE, NEVER AGAIN")
+	fmt.Println()
+	for l := range strings.Lines(kit.Text()) {
+		fmt.Println("  " + strings.TrimRight(l, "\n"))
+	}
+	fmt.Println()
+	fmt.Println("  Every backup is encrypted with this password. Once cannot show")
+	fmt.Println("  it again. If this server is lost and you do not have this")
+	fmt.Println("  password, every backup is permanently unreadable.")
+	fmt.Println()
+	fmt.Println("  Save the whole block above somewhere off this machine, now.")
+	fmt.Println(line)
+	fmt.Println()
 }
 
 func describeOperationResult(r *docker.OperationResult) string {

@@ -32,7 +32,11 @@ We decided the secret arrives only through the environment:
   enable form is the interactive path, and a second no-echo implementation
   would have to negotiate the terminal with `runShowingProgress`. The value is
   whitespace-trimmed, because a client secret never contains whitespace and
-  piped values often carry a trailing newline.
+  piped values often carry a trailing newline. Amendment (backup custody
+  flow): reading a secret in stays TUI-only; handing one out reuses the
+  shared custody component under the CLI's existing sequential-program
+  pattern - a bubbletea program run to completion the way `cli_progress.go`
+  already renders progress, so no terminal negotiation ever happens.
 - The variable is read in `internal/command`, never through
   `controlSeamActive()`. It shares the `ONCE_TAILSCALE_` prefix with the hidden
   Control Seam variables, so that prefix alone no longer marks a hidden seam.
