@@ -163,7 +163,9 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	app := ui.NewApp(ns, "")
 	d := newAppDriver(t, app)
 	d.start()
-	d.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+	// The enable form with a Mode radio runs to ~46 rows; the overlay clips
+	// what does not fit, so give it room and assert the whole form rendered.
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 50})
 
 	// -- esc dismisses the overlay --
 	d.send(keyMsg("t"))
@@ -176,11 +178,17 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	// -- open the form and enable Tailscale --
 	// The tag keeps its tag:once prefill and the mode its sidecar default.
 	// Under the control seam the credentials are unused: enable skips SaaS OAuth
-	// (and with it the credential probe) and boots directly.
+	// (and with it the credential probe) and boots directly. This test exercises
+	// the Services topology's own behavior (mode host/sidecar, once-docktail),
+	// so it selects Services explicitly - nodes is the fresh-enable default and
+	// has no Mode field at all.
 	d.send(keyMsg("t"))
 	d.waitForView("Client ID", 5*time.Second)
+	d.selectRadioOption("topology", "Services")
+	require.Contains(t, d.viewContent(), "(•) Sidecar", "selecting Services should reveal the Mode field")
 	d.fillField("client-id", "unused-with-control-seam")
 	d.fillField("client-secret", "unused-with-control-seam")
+	require.Contains(t, d.viewContent(), "close", "the form's help must be visible: an overlay taller than the window is clipped")
 	d.click("submit")
 
 	// The form runs the real EnableTailscale and stays open (showing progress,

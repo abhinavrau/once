@@ -50,15 +50,13 @@ const nodesDataVolumeTarget = "/data"
 const nodesFunnelPort = 443
 
 // nodesSetupIntro is the Nodes topology's setup prose, shown before enable
-// (ticket 05 wires this into the frontends).
+// via TopologyFacts.SetupIntro (ticket 05).
 const nodesSetupIntro = `Setup, once per tailnet:
  1. Run 'once tailscale policy --topology nodes' and merge the printed
     snippet into your tailnet policy file (https://login.tailscale.com/admin/acls).
  2. In the admin console (Settings -> Trust credentials), create an OAuth
     client with write access to Auth Keys and Devices Core, tagged with
-    your tag (default tag:once).
- 3. Put the client's secret in ONCE_TAILSCALE_CLIENT_SECRET and run
-    'once tailscale enable' with --client-id.`
+    your tag (default tag:once).`
 
 var _ tailnetTopology = (*nodesTopology)(nil)
 
@@ -277,8 +275,8 @@ func (n *nodesTopology) logsHint() string {
 }
 
 // facts returns the Nodes topology's static, context-free data.
-func (n *nodesTopology) facts() topologyFacts {
-	return topologyFacts{
+func (n *nodesTopology) facts() TopologyFacts {
+	return TopologyFacts{
 		DefaultSettings: TailscaleSettings{Tag: "tag:once", Topology: TailnetTopologyNodes},
 		OAuthScopes:     []string{"auth_keys", "devices:core"},
 		PolicySnippet:   NodesPolicySnippet,

@@ -126,13 +126,23 @@ func (s TailscaleSettings) TailnetURL(appName string) string {
 	return "https://" + appName + "." + s.DomainSuffix
 }
 
-// FunnelURL builds the public URL a Funnel on the given public port serves,
-// from the stored node hostname, or "" when the node host isn't known yet.
-// Funnel is per-node: all apps share this host and differ only by port.
-// Services-topology shape only; ticket 04/05 give the Nodes topology its own
-// call path once a frontend needs to render it (nodes has no NodeHost).
-func (s TailscaleSettings) FunnelURL(port int) string {
-	if s.NodeHost == "" || port == 0 {
+// FunnelURL builds appName's public Funnel URL for the given public port, or
+// "" when port is 0 (Funnel off) or the topology-specific state it needs
+// isn't known yet. The two topologies shape this differently: Services
+// shares one Funnel host across every app (the sidecar's NodeHost, learned
+// the first time a Funnel activates, plus the app's allocated port); nodes'
+// Funnel is per-app on the app's own tailnet URL, since every app is its own
+// node and 443 is the only port it ever offers Funnel on. Frontends call
+// this directly on whatever settings the facade already handed them, rather
+// than branching on topology themselves (ticket 05).
+func (s TailscaleSettings) FunnelURL(appName string, port int) string {
+	if port == 0 {
+		return ""
+	}
+	if s.Topology == TailnetTopologyNodes {
+		return s.TailnetURL(appName)
+	}
+	if s.NodeHost == "" {
 		return ""
 	}
 	return funnelURL(s.NodeHost + ":" + strconv.Itoa(port))
@@ -304,7 +314,7 @@ func (t *Tailscale) LoadSettings(ctx context.Context) (TailscaleSettings, error)
 		return TailscaleSettings{}, errors.New("Tailscale is not enabled")
 	}
 	if settings.Topology == "" {
-		return TailscaleSettings{}, errOlderOnceSetup
+		return TailscaleSettings{}, ErrOlderOnceSetup
 	}
 	return settings, nil
 }

@@ -101,15 +101,13 @@ const (
 )
 
 // servicesSetupIntro is the Services topology's setup prose, shown before
-// enable (ticket 05 wires this into the frontends).
+// enable via TopologyFacts.SetupIntro (ticket 05).
 const servicesSetupIntro = `Setup, once per tailnet:
  1. Run 'once tailscale policy' and merge the printed snippet into your
     tailnet policy file (https://login.tailscale.com/admin/acls).
  2. In the admin console (Settings -> Trust credentials), create an OAuth
     client with write access to Auth Keys, Devices Core, and Services,
-    tagged with your tag (default tag:once).
- 3. Put the client's secret in ONCE_TAILSCALE_CLIENT_SECRET and run
-    'once tailscale enable' with --client-id.`
+    tagged with your tag (default tag:once).`
 
 // servicesTopology is the Services topology's adapter (ADR-0002 behind the
 // seam): one shared tailnet node, driven by once-docktail, advertises a
@@ -334,8 +332,8 @@ func (s *servicesTopology) logsHint() string {
 }
 
 // facts returns the Services topology's static, context-free data.
-func (s *servicesTopology) facts() topologyFacts {
-	return topologyFacts{
+func (s *servicesTopology) facts() TopologyFacts {
+	return TopologyFacts{
 		DefaultSettings: TailscaleSettings{Tag: "tag:once", Mode: TailscaleModeSidecar, Topology: TailnetTopologyServices},
 		OAuthScopes:     []string{"auth_keys", "devices:core", "services"},
 		PolicySnippet:   PolicySnippet,

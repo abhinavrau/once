@@ -1,6 +1,7 @@
 package command
 
 import (
+	"io"
 	"os"
 	"testing"
 
@@ -84,7 +85,40 @@ func TestEnableTrimsTheClientSecretEnvVar(t *testing.T) {
 func TestPolicyCommandNeedsNoDockerNamespace(t *testing.T) {
 	_, policy := tailscaleSubcommand(t, "policy")
 	require.NotNil(t, policy.Flags().Lookup("tag"))
-	assert.NotNil(t, policy.Run, "policy must not need a Docker namespace")
+	require.NotNil(t, policy.Flags().Lookup("topology"))
+	assert.NotNil(t, policy.RunE, "policy must not need a Docker namespace")
+}
+
+func TestEnableHasATopologyFlagValidatedByTheDockerPackage(t *testing.T) {
+	ts, enable := tailscaleSubcommand(t, "enable")
+
+	topology := enable.Flags().Lookup("topology")
+	require.NotNil(t, topology)
+	assert.Empty(t, topology.DefValue, "unset keeps a stored topology, or defaults a fresh enable to nodes")
+
+	require.NoError(t, enable.ParseFlags([]string{"--topology", docker.TailnetTopologyNodes}))
+	assert.Equal(t, docker.TailnetTopologyNodes, ts.topology)
+}
+
+func TestPolicyPrintsTheRequestedTopologysSnippet(t *testing.T) {
+	ts, policy := tailscaleSubcommand(t, "policy")
+	require.NoError(t, policy.Flags().Set("topology", docker.TailnetTopologyNodes))
+	require.NoError(t, policy.Flags().Set("tag", "tag:once"))
+
+	output := captureStdout(t, func() {
+		require.NoError(t, ts.policy())
+	})
+
+	assert.Contains(t, output, docker.NodesPolicySnippet("tag:once"))
+}
+
+func TestPolicyRejectsAnInvalidTopology(t *testing.T) {
+	ts, policy := tailscaleSubcommand(t, "policy")
+	require.NoError(t, policy.Flags().Set("topology", "both"))
+
+	err := ts.policy()
+
+	assert.ErrorContains(t, err, `invalid tailnet topology "both"`)
 }
 
 func TestResolvableServiceURLsSkipsRowsWithNothingToResolve(t *testing.T) {
@@ -102,6 +136,24 @@ func TestResolvableServiceURLsSkipsRowsWithNothingToResolve(t *testing.T) {
 }
 
 // Helpers
+
+// captureStdout runs fn with os.Stdout redirected, returning what it printed.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+
+	original := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = original })
+
+	fn()
+
+	require.NoError(t, w.Close())
+	out, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(out)
+}
 
 func tailscaleSubcommand(t *testing.T, name string) (*tailscaleCommand, *cobra.Command) {
 	t.Helper()
