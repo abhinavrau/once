@@ -443,19 +443,22 @@ func (t *Tailscale) ServiceStatuses(ctx context.Context, names []string) ([]Serv
 
 // Destroy removes the active topology's containers and its state volume
 // (full cleanup, used by teardown - unlike Disable, which retains state).
+// An unreadable or missing label (docktail already gone after Disable) does
+// not skip the work: it falls back to the Services topology, whose removals
+// tolerate absent targets. Skipping here leaks the sidecar state volume, and
+// the next install booting into that volume name inherits stale node keys.
 func (t *Tailscale) Destroy(ctx context.Context) error {
-	settings, found, err := t.loadStoredSettings(ctx)
+	settings, found, _ := t.loadStoredSettings(ctx)
+	name := TailnetTopologyServices
+	if found {
+		name = activeTopologyName(settings)
+	}
+	topology, err := t.topologyFor(name)
 	if err != nil {
 		return err
 	}
-	if found {
-		topology, err := t.topologyFor(activeTopologyName(settings))
-		if err != nil {
-			return err
-		}
-		if err := topology.destroy(ctx); err != nil {
-			return err
-		}
+	if err := topology.destroy(ctx); err != nil {
+		return err
 	}
 	t.Settings = nil
 	return nil

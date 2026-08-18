@@ -220,3 +220,13 @@ their tests renamed to `tailscale_services_probe_test.go`,
 `resolveTopology`, topology consts/validation, `topologyFacts`),
 `tailscale_services.go` (the Services adapter and everything Services-only
 that used to live in `tailscale.go`).
+
+**Follow-up (full-suite failure was not a flake):** the two full-suite failures
+of `TestTailscaleEnableBootsDocktailTopology` ("sidecar never joined the
+control plane") were a real regression. The seam's `Destroy` returned early
+when the stored label could not be read (docktail already removed by
+`Disable`), so `Namespace.Teardown` leaked the sidecar state volume; the next
+test that booted a sidecar into the same volume name inherited stale node keys
+and never joined its fresh headscale. `Destroy` now always destroys, falling
+back to the Services topology when the label is absent, matching the
+pre-seam unconditional cleanup.
