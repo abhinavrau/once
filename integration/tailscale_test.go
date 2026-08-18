@@ -16,7 +16,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/stretchr/testify/assert"
@@ -584,8 +583,6 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 	sidecarName := ns.Name() + "-tailscale"
 	adminName := ns.Name() + "-admin"
 	stateVolume := ns.Name() + "-tailscale-state"
-	legacyName := ns.Name() + "-tsdproxy"
-	legacyVolume := ns.Name() + "-tsdproxy-data"
 
 	_, err = cli.ContainerInspect(ctx, docktailName)
 	require.NoError(t, err, "docktail container should exist after enable")
@@ -595,16 +592,6 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 	require.NoError(t, err, "admin container should exist after boot")
 	_, err = cli.VolumeInspect(ctx, stateVolume)
 	require.NoError(t, err, "state volume should exist after enable")
-
-	// Plant pre-Docktail remnants: teardown must sweep the old-name container
-	// and volume too, and their presence must surface the upgrade warning.
-	assert.Empty(t, ns.Tailscale().LegacyTSDProxyWarning(ctx))
-	pullImage(t, ctx, cli, whoamiImage)
-	_, err = cli.ContainerCreate(ctx, &container.Config{Image: whoamiImage}, nil, nil, nil, legacyName)
-	require.NoError(t, err)
-	_, err = cli.VolumeCreate(ctx, volume.CreateOptions{Name: legacyVolume})
-	require.NoError(t, err)
-	assert.Contains(t, ns.Tailscale().LegacyTSDProxyWarning(ctx), "once tailscale enable")
 
 	require.NoError(t, ns.Teardown(ctx, true))
 
@@ -616,10 +603,6 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 	assert.True(t, errdefs.IsNotFound(err), "admin container should be gone after teardown")
 	_, err = cli.VolumeInspect(ctx, stateVolume)
 	assert.True(t, errdefs.IsNotFound(err), "state volume should be deleted by teardown")
-	_, err = cli.ContainerInspect(ctx, legacyName)
-	assert.True(t, errdefs.IsNotFound(err), "legacy tsdproxy container should be gone after teardown")
-	_, err = cli.VolumeInspect(ctx, legacyVolume)
-	assert.True(t, errdefs.IsNotFound(err), "legacy tsdproxy volume should be deleted by teardown")
 }
 
 // TestTeardownNoopWhenTailscaleNeverEnabled proves teardown is safe and

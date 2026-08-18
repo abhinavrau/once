@@ -50,10 +50,8 @@ func (f *settingsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.healthPath, "health-check-path", defaults.Profile.HealthPath, "path the application answers health checks on (default: /up)")
 	cmd.Flags().StringVar(&f.urlEnvVar, "url-env-var", defaults.Profile.URLEnvVar, "environment variable to fill with the application's URL")
 
-	// Removed flags, kept registered (hidden) so they fail with a clean-break
-	// error naming their replacement instead of cobra's "unknown flag".
-	cmd.Flags().Bool("tailscale", false, "")
-	_ = cmd.Flags().MarkHidden("tailscale")
+	// Removed flag, kept registered (hidden) so it fails with a clean-break
+	// error naming its replacement instead of cobra's "unknown flag".
 	cmd.Flags().String("backup-path", "", "")
 	_ = cmd.Flags().MarkHidden("backup-path")
 }
@@ -61,9 +59,6 @@ func (f *settingsFlags) register(cmd *cobra.Command) {
 // checkRemoved fails a command that was invoked with a removed flag, naming
 // the replacement.
 func (f *settingsFlags) checkRemoved(cmd *cobra.Command) error {
-	if cmd.Flags().Changed("tailscale") {
-		return errors.New("the --tailscale flag has been removed: use --expose tailnet instead")
-	}
 	if cmd.Flags().Changed("backup-path") {
 		return errors.New("the --backup-path flag has been removed: backups go to the shared repo now, see `once backup enable`")
 	}
