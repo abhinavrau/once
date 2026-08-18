@@ -63,6 +63,21 @@ func TestNodesAppLabelsWithFunnel(t *testing.T) {
 	assert.Equal(t, "443/https:80/http, no_autodetect, tailscale_funnel", labels["tsdproxy.port.1"])
 }
 
+func TestValidateModeTopologyCombinationRejectsModeUnderNodes(t *testing.T) {
+	err := validateModeTopologyCombination(TailscaleModeHost, TailnetTopologyNodes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mode")
+	assert.Contains(t, err.Error(), TailnetTopologyNodes)
+}
+
+func TestValidateModeTopologyCombinationAllowsEmptyModeUnderNodes(t *testing.T) {
+	assert.NoError(t, validateModeTopologyCombination("", TailnetTopologyNodes))
+}
+
+func TestValidateModeTopologyCombinationAllowsModeUnderServices(t *testing.T) {
+	assert.NoError(t, validateModeTopologyCombination(TailscaleModeSidecar, TailnetTopologyServices))
+}
+
 func TestNodesFunnelPortNeedsNoAllocation(t *testing.T) {
 	n := newNodesTopology(&Namespace{name: "once"})
 	self := &Application{Settings: ApplicationSettings{Name: "whoami"}}

@@ -187,3 +187,15 @@ func (t *Tailscale) resolveTopology(ctx context.Context, requested string) (stri
 func topologyRoutesTailnetAppsViaProxy(topology string) bool {
 	return topology == TailnetTopologyNodes
 }
+
+// validateModeTopologyCombination rejects a requested Mode against the
+// resolved nodes topology: nodes has no tailscaled of its own, so Mode
+// (host/sidecar) is a Services-only concept (ADR-0015) with nothing to
+// choose under nodes. An empty Mode is always fine - it is what every
+// nodes enable sends, since nothing ever resolves Mode for it.
+func validateModeTopologyCombination(mode, topology string) error {
+	if mode != "" && topology == TailnetTopologyNodes {
+		return fmt.Errorf("--mode does not apply under the %s topology: it has no tailscaled of its own to choose a mode for", TailnetTopologyNodes)
+	}
+	return nil
+}

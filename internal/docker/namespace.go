@@ -277,6 +277,9 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 	settings.Topology = resolvedTopology
+	if err := validateModeTopologyCombination(settings.Mode, settings.Topology); err != nil {
+		return nil, err
+	}
 	topology, err := n.tailscale.topologyFor(settings.Topology)
 	if err != nil {
 		return nil, err
