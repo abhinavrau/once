@@ -244,7 +244,7 @@ func (a *Application) EnableFunnel(ctx context.Context, expiresAt time.Time) err
 	if a.Settings.Exposure != ExposureTailnet {
 		return ErrFunnelRequiresTailnet
 	}
-	port, err := a.namespace.allocateFunnelPort(a)
+	port, err := a.namespace.Tailscale().FunnelPort(ctx, a)
 	if err != nil {
 		return err
 	}
@@ -316,9 +316,11 @@ func (a *Application) Destroy(ctx context.Context, destroyVolumes bool) error {
 // Private
 
 // validateTailnetExposure rejects a tailnet deploy that could never work:
-// the host must be a valid Magic DNS label (it is the service name), and
+// the host must be a valid Magic DNS label (it is the service/node name),
 // Tailscale must already be enabled - there is no tailnet to appear on
-// otherwise, so point at the fix instead of deploying an unreachable app.
+// otherwise - and, under the active topology, the host must clear whatever
+// else that topology requires (nodes additionally refuses a host already
+// held by another tailnet device).
 func (a *Application) validateTailnetExposure(ctx context.Context) error {
 	if a.Settings.Exposure != ExposureTailnet {
 		return nil
@@ -333,7 +335,7 @@ func (a *Application) validateTailnetExposure(ctx context.Context) error {
 	if !enabled {
 		return ErrTailscaleNotEnabled
 	}
-	return nil
+	return a.namespace.Tailscale().ValidateHost(ctx, a.Settings.Host)
 }
 
 // resolvedURL is the address the Profile's URLEnvVar is filled with: the
@@ -415,6 +417,13 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 	if err != nil {
 		return fmt.Errorf("checking tailscale: %w", err)
 	}
+	// Only tailnet-exposed apps carry tailnet labels, advertised under the
+	// Host. Off the tailnet there is no Funnel either.
+	exposedOnTailnet := tailscaleEnabled && a.Settings.Exposure == ExposureTailnet
+	tsLabels, err := a.namespace.Tailscale().AppLabels(ctx, exposedOnTailnet, a.Settings.Host, a.namespace.name, a.Settings.ActiveFunnelPort())
+	if err != nil {
+		return fmt.Errorf("resolving tailnet labels: %w", err)
+	}
 
 	env := a.Settings.BuildEnv(vol.Settings, a.resolvedURL(ctx, tailscaleEnabled))
 
@@ -429,7 +438,7 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 	}
 
 	resp, err := a.namespace.client.ContainerCreate(ctx,
-		a.containerConfig(env, tailscaleEnabled),
+		a.containerConfig(env, tsLabels),
 		hostConfig,
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
@@ -448,7 +457,7 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 		return fmt.Errorf("starting container: %w", err)
 	}
 
-	if err := a.registerRouting(ctx, resp.ID); err != nil {
+	if err := a.registerRouting(ctx, resp.ID, tailscaleEnabled); err != nil {
 		a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return err
 	}
@@ -465,12 +474,25 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 }
 
 // registerRouting puts the new container on the app's single routing path.
-// Local and public apps register a host route with the Proxy; tailnet apps are
-// advertised by Docktail via their container labels instead, so any proxy
-// route left over from a previous exposure is torn down. Exactly one path
-// exists per exposure - never both.
-func (a *Application) registerRouting(ctx context.Context, containerID string) error {
+// Local and public apps always register a host route with the Proxy. Tailnet
+// apps depend on the active topology (ADR-0015): under nodes, traffic goes
+// through the Proxy too - TSDProxy forwards to it, not the app container - so
+// the app registers a route on its own tailnet Host with TLS off (TSDProxy
+// terminates TLS); under services (or Tailscale disabled), Docktail
+// advertises the app directly and any proxy route left over from a previous
+// exposure is torn down instead. Exactly one path exists per exposure/
+// topology combination - never both.
+func (a *Application) registerRouting(ctx context.Context, containerID string, tailscaleEnabled bool) error {
 	if a.Settings.Exposure == ExposureTailnet {
+		if tailscaleEnabled {
+			settings, err := a.namespace.Tailscale().LoadSettings(ctx)
+			if err != nil {
+				return err
+			}
+			if topologyRoutesTailnetAppsViaProxy(settings.Topology) {
+				return a.registerNodesRoute(ctx, containerID)
+			}
+		}
 		if err := a.namespace.Proxy().Remove(ctx, a.Settings.Name); err != nil {
 			return fmt.Errorf("removing proxy route: %w", err)
 		}
@@ -489,6 +511,20 @@ func (a *Application) registerRouting(ctx context.Context, containerID string) e
 			return ErrAppNotStarted
 		}
 		return fmt.Errorf("registering with proxy: %w", err)
+	}
+	return nil
+}
+
+// registerNodesRoute registers the Proxy route a nodes-topology tailnet app
+// answers on: its own tailnet Host ({app}.{suffix}), TLS off since TSDProxy
+// already terminated it with the tailnet's own certificate.
+func (a *Application) registerNodesRoute(ctx context.Context, containerID string) error {
+	if err := registerNodesProxyRoute(ctx, a.namespace, a.Settings.Name, a.Settings.Host, containerID, a.Settings.Profile.HealthCheckPath()); err != nil {
+		if strings.Contains(err.Error(), "target not healthy") || strings.Contains(err.Error(), "deploy timed out") {
+			slog.Error("Application failed to start", "app", a.Settings.Name, "error", err)
+			return ErrAppNotStarted
+		}
+		return err
 	}
 	return nil
 }
@@ -551,12 +587,13 @@ func (a *Application) volumeMounts(vol *ApplicationVolume) []mount.Mount {
 	return mounts
 }
 
-func (a *Application) containerConfig(env []string, tailscaleEnabled bool) *container.Config {
+// containerConfig assembles the app container's config from its own settings
+// label plus tsLabels - the tailnet labels the facade already resolved for
+// the active topology (nil when Tailscale is disabled or the app isn't
+// tailnet-exposed).
+func (a *Application) containerConfig(env []string, tsLabels map[string]string) *container.Config {
 	labels := map[string]string{labelKey: a.Settings.Marshal()}
-	// Only tailnet-exposed apps carry docktail labels, advertised under the
-	// Host (the service name). Off the tailnet there is no Funnel either.
-	exposed := tailscaleEnabled && a.Settings.Exposure == ExposureTailnet
-	maps.Copy(labels, docktailLabels(a.Settings.Host, a.namespace.name, exposed, a.Settings.ActiveFunnelPort()))
+	maps.Copy(labels, tsLabels)
 	return &container.Config{
 		Image:  a.Settings.Image,
 		Labels: labels,

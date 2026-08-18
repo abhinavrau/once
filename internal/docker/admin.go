@@ -116,10 +116,24 @@ func (a *Admin) ensureRunning(ctx context.Context, info container.InspectRespons
 }
 
 func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
+	// once-admin is booted both by the Tailscale enable lifecycle (which
+	// exposes it as a tailnet service too) and by the recovery handoff path
+	// (which never touches Tailscale), so its tailnet labels depend on
+	// whether Tailscale actually is enabled here, not on which caller booted
+	// it.
+	tailscaleEnabled, err := a.namespace.Tailscale().Enabled(ctx)
+	if err != nil {
+		return fmt.Errorf("checking tailscale: %w", err)
+	}
+	labels, err := a.namespace.Tailscale().AppLabels(ctx, tailscaleEnabled, "once-admin", a.namespace.name, 0)
+	if err != nil {
+		return fmt.Errorf("resolving once-admin's tailnet labels: %w", err)
+	}
+
 	resp, err := a.namespace.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:  adminImage,
-			Labels: docktailLabels("once-admin", a.namespace.name, true, 0),
+			Labels: labels,
 		},
 		&container.HostConfig{
 			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyAlways},
@@ -144,6 +158,19 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 	if err := a.namespace.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("starting once-admin container: %w", err)
+	}
+
+	// Under nodes, once-admin is exposed the same way an app is: TSDProxy
+	// forwards it to the Proxy rather than the container directly, so it
+	// needs a Proxy route on its own tailnet Host too.
+	if tailscaleEnabled {
+		settings, err := a.namespace.Tailscale().LoadSettings(ctx)
+		if err == nil && topologyRoutesTailnetAppsViaProxy(settings.Topology) {
+			if err := registerNodesProxyRoute(ctx, a.namespace, "once-admin", "once-admin", resp.ID, ""); err != nil {
+				a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+				return fmt.Errorf("registering once-admin with the proxy: %w", err)
+			}
+		}
 	}
 	return nil
 }

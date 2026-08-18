@@ -124,7 +124,7 @@ func fakeHostDaemon(version string, tags ...string) *FakeTailscaleDaemon {
 	return &FakeTailscaleDaemon{StatusJSON: string(status)}
 }
 
-func preflightAgainst(api tailscaleAPI, daemon TailscaleDaemon) error {
+func preflightAgainst(api tailscaleAPI, daemon TailnetReader) error {
 	return validateHostModePreflight(context.Background(), api, daemon,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeHost})
 }

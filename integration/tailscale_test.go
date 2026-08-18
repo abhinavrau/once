@@ -253,13 +253,33 @@ func plantModelessDocktail(t *testing.T, ctx context.Context, cli *client.Client
 	require.NoError(t, err)
 }
 
+// plantTopologyLessDocktail replaces the once-docktail container with a
+// stopped stand-in carrying a label with no "topology" key at all - a
+// pre-ADR-0015 install - for the older-Once self-heal path.
+// docker.TailscaleSettings.Marshal always writes "topology" (not omitempty),
+// so the label is built by hand rather than through it.
+func plantTopologyLessDocktail(t *testing.T, ctx context.Context, cli *client.Client, name string, settings docker.TailscaleSettings) {
+	t.Helper()
+	require.NoError(t, cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}))
+	label := fmt.Sprintf(`{"clientId":%q,"clientSecret":%q,"tag":%q,"domainSuffix":%q,"mode":%q}`,
+		settings.ClientID, settings.ClientSecret, settings.Tag, settings.DomainSuffix, settings.Mode)
+	_, err := cli.ContainerCreate(ctx,
+		&container.Config{Image: whoamiImage, Labels: map[string]string{"once": label}},
+		nil, nil, nil, name)
+	require.NoError(t, err)
+}
+
 // controlSeamSettings are the TailscaleSettings used with the control seam,
 // where OAuth credentials are never exercised - EnableTailscale drops them
 // before they reach the label, so they are set here to prove exactly that.
+// Topology is explicit (ticket 03: a fresh enable otherwise defaults to
+// nodes, which has no adapter until ticket 04) so this suite keeps exercising
+// the Docktail/sidecar topology it was written for.
 func controlSeamSettings() docker.TailscaleSettings {
 	return docker.TailscaleSettings{
 		ClientID:     "unused-with-control-seam",
 		ClientSecret: "unused-with-control-seam",
+		Topology:     docker.TailnetTopologyServices,
 	}
 }
 
@@ -387,6 +407,20 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	sticky, err := cli.ContainerInspect(ctx, docktailName)
 	require.NoError(t, err)
 	assert.Equal(t, rebuilt.ID, sticky.ID, "an unset mode must keep the stored one without a rebuild")
+
+	// A stored label carrying no topology at all (a pre-ADR-0015 install)
+	// refuses every read path with the older-Once error, and self-heals on a
+	// re-enable exactly like a missing mode does - back to the topology the
+	// re-enable explicitly asked for (Services, on this branch: ticket 03
+	// ships only that adapter).
+	plantTopologyLessDocktail(t, ctx, cli, docktailName, healed)
+	_, err = ns.Tailscale().LoadSettings(ctx)
+	require.ErrorContains(t, err, "older version of Once")
+	_, err = ns.EnableTailscale(ctx, controlSeamSettings(), nil)
+	require.NoError(t, err)
+	rehealed, err := ns.Tailscale().LoadSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, docker.TailnetTopologyServices, rehealed.Topology, "the rebuilt label must record the resolved topology")
 
 	// `deploy --expose tailnet` works now that Tailscale is up: the app is
 	// advertised as a Service named from the App Name (its Host); the local
