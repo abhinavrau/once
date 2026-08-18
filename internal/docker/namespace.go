@@ -156,31 +156,6 @@ func (n *Namespace) HostInUseByAnother(host string, excludeApp string) bool {
 	return false
 }
 
-// allocateFunnelPort picks the public port for self's Funnel: the port it
-// already holds while active (a re-enable must not move a live URL), else the
-// first free one. Funnel serves one endpoint per public port per node, so a
-// port may back only one app at a time.
-func (n *Namespace) allocateFunnelPort(self *Application) (int, error) {
-	used := map[int]bool{}
-	for _, app := range n.applications {
-		if app == self {
-			continue
-		}
-		if p := app.Settings.ActiveFunnelPort(); p != 0 {
-			used[p] = true
-		}
-	}
-	if p := self.Settings.ActiveFunnelPort(); p != 0 && !used[p] {
-		return p, nil
-	}
-	for _, p := range funnelPublicPorts {
-		if !used[p] {
-			return p, nil
-		}
-	}
-	return 0, ErrFunnelPortsExhausted
-}
-
 func (n *Namespace) UniqueName(base string) (string, error) {
 	for {
 		id, err := randomID(6)
@@ -275,9 +250,16 @@ func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, pr
 // shadow a service, and lead with the --mode host notice when a fresh enable
 // defaulted to the sidecar alongside a host tailscaled.
 func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSettings, progress DeployProgressCallback) ([]string, error) {
+	if err := ValidateTailscaleTopology(settings.Topology); err != nil {
+		return nil, err
+	}
 	if err := ValidateTailscaleMode(settings.Mode); err != nil {
 		return nil, err
 	}
+	// The DNS-label shape a service/node name must have is common to every
+	// topology's naming rule, so this stays a plain check ahead of any
+	// Docker access - like the admin-daemon check below, it must fail fast
+	// without needing to resolve which topology is even active.
 	exposed := n.exposedTailscaleServices()
 	for _, name := range exposed {
 		if err := ValidateTailscaleServiceName(name); err != nil {
@@ -289,20 +271,24 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	}
 	settings.Tag = settings.normalizeTag()
 	settings = settings.suppressUnusedCredentials()
-	resolved, fresh, err := n.tailscale.resolveMode(ctx, settings.Mode)
+
+	resolvedTopology, err := n.tailscale.resolveTopology(ctx, settings.Topology)
 	if err != nil {
 		return nil, err
 	}
-	notice := hostModeNotice(settings.Mode, fresh)
-	settings.Mode = resolved
-	if settings.Mode == TailscaleModeHost {
-		if err := validateHostModePreflight(ctx, newTailscaleAPI(settings), n.tailscale.daemonFor(settings.Mode), settings); err != nil {
-			return nil, err
-		}
-	}
-	if err := validateTailscaleCredentials(ctx, settings); err != nil {
+	settings.Topology = resolvedTopology
+	topology, err := n.tailscale.topologyFor(settings.Topology)
+	if err != nil {
 		return nil, err
 	}
+
+	// probe resolves any topology-owned defaulting (e.g. Services' Mode),
+	// runs that topology's preflight, and proves its credentials.
+	settings, notice, err := topology.probe(ctx, settings)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := n.EnsureNetwork(ctx); err != nil {
 		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
@@ -317,7 +303,7 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		warnings = append(warnings, notice)
 	}
 	warnings = append(warnings, n.tailscale.ShadowWarnings(ctx, exposed)...)
-	return warnings, n.tailscale.VerifyServices(ctx, n.expectedTailscaleServices(), progress)
+	return warnings, n.tailscale.Verify(ctx, n.expectedTailscaleServices(), progress)
 }
 
 // DisableTailscale is the full disable lifecycle shared by the CLI and TUI:

@@ -244,7 +244,7 @@ func (a *Application) EnableFunnel(ctx context.Context, expiresAt time.Time) err
 	if a.Settings.Exposure != ExposureTailnet {
 		return ErrFunnelRequiresTailnet
 	}
-	port, err := a.namespace.allocateFunnelPort(a)
+	port, err := a.namespace.Tailscale().FunnelPort(ctx, a)
 	if err != nil {
 		return err
 	}
@@ -415,6 +415,13 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 	if err != nil {
 		return fmt.Errorf("checking tailscale: %w", err)
 	}
+	// Only tailnet-exposed apps carry tailnet labels, advertised under the
+	// Host. Off the tailnet there is no Funnel either.
+	exposedOnTailnet := tailscaleEnabled && a.Settings.Exposure == ExposureTailnet
+	tsLabels, err := a.namespace.Tailscale().AppLabels(ctx, exposedOnTailnet, a.Settings.Host, a.namespace.name, a.Settings.ActiveFunnelPort())
+	if err != nil {
+		return fmt.Errorf("resolving tailnet labels: %w", err)
+	}
 
 	env := a.Settings.BuildEnv(vol.Settings, a.resolvedURL(ctx, tailscaleEnabled))
 
@@ -429,7 +436,7 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 	}
 
 	resp, err := a.namespace.client.ContainerCreate(ctx,
-		a.containerConfig(env, tailscaleEnabled),
+		a.containerConfig(env, tsLabels),
 		hostConfig,
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
@@ -551,12 +558,13 @@ func (a *Application) volumeMounts(vol *ApplicationVolume) []mount.Mount {
 	return mounts
 }
 
-func (a *Application) containerConfig(env []string, tailscaleEnabled bool) *container.Config {
+// containerConfig assembles the app container's config from its own settings
+// label plus tsLabels - the tailnet labels the facade already resolved for
+// the active topology (nil when Tailscale is disabled or the app isn't
+// tailnet-exposed).
+func (a *Application) containerConfig(env []string, tsLabels map[string]string) *container.Config {
 	labels := map[string]string{labelKey: a.Settings.Marshal()}
-	// Only tailnet-exposed apps carry docktail labels, advertised under the
-	// Host (the service name). Off the tailnet there is no Funnel either.
-	exposed := tailscaleEnabled && a.Settings.Exposure == ExposureTailnet
-	maps.Copy(labels, docktailLabels(a.Settings.Host, a.namespace.name, exposed, a.Settings.ActiveFunnelPort()))
+	maps.Copy(labels, tsLabels)
 	return &container.Config{
 		Image:  a.Settings.Image,
 		Labels: labels,

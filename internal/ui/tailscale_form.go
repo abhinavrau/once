@@ -187,6 +187,9 @@ func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 			ClientSecret: msg.secret,
 			Tag:          msg.tag,
 			Mode:         msg.mode,
+			// No topology selector yet (ticket 05): pin the TUI to Services
+			// so its behavior is unchanged until then.
+			Topology: docker.TailnetTopologyServices,
 		}
 		progress := func(p docker.DeployProgress) {
 			if p.Stage == docker.DeployStageWaiting {

@@ -174,14 +174,15 @@ func TestVerifyServicesSkipsControlSeam(t *testing.T) {
 	t.Setenv(envControlURL, "http://headscale:8080")
 	t.Setenv(envAuthKey, "tskey-auth-abc")
 
-	// Services do not exist on headscale; verification must short-circuit
-	// before touching Docker or any API.
-	err := (&Tailscale{}).VerifyServices(context.Background(), []string{"whoami"}, nil)
+	// Services do not exist on headscale; the adapter's verify must
+	// short-circuit before touching Docker or any API.
+	err := (&servicesTopology{}).verify(context.Background(), TailscaleSettings{}, []string{"whoami"}, nil)
 	require.NoError(t, err)
 }
 
 func TestVerifyServicesNoExpectedServices(t *testing.T) {
-	err := (&Tailscale{}).VerifyServices(context.Background(), nil, nil)
+	// The facade's own shortcut, ahead of resolving any topology.
+	err := (&Tailscale{}).Verify(context.Background(), nil, nil)
 	require.NoError(t, err)
 }
 

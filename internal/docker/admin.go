@@ -116,10 +116,18 @@ func (a *Admin) ensureRunning(ctx context.Context, info container.InspectRespons
 }
 
 func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
+	// Boot only ever runs once Tailscale.Enable has already succeeded (the
+	// enable lifecycle boots once-admin last), so once-admin is always
+	// tailnet-exposed under whichever topology is active.
+	labels, err := a.namespace.Tailscale().AppLabels(ctx, true, "once-admin", a.namespace.name, 0)
+	if err != nil {
+		return fmt.Errorf("resolving once-admin's tailnet labels: %w", err)
+	}
+
 	resp, err := a.namespace.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:  adminImage,
-			Labels: docktailLabels("once-admin", a.namespace.name, true, 0),
+			Labels: labels,
 		},
 		&container.HostConfig{
 			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyAlways},

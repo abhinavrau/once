@@ -144,6 +144,11 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 		ClientSecret: t.clientSecret,
 		Tag:          t.tag,
 		Mode:         t.mode,
+		// No --topology flag yet (ticket 05 adds one, alongside the Nodes
+		// topology's own frontend facts): pin the CLI to Services so its
+		// behavior is unchanged until then, rather than a fresh enable
+		// silently landing on the (not yet implemented) Nodes default.
+		Topology: docker.TailnetTopologyServices,
 	}
 	var warnings []string
 	err := runShowingProgress("tailscale enable", func(progress docker.DeployProgressCallback) error {

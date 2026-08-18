@@ -81,12 +81,17 @@ func TestEnableTailscaleHostModePreflightBeforeProbeAndContainers(t *testing.T) 
 
 	ns := &Namespace{name: "test"}
 	ns.admin = NewAdmin(ns)
+	// The topology adapter is constructed (no Docker touched by that alone),
+	// but resolving *which* topology from an empty request would inspect the
+	// provider containers - so the topology is given explicitly here to keep
+	// this test's "before any Docker work" guarantee (ns.client stays nil).
+	ns.tailscale = NewTailscale(ns)
 
 	// With no host socket, --mode host must fail on the pre-flight before the
 	// credential probe (the error is the socket one, not a credentials one) and
 	// before any Docker work (a nil client would panic past that point).
 	_, err = ns.EnableTailscale(context.Background(),
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeHost}, nil)
+		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", Mode: TailscaleModeHost, Topology: TailnetTopologyServices}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), tailscaledSocketFile)
@@ -168,7 +173,7 @@ func TestAllocateFunnelPort(t *testing.T) {
 	}
 	activate := func(app *Application) int {
 		t.Helper()
-		port, err := ns.allocateFunnelPort(app)
+		port, err := (&servicesTopology{}).funnelPort(app, ns.applications)
 		require.NoError(t, err)
 		expires := time.Now().Add(time.Hour)
 		app.Settings.FunnelExpiresAt = &expires
@@ -186,10 +191,10 @@ func TestAllocateFunnelPort(t *testing.T) {
 
 	// A re-enable keeps the app's live port; a fourth concurrent funnel is
 	// rejected rather than colliding.
-	port, err := ns.allocateFunnelPort(fizzy)
+	port, err := (&servicesTopology{}).funnelPort(fizzy, ns.applications)
 	require.NoError(t, err)
 	assert.Equal(t, 8443, port)
-	_, err = ns.allocateFunnelPort(newApp("fourth"))
+	_, err = (&servicesTopology{}).funnelPort(newApp("fourth"), ns.applications)
 	assert.ErrorIs(t, err, ErrFunnelPortsExhausted)
 
 	// A pre-allocation label (funnel active, no port recorded) holds 443.
@@ -199,7 +204,7 @@ func TestAllocateFunnelPort(t *testing.T) {
 	legacy.Settings.FunnelExpiresAt = &expires
 	next := NewApplication(ns2, ApplicationSettings{Name: "next", Host: "next", Exposure: ExposureTailnet})
 	ns2.applications = append(ns2.applications, legacy, next)
-	port, err = ns2.allocateFunnelPort(next)
+	port, err = (&servicesTopology{}).funnelPort(next, ns2.applications)
 	require.NoError(t, err)
 	assert.Equal(t, 8443, port)
 }
