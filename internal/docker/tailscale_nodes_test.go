@@ -173,6 +173,27 @@ const (
 	nodesDevicePath = "/tailnet/-/devices"
 )
 
+// TestValidateNodesCredentialsOverRealHTTPMatchesTSDProxysWireFormat proves
+// probeTagPayload's byte-compatibility claim against the real transport, not
+// just the fake seam: run the probe over httptest.NewServer through the
+// production httpTailscaleAPI, and inspect the exact bytes and Content-Type
+// that reached the wire.
+func TestValidateNodesCredentialsOverRealHTTPMatchesTSDProxysWireFormat(t *testing.T) {
+	s := newAPIServer(t)
+	s.callBody = `{"id":"tskey-id","key":"tskey-secret"}`
+
+	err := validateNodesCredentials(context.Background(), s.api(), TailscaleSettings{Tag: "tag:once"})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, s.calls)
+	mint := s.calls[0]
+	assert.Equal(t, http.MethodPost, mint.method)
+	assert.Equal(t, nodesKeysPath, mint.path)
+	assert.Equal(t, probeTagPayload, mint.payload)
+	assert.Equal(t, "application/json", mint.contentType)
+	assert.Equal(t, "Bearer tskey-api-test", mint.auth)
+}
+
 func nodesProbeAPI(t *testing.T) *fakeTailscaleAPI {
 	t.Helper()
 	api := newFakeTailscaleAPI(t)
