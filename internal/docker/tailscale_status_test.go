@@ -191,7 +191,7 @@ func TestServiceStatusesSurfacesDaemonError(t *testing.T) {
 func serviceStatusesAgainst(api tailscaleAPI, daemon TailscaleDaemon, names ...string) ([]ServiceStatus, error) {
 	return serviceStatuses(context.Background(), daemon, api,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", DomainSuffix: "tail1234.ts.net"},
-		names)
+		names, testLogsHint)
 }
 
 // statusAPI is a healthy SaaS tailnet as a status run sees it: the up-front

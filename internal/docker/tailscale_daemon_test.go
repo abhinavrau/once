@@ -80,11 +80,13 @@ func TestFakeTailscaleDaemonMachineHostnames(t *testing.T) {
 }
 
 // serveJSON matches the ServeConfig shape `tailscale serve status --json`
-// emits, per docktail's parsing of the same output.
+// emits, per docktail's parsing of the same output. The node's funnel-enabled
+// endpoint proxies to the same backend as svc:writebook, which is how the
+// funnel is attributed to that app.
 const serveJSON = `{
 	"TCP": {"443": {"HTTPS": true}},
 	"Web": {
-		"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.7:80"}}}
+		"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}
 	},
 	"AllowFunnel": {"once.tail1234.ts.net:443": true},
 	"Services": {
@@ -105,39 +107,62 @@ func TestFakeTailscaleDaemonServeStatus(t *testing.T) {
 	status, err := daemon.ServeStatus(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"campfire", "writebook"}, status.Services)
-	assert.True(t, status.AllowFunnel["once.tail1234.ts.net:443"])
-	assert.False(t, status.AllowFunnel["other.tail1234.ts.net:443"])
-	assert.Equal(t, map[string]string{"http://10.0.0.7:80": "once.tail1234.ts.net:443"}, status.FunnelBackends)
+	assert.Equal(t, map[string]string{"writebook": "once.tail1234.ts.net:443"}, status.Funnels)
 }
 
-func TestFakeTailscaleDaemonServeStatusFunnelBackends(t *testing.T) {
-	backends := func(serveJSON string) map[string]string {
+func TestFakeTailscaleDaemonServeStatusFunnels(t *testing.T) {
+	funnels := func(serveJSON string) map[string]string {
 		t.Helper()
 		daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON}
 		status, err := daemon.ServeStatus(t.Context())
 		require.NoError(t, err)
-		return status.FunnelBackends
+		return status.Funnels
 	}
 
-	// A serve-only endpoint (funnel disabled or absent) contributes no backend.
-	assert.Empty(t, backends(`{
+	writebook := `"Services": {"svc:writebook": {
+		"Web": {"writebook.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}}
+	}}`
+
+	// A serve-only endpoint (funnel disabled or absent) funnels nothing.
+	assert.Empty(t, funnels(`{
 		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}},
-		"AllowFunnel": {"once.tail1234.ts.net:443": false}
-	}`))
-	assert.Empty(t, backends(`{
-		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}}
-	}`))
+		"AllowFunnel": {"once.tail1234.ts.net:443": false},` + writebook + `}`))
+	assert.Empty(t, funnels(`{
+		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}},` + writebook + `}`))
 
 	// A funnel flag with no matching web handler (config still settling)
-	// contributes no backend either.
-	assert.Empty(t, backends(`{"AllowFunnel": {"once.tail1234.ts.net:443": true}}`))
+	// attributes nothing either.
+	assert.Empty(t, funnels(`{"AllowFunnel": {"once.tail1234.ts.net:443": true},` + writebook + `}`))
 
-	// Multiple funnel-enabled endpoints report all their backends with the
-	// public endpoint each serves on.
+	// A live funnel whose backend belongs to no advertised service is not
+	// attributed to any app: it may be another node's, or a stale entry.
+	assert.Empty(t, funnels(`{
+		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.9:80"}}}},
+		"AllowFunnel": {"once.tail1234.ts.net:443": true},` + writebook + `}`))
+
+	// The two sides are programmed from separate labels, so the join is on the
+	// backend address: a scheme that differs between them still attributes.
+	assert.Equal(t, map[string]string{"writebook": "once.tail1234.ts.net:443"}, funnels(`{
+		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "https://10.0.0.5:80"}}}},
+		"AllowFunnel": {"once.tail1234.ts.net:443": true},` + writebook + `}`))
+
+	// Several endpoints funnelling one backend read the same on every poll.
+	assert.Equal(t, map[string]string{"writebook": "once.tail1234.ts.net:443"}, funnels(`{
+		"Web": {
+			"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}},
+			"once.tail1234.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}
+		},
+		"AllowFunnel": {
+			"once.tail1234.ts.net:443": true,
+			"once.tail1234.ts.net:8443": true
+		},` + writebook + `}`))
+
+	// Two apps funnelled at once are keyed apart by name, each with the public
+	// endpoint it serves on.
 	assert.Equal(t, map[string]string{
-		"http://10.0.0.6:80": "once.tail1234.ts.net:443",
-		"http://10.0.0.5:80": "once.tail1234.ts.net:8443",
-	}, backends(`{
+		"writebook": "once.tail1234.ts.net:8443",
+		"campfire":  "once.tail1234.ts.net:443",
+	}, funnels(`{
 		"Web": {
 			"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.6:80"}}},
 			"once.tail1234.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}
@@ -145,6 +170,14 @@ func TestFakeTailscaleDaemonServeStatusFunnelBackends(t *testing.T) {
 		"AllowFunnel": {
 			"once.tail1234.ts.net:443": true,
 			"once.tail1234.ts.net:8443": true
+		},
+		"Services": {
+			"svc:writebook": {
+				"Web": {"writebook.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}}
+			},
+			"svc:campfire": {
+				"Web": {"campfire.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.6:80"}}}}
+			}
 		}
 	}`))
 }
@@ -155,7 +188,7 @@ func TestFakeTailscaleDaemonServeStatusEmpty(t *testing.T) {
 	status, err := daemon.ServeStatus(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, status.Services)
-	assert.Empty(t, status.AllowFunnel)
+	assert.Empty(t, status.Funnels)
 }
 
 func TestFakeTailscaleDaemonServeStatusErrors(t *testing.T) {
@@ -233,7 +266,7 @@ func TestCLITailscaleDaemon(t *testing.T) {
 		status, err := daemon(res, nil).ServeStatus(t.Context())
 		require.NoError(t, err)
 		assert.Empty(t, status.Services)
-		assert.Empty(t, status.AllowFunnel)
+		assert.Empty(t, status.Funnels)
 	})
 
 	t.Run("command failures surface stderr", func(t *testing.T) {

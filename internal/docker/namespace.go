@@ -359,7 +359,7 @@ func (n *Namespace) EnableFunnel(ctx context.Context, app *Application, duration
 	if err := app.EnableFunnel(ctx, expiresAt); err != nil {
 		return "", time.Time{}, fmt.Errorf("enabling Funnel: %w", err)
 	}
-	url, err := n.tailscale.WaitForFunnelActive(ctx, app)
+	url, err := n.tailscale.WaitForFunnelActive(ctx, app.Settings.Host)
 	if err != nil {
 		return "", time.Time{}, err
 	}

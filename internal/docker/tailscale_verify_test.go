@@ -16,7 +16,7 @@ func TestWaitForAdvertisedAllServicesPresent(t *testing.T) {
 		ServeJSON: `{"Services":{"svc:whoami":{},"svc:once-admin":{}}}`,
 	}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, time.Second, time.Millisecond, nil)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, testLogsHint, time.Second, time.Millisecond, nil)
 	require.NoError(t, err)
 }
 
@@ -26,7 +26,7 @@ func TestWaitForAdvertisedAnnouncesPhaseOnce(t *testing.T) {
 	}
 
 	var lines []string
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, time.Second, time.Millisecond,
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, testLogsHint, time.Second, time.Millisecond,
 		func(line string) { lines = append(lines, line) })
 	require.NoError(t, err)
 	require.Len(t, lines, 1, "an immediately-resolved wait must announce exactly once")
@@ -39,7 +39,7 @@ func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
 		ServeJSON: `{"Services":{"svc:whoami":{}}}`,
 	}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, 10*time.Millisecond, time.Millisecond, nil)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, testLogsHint, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "once-admin")
 	assert.NotContains(t, err.Error(), "whoami,", "advertised services must not be reported missing")
@@ -49,7 +49,7 @@ func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
 func TestWaitForAdvertisedSurfacesDaemonError(t *testing.T) {
 	daemon := &FakeTailscaleDaemon{ServeErr: errors.New("no tailscaled socket")}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, 10*time.Millisecond, time.Millisecond, nil)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, testLogsHint, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no tailscaled socket")
 	assert.NotContains(t, err.Error(), "not yet advertised", "a daemon failure must not read as services being slow")
@@ -58,7 +58,7 @@ func TestWaitForAdvertisedSurfacesDaemonError(t *testing.T) {
 func TestWaitForAdvertisedEmptyServeConfig(t *testing.T) {
 	daemon := &FakeTailscaleDaemon{ServeJSON: `{}`}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, 10*time.Millisecond, time.Millisecond, nil)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, testLogsHint, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whoami")
 }
@@ -207,5 +207,5 @@ func approvalAPI(t *testing.T, hosts map[string]string) *fakeTailscaleAPI {
 func waitForApprovedAgainst(api tailscaleAPI, announce func(string), expected ...string) error {
 	return waitForApproved(context.Background(), api,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"},
-		expected, 50*time.Millisecond, time.Millisecond, announce)
+		expected, testLogsHint, 50*time.Millisecond, time.Millisecond, announce)
 }

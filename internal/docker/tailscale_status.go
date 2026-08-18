@@ -32,12 +32,12 @@ func (t *Tailscale) ServiceStatuses(ctx context.Context, names []string) ([]Serv
 	if err != nil {
 		return nil, err
 	}
-	return serviceStatuses(ctx, daemon, newTailscaleAPI(settings), settings, names)
+	return serviceStatuses(ctx, daemon, newTailscaleAPI(settings), settings, names, t.logsHint())
 }
 
 // Helpers
 
-func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleAPI, settings TailscaleSettings, names []string) ([]ServiceStatus, error) {
+func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleAPI, settings TailscaleSettings, names []string, hint string) ([]ServiceStatus, error) {
 	serve, err := daemon.ServeStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading serve status from the local tailscaled: %w", err)
@@ -62,7 +62,7 @@ func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleA
 		statuses = append(statuses, ServiceStatus{
 			Name:  name,
 			URL:   settings.TailnetURL(name),
-			State: renderServiceState(advertised, approval, cloudChecked, settings.Tag),
+			State: renderServiceState(advertised, approval, cloudChecked, settings.Tag, hint),
 		})
 	}
 	return statuses, nil
@@ -91,10 +91,10 @@ func checkOAuthCredentials(ctx context.Context, api tailscaleAPI) error {
 // unadvertised service is unreachable no matter what the tailnet thinks, and
 // a pending one needs a human (or an autoApprovers rule), so each gets its
 // own actionable message.
-func renderServiceState(advertised bool, approval approvalState, cloudChecked bool, tag string) string {
+func renderServiceState(advertised bool, approval approvalState, cloudChecked bool, tag, hint string) string {
 	switch {
 	case !advertised:
-		return "not advertised (check the once-docktail container logs)"
+		return fmt.Sprintf("not advertised (check %s)", hint)
 	case !cloudChecked:
 		return "advertised"
 	case approval == serviceApproved:
@@ -102,6 +102,6 @@ func renderServiceState(advertised bool, approval approvalState, cloudChecked bo
 	case approval == servicePending:
 		return fmt.Sprintf("pending approval (approve it in the Tailscale admin console, or add an autoApprovers.services rule for %s)", tag)
 	default:
-		return "advertised, but not yet in the tailnet (check the once-docktail container logs)"
+		return fmt.Sprintf("advertised, but not yet in the tailnet (check %s)", hint)
 	}
 }
