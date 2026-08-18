@@ -215,14 +215,14 @@ func noNodesLabels(t *testing.T, labels map[string]string) {
 	assert.NotContains(t, labels, "tsdproxy.enable")
 }
 
-// TestTailscaleSwitchesFromNodesToServices proves the topology-switch path
-// ticket 03 could only exercise through the mode-change/self-heal rebuild
-// (it shipped with no second adapter yet): an explicit --topology services
-// request against a live nodes install removes once-tsdproxy (keeping its
-// data volume - ADR-0015's "leave nodes" doctrine, not a full teardown),
-// boots once-docktail and the sidecar, and rolls the app so it carries
-// docktail labels instead of tsdproxy's.
-func TestTailscaleSwitchesFromNodesToServices(t *testing.T) {
+// TestTailscaleRoundTripsBetweenNodesAndServices proves both directions of
+// the topology-switch path ticket 03 could only exercise through the
+// mode-change/self-heal rebuild (it shipped with no second adapter yet): an
+// explicit --topology request against a live install of the other topology
+// removes the old topology's containers (nodes keeps its data volume -
+// ADR-0015's "leave nodes" doctrine, not a full teardown), boots the new
+// one, and rolls the app onto its labels.
+func TestTailscaleRoundTripsBetweenNodesAndServices(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -284,5 +284,27 @@ func TestTailscaleSwitchesFromNodesToServices(t *testing.T) {
 	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
 		assert.NotContains(t, labels, "tsdproxy.enable", "the app must be rolled off nodes' labels")
 		assert.Equal(t, "true", labels["docktail.service.enable"], "the app must be rolled onto services' labels")
+	})
+
+	// Switch back to nodes: docktail and the sidecar are torn down, and the
+	// data volume kept above lets the app node rejoin without churn.
+	_, err = ns.EnableTailscale(ctx, docker.TailscaleSettings{
+		ClientID: "unused-with-control-seam", ClientSecret: "unused-with-control-seam",
+		Topology: docker.TailnetTopologyNodes,
+	}, nil)
+	require.NoError(t, err)
+
+	_, err = cli.ContainerInspect(ctx, docktailName)
+	assert.True(t, errdefs.IsNotFound(err), "docktail container should be gone after switching back to nodes")
+	_, err = cli.ContainerInspect(ctx, sidecarName)
+	assert.True(t, errdefs.IsNotFound(err), "the sidecar should be gone after switching back to nodes")
+
+	info, err = cli.ContainerInspect(ctx, tsdproxyName)
+	require.NoError(t, err, "tsdproxy should exist again after switching back to nodes")
+	assert.True(t, info.State.Running)
+
+	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
+		assert.NotContains(t, labels, "docktail.service.enable", "the app must be rolled off services' labels")
+		hasNodesLabels(t, labels)
 	})
 }
