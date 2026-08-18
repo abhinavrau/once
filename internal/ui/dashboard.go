@@ -480,7 +480,7 @@ func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
 		return tailscaleInfoMsg{
 			enabled:  true,
 			settings: settings,
-			warnings: tailnetDNSWarnings(ctx, hosts, settings.DomainSuffix),
+			warnings: tailnetDNSWarnings(ctx, hosts, settings),
 		}
 	}
 }
@@ -603,9 +603,9 @@ func (m *Dashboard) buildPanels() {
 // tailnetDNSWarnings resolves each host's service URL and returns the warn-only
 // note for the ones that do not resolve from this machine, keyed by URL. It runs
 // off the UI goroutine, in parallel, so a wedged resolver costs one timeout
-// rather than one per app - and never a frame.
-func tailnetDNSWarnings(ctx context.Context, hosts []string, suffix string) map[string]string {
-	settings := docker.TailscaleSettings{DomainSuffix: suffix}
+// rather than one per app - and never a frame. settings is the facade's own
+// read, not reconstructed here.
+func tailnetDNSWarnings(ctx context.Context, hosts []string, settings docker.TailscaleSettings) map[string]string {
 	urls := make([]string, len(hosts))
 	notes := make([]string, len(hosts))
 	var wg sync.WaitGroup
