@@ -120,6 +120,36 @@ func TestTailscaleEnableBootsNodesTopology(t *testing.T) {
 	}, 30*time.Second, time.Second, "whoami's proxy route on its tailnet host never appeared")
 	assert.NotContains(t, routes(), "--tls", "a nodes route must not ask kamal-proxy for its own TLS - TSDProxy already terminated it")
 
+	// Funnel enable adds the tailscale_funnel port option and needs no port
+	// allocation (funnelPort is a fixed constant under nodes); disable
+	// removes it again. Headscale has no Funnel support at all, so this only
+	// proves the label mechanics - the same scope the existing Services test
+	// covers via Application.EnableFunnel, without Namespace.EnableFunnel's
+	// live activation wait. Both calls Roll the app, which is also this
+	// test's proof that a Roll never touches once-tsdproxy: the target is
+	// always the Proxy, so nothing about the app container changing needs
+	// the topology adapter involved.
+	tsdproxyBefore, err := cli.ContainerInspect(ctx, tsdproxyName)
+	require.NoError(t, err)
+
+	require.NoError(t, ns.Refresh(ctx))
+	require.NoError(t, ns.Application("whoami").EnableFunnel(ctx, time.Now().Add(time.Hour)))
+	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
+		hasNodesLabels(t, labels)
+		assert.Contains(t, labels["tsdproxy.port.1"], "tailscale_funnel")
+	})
+	require.NoError(t, ns.Refresh(ctx))
+	require.NoError(t, ns.Application("whoami").DisableFunnel(ctx))
+	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
+		hasNodesLabels(t, labels)
+		assert.NotContains(t, labels["tsdproxy.port.1"], "tailscale_funnel")
+	})
+
+	tsdproxyAfter, err := cli.ContainerInspect(ctx, tsdproxyName)
+	require.NoError(t, err)
+	assert.Equal(t, tsdproxyBefore.ID, tsdproxyAfter.ID, "rolling an app must not recreate once-tsdproxy")
+	assert.Equal(t, tsdproxyBefore.State.StartedAt, tsdproxyAfter.State.StartedAt, "rolling an app must not restart once-tsdproxy")
+
 	// HTTP reaches the app via the Proxy: a request shaped exactly like
 	// TSDProxy's own forward (Host preserved, plain HTTP - headscale has no
 	// `tailscale cert`) is routed to the app container.
@@ -183,4 +213,76 @@ func hasNodesLabels(t *testing.T, labels map[string]string) {
 func noNodesLabels(t *testing.T, labels map[string]string) {
 	t.Helper()
 	assert.NotContains(t, labels, "tsdproxy.enable")
+}
+
+// TestTailscaleSwitchesFromNodesToServices proves the topology-switch path
+// ticket 03 could only exercise through the mode-change/self-heal rebuild
+// (it shipped with no second adapter yet): an explicit --topology services
+// request against a live nodes install removes once-tsdproxy (keeping its
+// data volume - ADR-0015's "leave nodes" doctrine, not a full teardown),
+// boots once-docktail and the sidecar, and rolls the app so it carries
+// docktail labels instead of tsdproxy's.
+func TestTailscaleSwitchesFromNodesToServices(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	nsName := "once-ts-switch-test"
+	ns, err := docker.NewNamespace(nsName)
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	t.Cleanup(func() { cli.Close() })
+
+	cp := newControlPlane(t, ctx, ns)
+	useControlSeam(t, ctx, cp)
+	hideHostTailscaled(t)
+	startAdminServer(t, ctx)
+
+	tsdproxyName := ns.Name() + "-tsdproxy"
+	docktailName := ns.Name() + "-docktail"
+	sidecarName := ns.Name() + "-tailscale"
+	dataVolume := ns.Name() + "-tsdproxy-data"
+
+	_, err = ns.EnableTailscale(ctx, docker.TailscaleSettings{
+		ClientID: "unused-with-control-seam", ClientSecret: "unused-with-control-seam",
+		Topology: docker.TailnetTopologyNodes,
+	}, nil)
+	require.NoError(t, err)
+
+	whoami := deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name: "whoami", Image: whoamiImage, Host: "whoami", Exposure: docker.ExposureTailnet,
+	})
+	require.NotNil(t, whoami)
+	assertAppLabels(t, ctx, cli, ns, "whoami", hasNodesLabels)
+
+	_, err = cli.VolumeInspect(ctx, dataVolume)
+	require.NoError(t, err, "the data volume must exist before the switch, or its retention proves nothing")
+
+	// Switch to services: once-tsdproxy is torn down, docktail/the sidecar
+	// come up, and the app is rolled with docktail labels.
+	_, err = ns.EnableTailscale(ctx, docker.TailscaleSettings{
+		ClientID: "unused-with-control-seam", ClientSecret: "unused-with-control-seam",
+		Topology: docker.TailnetTopologyServices,
+	}, nil)
+	require.NoError(t, err)
+
+	_, err = cli.ContainerInspect(ctx, tsdproxyName)
+	assert.True(t, errdefs.IsNotFound(err), "tsdproxy container should be gone after switching to services")
+	_, err = cli.VolumeInspect(ctx, dataVolume)
+	assert.NoError(t, err, "leaving nodes keeps its data volume, like every other topology removal")
+
+	info, err := cli.ContainerInspect(ctx, docktailName)
+	require.NoError(t, err, "docktail should exist after switching to services")
+	assert.True(t, info.State.Running)
+	_, err = cli.ContainerInspect(ctx, sidecarName)
+	require.NoError(t, err, "the sidecar should exist after switching to services (sidecar is the default mode)")
+
+	assertAppLabels(t, ctx, cli, ns, "whoami", func(t *testing.T, labels map[string]string) {
+		assert.NotContains(t, labels, "tsdproxy.enable", "the app must be rolled off nodes' labels")
+		assert.Equal(t, "true", labels["docktail.service.enable"], "the app must be rolled onto services' labels")
+	})
 }
