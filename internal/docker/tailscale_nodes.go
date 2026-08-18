@@ -50,7 +50,7 @@ const nodesDataVolumeTarget = "/data"
 const nodesFunnelPort = 443
 
 // nodesSetupIntro is the Nodes topology's setup prose, shown before enable
-// (ticket 05 wires this into the frontends).
+// via TopologyFacts.SetupIntro (ticket 05).
 const nodesSetupIntro = `Setup, once per tailnet:
  1. Run 'once tailscale policy --topology nodes' and merge the printed
     snippet into your tailnet policy file (https://login.tailscale.com/admin/acls).

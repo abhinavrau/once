@@ -101,7 +101,7 @@ const (
 )
 
 // servicesSetupIntro is the Services topology's setup prose, shown before
-// enable (ticket 05 wires this into the frontends).
+// enable via TopologyFacts.SetupIntro (ticket 05).
 const servicesSetupIntro = `Setup, once per tailnet:
  1. Run 'once tailscale policy' and merge the printed snippet into your
     tailnet policy file (https://login.tailscale.com/admin/acls).
