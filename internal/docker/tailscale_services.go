@@ -170,8 +170,10 @@ func (s *servicesTopology) boot(ctx context.Context, settings TailscaleSettings)
 }
 
 // remove removes once-docktail, the Once-managed sidecar, and the transient
-// socket volume, keeping the sidecar's state volume (node identity).
-func (s *servicesTopology) remove(ctx context.Context) error {
+// socket volume, keeping the sidecar's state volume (node identity). settings
+// is unused: Services has no per-app device to best-effort delete when it is
+// left, unlike nodes.
+func (s *servicesTopology) remove(ctx context.Context, settings TailscaleSettings) error {
 	if err := s.removeContainer(ctx, s.containerName()); err != nil {
 		return err
 	}
@@ -183,8 +185,8 @@ func (s *servicesTopology) remove(ctx context.Context) error {
 
 // destroy removes everything remove does, plus the sidecar's state volume -
 // full cleanup, used by teardown.
-func (s *servicesTopology) destroy(ctx context.Context) error {
-	if err := s.remove(ctx); err != nil {
+func (s *servicesTopology) destroy(ctx context.Context, settings TailscaleSettings) error {
+	if err := s.remove(ctx, settings); err != nil {
 		return err
 	}
 	return s.removeVolume(ctx, s.stateVolumeName())
@@ -320,8 +322,8 @@ func (s *servicesTopology) funnelPort(self *Application, apps []*Application) (i
 
 // validateHost rejects a name that cannot be a Magic DNS label, since
 // Docktail would advertise it as <name>.<suffix> and the entry could never
-// resolve.
-func (s *servicesTopology) validateHost(name string) error {
+// resolve. ctx and settings are unused: Services has no live device check.
+func (s *servicesTopology) validateHost(ctx context.Context, settings TailscaleSettings, name string) error {
 	return ValidateTailscaleServiceName(name)
 }
 

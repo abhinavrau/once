@@ -54,10 +54,14 @@ type tailnetTopology interface {
 	boot(ctx context.Context, settings TailscaleSettings) error
 	// remove tears down this topology's containers, keeping any state volume
 	// that carries node identity (a re-enable must not churn Magic DNS).
-	remove(ctx context.Context) error
+	// settings is the topology being left - nodes uses it to best-effort
+	// delete the per-app tailnet devices through the Runtime Credential
+	// (ADR-0015); Services ignores it.
+	remove(ctx context.Context, settings TailscaleSettings) error
 	// destroy removes everything remove does, plus the state volume - full
-	// cleanup, used by teardown.
-	destroy(ctx context.Context) error
+	// cleanup, used by teardown. settings is passed for the same reason as
+	// remove's.
+	destroy(ctx context.Context, settings TailscaleSettings) error
 	// relabel cheaply rewrites this topology's stored settings label (Docker
 	// labels are immutable on a live container) without disturbing node
 	// identity or other supporting state - the write-through path
@@ -82,7 +86,10 @@ type tailnetTopology interface {
 	// other apps, or (0, nil) for a topology that needs no allocation.
 	funnelPort(self *Application, apps []*Application) (int, error)
 	// validateHost rejects a name that cannot be exposed under this topology.
-	validateHost(name string) error
+	// ctx and settings are for nodes' extra deploy-time check (a live devices-
+	// list lookup against the Runtime Credential's tailnet, skipped on the
+	// Control Seam); Services' shape-only check ignores both.
+	validateHost(ctx context.Context, settings TailscaleSettings, name string) error
 	// logsHint names the container whose logs explain a tailnet read that
 	// came back short, for error messages.
 	logsHint() string
@@ -105,15 +112,13 @@ type topologyFacts struct {
 }
 
 // topologyFor returns the adapter for a resolved topology (never ""; callers
-// pass resolveTopology's result). Nodes has no adapter yet (ticket 04): it
-// resolves cleanly here, so the caller sees one clear error naming the gap,
-// not a nil-pointer reach-around.
+// pass resolveTopology's result).
 func (t *Tailscale) topologyFor(topology string) (tailnetTopology, error) {
 	switch topology {
 	case TailnetTopologyServices:
 		return newServicesTopology(t.namespace), nil
 	case TailnetTopologyNodes:
-		return nil, fmt.Errorf("the %s tailnet topology is not implemented yet", TailnetTopologyNodes)
+		return newNodesTopology(t.namespace), nil
 	default:
 		return nil, fmt.Errorf("invalid tailnet topology %q", topology)
 	}
@@ -122,9 +127,8 @@ func (t *Tailscale) topologyFor(topology string) (tailnetTopology, error) {
 // providerContainerNames names every container whose existence can mean
 // Tailscale is enabled, in no particular order: exactly one exists per
 // install, naming which Tailnet Provider - and so which topology - is
-// active. once-tsdproxy is the Nodes topology's provider (ticket 04); listed
-// here now so Enabled and the settings label are found correctly once that
-// adapter exists.
+// active. once-docktail is the Services topology's provider; once-tsdproxy
+// is the Nodes topology's.
 func (t *Tailscale) providerContainerNames() []string {
 	return []string{t.namespace.name + "-docktail", t.namespace.name + "-tsdproxy"}
 }
@@ -171,4 +175,15 @@ func (t *Tailscale) resolveTopology(ctx context.Context, requested string) (stri
 		return existing.Topology, nil
 	}
 	return TailnetTopologyNodes, nil
+}
+
+// topologyRoutesTailnetAppsViaProxy reports whether a topology's tailnet apps
+// go through the Proxy (nodes: TSDProxy forwards to it, Host preserved) or
+// straight to the app container (services: Docktail proxies to the container
+// IP itself). application.go's registerRouting and admin.go's create are the
+// two places that must register (or skip) a Proxy route for a tailnet app
+// based on exactly this - factored out as its own decision so it is testable
+// without a topology adapter or a namespace.
+func topologyRoutesTailnetAppsViaProxy(topology string) bool {
+	return topology == TailnetTopologyNodes
 }

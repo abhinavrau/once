@@ -2,8 +2,6 @@ package docker
 
 import (
 	"context"
-	"net"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,28 +29,19 @@ func TestResolveTopologyExplicitWinsWithoutDocker(t *testing.T) {
 	assert.Equal(t, TailnetTopologyNodes, topology)
 }
 
-// TestEnableTailscaleNodesTopologyNotImplementedYet pins ticket 03's decision
-// for what a "nodes" request does before ticket 04's adapter exists: a clear
-// error, not a panic or a silent no-op. Both topology resolution (explicit
-// wins) and adapter selection short-circuit before any Docker work, so this
-// runs with no namespace client and no *Tailscale facade at all (nil-safe,
-// like the other "before any Docker work" tests in namespace_test.go).
-func TestEnableTailscaleNodesTopologyNotImplementedYet(t *testing.T) {
-	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
-	ln, err := net.Listen("unix", AdminSocketPath())
+// TestTopologyForReturnsBothAdapters pins that every resolved topology has a
+// real adapter (ticket 04 closed the "nodes" gap ticket 03 left): resolution
+// alone touches no Docker, so this runs with no namespace client at all.
+func TestTopologyForReturnsBothAdapters(t *testing.T) {
+	ts := NewTailscale(&Namespace{name: "test"})
+
+	services, err := ts.topologyFor(TailnetTopologyServices)
 	require.NoError(t, err)
-	t.Cleanup(func() { ln.Close() })
-	require.NoError(t, os.WriteFile(AdminNginxConfPath(), []byte(AdminNginxConfig()), 0o644))
+	assert.IsType(t, &servicesTopology{}, services)
 
-	ns := &Namespace{name: "test"}
-	ns.admin = NewAdmin(ns)
-
-	_, err = ns.EnableTailscale(context.Background(),
-		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Topology: TailnetTopologyNodes}, nil)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), TailnetTopologyNodes)
-	assert.Contains(t, err.Error(), "not implemented")
+	nodes, err := ts.topologyFor(TailnetTopologyNodes)
+	require.NoError(t, err)
+	assert.IsType(t, &nodesTopology{}, nodes)
 }
 
 // TestLegacyLabelDecodesWithEmptyTopology pins the signal LoadSettings uses

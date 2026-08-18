@@ -50,6 +50,28 @@ func PolicySnippet(tag string) string {
 }`, owners.String(), approvers.String(), mustJSON(requiredGrant(tags)), mustJSON(requiredNodeAttr(tags)))
 }
 
+// NodesPolicySnippet returns the HuJSON snippet the Nodes topology needs in
+// the tailnet policy: just tagOwners (so the OAuth client may create devices
+// with the tag) and the funnel nodeAttr. Unlike Services, nodes needs no
+// autoApprovers.services (there are no Services) and no grants entry: a
+// tagged node is an ordinary tailnet device, reachable under the tailnet's
+// existing default/ACL rules like any other, not a mechanism with its own
+// approval and access-grant step.
+func NodesPolicySnippet(tag string) string {
+	tags := policyTags(tag)
+	var owners strings.Builder
+	for _, t := range tags {
+		fmt.Fprintf(&owners, "\t\t%s: %s,\n", mustJSON(t), mustJSON(tagOwnerValue))
+	}
+	return fmt.Sprintf(`{
+	"tagOwners": {
+%s	},
+	"nodeAttrs": [
+		%s,
+	],
+}`, owners.String(), mustJSON(requiredNodeAttr(tags)))
+}
+
 // Helpers
 
 // requiredGrant grants every tailnet member access to the tagged Services,

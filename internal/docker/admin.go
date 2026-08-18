@@ -159,6 +159,19 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 		a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("starting once-admin container: %w", err)
 	}
+
+	// Under nodes, once-admin is exposed the same way an app is: TSDProxy
+	// forwards it to the Proxy rather than the container directly, so it
+	// needs a Proxy route on its own tailnet Host too.
+	if tailscaleEnabled {
+		settings, err := a.namespace.Tailscale().LoadSettings(ctx)
+		if err == nil && topologyRoutesTailnetAppsViaProxy(settings.Topology) {
+			if err := registerNodesProxyRoute(ctx, a.namespace, "once-admin", "once-admin", resp.ID, ""); err != nil {
+				a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+				return fmt.Errorf("registering once-admin with the proxy: %w", err)
+			}
+		}
+	}
 	return nil
 }
 

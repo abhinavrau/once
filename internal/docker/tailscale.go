@@ -240,7 +240,7 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 		if err != nil {
 			return err
 		}
-		if err := oldTopology.remove(ctx); err != nil {
+		if err := oldTopology.remove(ctx, existing); err != nil {
 			return err
 		}
 	}
@@ -271,7 +271,7 @@ func (t *Tailscale) Disable(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := topology.remove(ctx); err != nil {
+		if err := topology.remove(ctx, settings); err != nil {
 			return err
 		}
 	}
@@ -457,11 +457,23 @@ func (t *Tailscale) Destroy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := topology.destroy(ctx); err != nil {
+	if err := topology.destroy(ctx, settings); err != nil {
 		return err
 	}
 	t.Settings = nil
 	return nil
+}
+
+// ValidateHost rejects a name that cannot be exposed under the active
+// topology: Services checks the Magic DNS label shape only; nodes adds a
+// live deploy-time refusal when a device with that hostname already exists
+// in the tailnet (skipped on the Control Seam).
+func (t *Tailscale) ValidateHost(ctx context.Context, name string) error {
+	settings, topology, err := t.sessionTopology(ctx)
+	if err != nil {
+		return err
+	}
+	return topology.validateHost(ctx, settings, name)
 }
 
 // Private
