@@ -396,36 +396,13 @@ func (t *Tailscale) WaitForFunnelActive(ctx context.Context, app *Application) (
 	return funnelURL(hostPort), nil
 }
 
-// LegacyTSDProxyWarning returns a message telling the user how to move off a
-// pre-Docktail TSDProxy install when its container is still around, or "" when
-// there is none. Once never manages that container: the user re-runs enable to
-// get the Docktail topology and removes the old container by hand (only the
-// full teardown in Destroy sweeps it up). Best effort - any inspect error
-// reads as "not present".
-func (t *Tailscale) LegacyTSDProxyWarning(ctx context.Context) string {
-	name := t.legacyTSDProxyName()
-	if _, err := t.namespace.client.ContainerInspect(ctx, name); err != nil {
-		return ""
-	}
-	return fmt.Sprintf("found a %s container from an older version of Once, which Once no longer manages; re-run `once tailscale enable` to set up the new Tailscale integration, then remove it with `docker rm -f %s` and `docker volume rm %s`",
-		name, name, t.legacyTSDProxyVolumeName())
-}
-
 // Destroy removes the full topology including the sidecar's state volume (full
-// cleanup, used by teardown - unlike Disable, which retains it). It also sweeps
-// up the legacy once-tsdproxy container and volume from installs that predate
-// the Docktail swap.
+// cleanup, used by teardown - unlike Disable, which retains it).
 func (t *Tailscale) Destroy(ctx context.Context) error {
 	if err := t.removeTopology(ctx); err != nil {
 		return err
 	}
 	if err := t.removeVolume(ctx, t.stateVolumeName()); err != nil {
-		return err
-	}
-	if err := t.removeContainer(ctx, t.legacyTSDProxyName()); err != nil {
-		return err
-	}
-	if err := t.removeVolume(ctx, t.legacyTSDProxyVolumeName()); err != nil {
 		return err
 	}
 	t.Settings = nil
@@ -450,13 +427,6 @@ func (t *Tailscale) socketVolumeName() string {
 	return t.namespace.name + "-tailscale-socket"
 }
 
-func (t *Tailscale) legacyTSDProxyName() string {
-	return t.namespace.name + "-tsdproxy"
-}
-
-func (t *Tailscale) legacyTSDProxyVolumeName() string {
-	return t.namespace.name + "-tsdproxy-data"
-}
 
 // resolveMode is the only implementation of the ADR-0007 mode rule: an
 // explicit mode wins, an empty one keeps an already-enabled install's stored

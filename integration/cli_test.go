@@ -129,14 +129,12 @@ func TestCLIDeployTailnetRequiresTailscaleEnable(t *testing.T) {
 	assert.Empty(t, restored.Applications(), "a refused tailnet deploy must leave no app behind")
 }
 
-func TestCLIRemovedTailscaleFlagNamesReplacement(t *testing.T) {
-	for _, cmd := range [][]string{
-		{"deploy", "ghcr.io/basecamp/once-campfire:main", "--tailscale"},
-		{"update", "app.localhost", "--tailscale=false"},
-	} {
-		err := runCLI(append([]string{"-n", "once-cli-removed-test"}, cmd...)...)
-		assert.ErrorContains(t, err, "--expose tailnet")
-	}
+func TestCLIRemovedFlags(t *testing.T) {
+	err := runCLI("-n", "once-cli-removed-test", "deploy", "ghcr.io/basecamp/once-campfire:main", "--tailscale")
+	assert.ErrorContains(t, err, "unknown flag: --tailscale")
+
+	err = runCLI("-n", "once-cli-removed-test", "update", "app.localhost", "--backup-path", "/backups")
+	assert.ErrorContains(t, err, "once backup enable")
 }
 
 // TestCLIBackfillsExposureForLegacyApps plants containers whose once labels

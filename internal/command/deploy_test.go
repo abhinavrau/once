@@ -126,14 +126,14 @@ func TestApplyChangesExposure(t *testing.T) {
 	assert.ErrorIs(t, err, docker.ErrPublicHostRequired)
 }
 
-func TestRemovedTailscaleFlagFailsWithReplacement(t *testing.T) {
+// --tailscale is no longer registered at all, so cobra rejects it as an
+// unknown flag rather than Once carrying a clean-break message for it.
+func TestTailscaleFlagIsUnknown(t *testing.T) {
 	for _, arg := range []string{"--tailscale", "--tailscale=false"} {
 		cmd := &cobra.Command{}
 		f := &settingsFlags{}
 		f.register(cmd)
-		require.NoError(t, cmd.Flags().Parse([]string{arg}))
-		err := f.checkRemoved(cmd)
-		assert.ErrorContains(t, err, "--expose tailnet")
+		assert.ErrorContains(t, cmd.Flags().Parse([]string{arg}), "unknown flag: --tailscale")
 	}
 
 	cmd := &cobra.Command{}
