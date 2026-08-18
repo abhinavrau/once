@@ -236,7 +236,7 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 		// models is not this binary's to judge - stale-but-preserved beats
 		// destroyed (ADR-0008).
 		settings.labelExtra = existing.labelExtra
-		oldTopology, err := t.topologyFor(existing.Topology)
+		oldTopology, err := t.topologyFor(activeTopologyName(existing))
 		if err != nil {
 			return err
 		}
@@ -267,7 +267,7 @@ func (t *Tailscale) Disable(ctx context.Context) error {
 		return err
 	}
 	if found {
-		topology, err := t.topologyFor(settings.Topology)
+		topology, err := t.topologyFor(activeTopologyName(settings))
 		if err != nil {
 			return err
 		}
@@ -449,7 +449,7 @@ func (t *Tailscale) Destroy(ctx context.Context) error {
 		return err
 	}
 	if found {
-		topology, err := t.topologyFor(settings.Topology)
+		topology, err := t.topologyFor(activeTopologyName(settings))
 		if err != nil {
 			return err
 		}
@@ -514,6 +514,17 @@ func sameTopologyRequest(existing, requested TailscaleSettings) bool {
 		existing.Tag == requested.Tag &&
 		existing.Mode == requested.Mode &&
 		existing.Topology == requested.Topology
+}
+
+// activeTopologyName reports the topology a stored settings value belongs
+// to, defaulting a pre-ADR-0015 label's empty Topology to services - the
+// only shape that ever existed before this ADR, so removing or destroying
+// one must assume it, not error.
+func activeTopologyName(settings TailscaleSettings) string {
+	if settings.Topology == "" {
+		return TailnetTopologyServices
+	}
+	return settings.Topology
 }
 
 // controlSeam is the only reader of the hidden headscale control seam's env
