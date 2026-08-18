@@ -116,10 +116,16 @@ func (a *Admin) ensureRunning(ctx context.Context, info container.InspectRespons
 }
 
 func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
-	// Boot only ever runs once Tailscale.Enable has already succeeded (the
-	// enable lifecycle boots once-admin last), so once-admin is always
-	// tailnet-exposed under whichever topology is active.
-	labels, err := a.namespace.Tailscale().AppLabels(ctx, true, "once-admin", a.namespace.name, 0)
+	// once-admin is booted both by the Tailscale enable lifecycle (which
+	// exposes it as a tailnet service too) and by the recovery handoff path
+	// (which never touches Tailscale), so its tailnet labels depend on
+	// whether Tailscale actually is enabled here, not on which caller booted
+	// it.
+	tailscaleEnabled, err := a.namespace.Tailscale().Enabled(ctx)
+	if err != nil {
+		return fmt.Errorf("checking tailscale: %w", err)
+	}
+	labels, err := a.namespace.Tailscale().AppLabels(ctx, tailscaleEnabled, "once-admin", a.namespace.name, 0)
 	if err != nil {
 		return fmt.Errorf("resolving once-admin's tailnet labels: %w", err)
 	}

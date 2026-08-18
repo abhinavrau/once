@@ -605,6 +605,8 @@ func (s *servicesTopology) removeVolume(ctx context.Context, name string) error 
 	return nil
 }
 
+// Helpers
+
 // validateTailscaleCredentials is the enable-time pre-flight: it proves the
 // OAuth credentials work before any container is booted. Skipped on the hidden
 // headscale control seam, which uses a pre-minted auth key, not OAuth.
@@ -922,8 +924,6 @@ func renderServiceState(advertised bool, approval approvalState, cloudChecked bo
 		return fmt.Sprintf("advertised, but not yet in the tailnet (check %s)", hint)
 	}
 }
-
-// Helpers
 
 // pullImageRef pulls an image and drains its progress stream.
 func pullImageRef(ctx context.Context, c imagePuller, ref string) error {
