@@ -367,18 +367,19 @@ func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
 }
 
 // WaitForFunnelActive polls the local tailscaled until it reports a Funnel
-// serving the named app, then returns the funnel's public URL - the node's own
-// hostname, not the app's tailnet service name, because Funnel is per-node.
-// That per-node scoping is why the reader attributes each funnel to an app:
-// another app's active Funnel must not count as this one's. Funnel also needs
-// the tailnet ACL's funnel node attribute, which Once can't manage - surfacing
-// activation failure prevents reporting a Funnel active when it isn't.
-func (t *Tailscale) WaitForFunnelActive(ctx context.Context, name string) (string, error) {
+// serving the app with this Host - the name it is advertised under - then
+// returns the funnel's public URL: the node's own hostname, not the app's
+// tailnet service name, because Funnel is per-node. That per-node scoping is
+// why the reader attributes each funnel to an app: another app's active Funnel
+// must not count as this one's. Funnel also needs the tailnet ACL's funnel
+// node attribute, which Once can't manage - surfacing activation failure
+// prevents reporting a Funnel active when it isn't.
+func (t *Tailscale) WaitForFunnelActive(ctx context.Context, host string) (string, error) {
 	settings, daemon, err := t.session(ctx)
 	if err != nil {
 		return "", err
 	}
-	hostPort, err := waitForFunnel(ctx, daemon, t.logsHint(), name, funnelActivationTimeout, funnelActivationPoll)
+	hostPort, err := waitForFunnel(ctx, daemon, host, t.logsHint(), funnelActivationTimeout, funnelActivationPoll)
 	if err != nil {
 		return "", err
 	}
@@ -434,10 +435,8 @@ func (t *Tailscale) containerName() string {
 }
 
 // logsHint names the container whose logs explain a tailnet read that came
-// back short of what the caller expected - the single source every such
-// message takes it from. Which container that is belongs to the topology, not
-// to the message: under Docktail every advertisement and funnel is docktail's
-// doing, whichever daemon the reader talks to.
+// back short - the one source every such message takes it from, since which
+// container that is belongs to the topology, not to the message.
 func (t *Tailscale) logsHint() string {
 	return "the " + t.containerName() + " container logs"
 }
@@ -870,7 +869,7 @@ func hostModeNotice(requested string, fresh bool) string {
 // named app, and returns the endpoint's "host:port" - the public address the
 // funnel serves on. Timeout and poll are parameters so tests can run the
 // timeout path fast.
-func waitForFunnel(ctx context.Context, daemon TailscaleDaemon, hint, name string, timeout, poll time.Duration) (string, error) {
+func waitForFunnel(ctx context.Context, daemon TailscaleDaemon, name, hint string, timeout, poll time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		status, err := daemon.ServeStatus(ctx)
@@ -880,7 +879,7 @@ func waitForFunnel(ctx context.Context, daemon TailscaleDaemon, hint, name strin
 			}
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("funnel did not activate; check %s and that your tailnet ACL grants the funnel node attribute", hint)
+			return "", fmt.Errorf("funnel did not activate for %s; check %s and that your tailnet ACL grants the funnel node attribute", name, hint)
 		}
 		select {
 		case <-ctx.Done():

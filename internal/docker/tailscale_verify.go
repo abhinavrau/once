@@ -46,7 +46,7 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 		}
 	}
 	hint := t.logsHint()
-	if err := waitForAdvertised(ctx, daemon, hint, expected, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
+	if err := waitForAdvertised(ctx, daemon, expected, hint, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
 		return err
 	}
 	return waitForApproved(ctx, newTailscaleAPI(settings), settings, expected, hint, serviceVerifyTimeout, serviceVerifyPoll, announce)
@@ -73,7 +73,7 @@ func requireServeEnabled(ctx context.Context, daemon TailscaleDaemon) error {
 // waitForAdvertised polls the local daemon's serve status until every expected
 // service is advertised, or fails at timeout: with the daemon's error if it
 // couldn't be read, else naming the services still missing.
-func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, hint string, expected []string, timeout, poll time.Duration, announce func(string)) error {
+func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []string, hint string, timeout, poll time.Duration, announce func(string)) error {
 	if announce != nil {
 		announce(fmt.Sprintf("waiting up to %s for the local tailscaled to advertise: %s", timeout, strings.Join(expected, ", ")))
 	}

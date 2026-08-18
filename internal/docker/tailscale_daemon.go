@@ -432,7 +432,7 @@ func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
 		}
 		for _, handler := range config.Web[hostPort].Handlers {
 			if handler.Proxy != "" {
-				funnelled[handler.Proxy] = hostPort
+				recordEndpoint(funnelled, backendAddress(handler.Proxy), hostPort)
 			}
 		}
 	}
@@ -441,12 +441,32 @@ func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
 	for name, service := range config.Services {
 		for _, web := range service.Web {
 			for _, handler := range web.Handlers {
-				if hostPort, ok := funnelled[handler.Proxy]; ok {
-					funnels[strings.TrimPrefix(name, "svc:")] = hostPort
+				if hostPort, ok := funnelled[backendAddress(handler.Proxy)]; ok {
+					recordEndpoint(funnels, strings.TrimPrefix(name, "svc:"), hostPort)
 				}
 			}
 		}
 	}
 
 	return TailscaleServeStatus{Services: services, Funnels: funnels}, nil
+}
+
+// backendAddress reduces a proxy target to the "host:port" it forwards to. The
+// two sides of the funnel join are programmed from separate labels, so they
+// compare on the backend itself rather than on a scheme each side derives -
+// the same comparison docktail makes against its own serve config.
+func backendAddress(proxy string) string {
+	if _, address, ok := strings.Cut(proxy, "://"); ok {
+		return address
+	}
+	return proxy
+}
+
+// recordEndpoint keeps the lowest of several endpoints for one key, so a serve
+// config with more than one match (mid funnel-port change, say) reads the same
+// on every poll instead of following map order.
+func recordEndpoint(endpoints map[string]string, key, hostPort string) {
+	if existing, ok := endpoints[key]; !ok || hostPort < existing {
+		endpoints[key] = hostPort
+	}
 }

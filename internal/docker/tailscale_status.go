@@ -32,12 +32,12 @@ func (t *Tailscale) ServiceStatuses(ctx context.Context, names []string) ([]Serv
 	if err != nil {
 		return nil, err
 	}
-	return serviceStatuses(ctx, daemon, t.logsHint(), newTailscaleAPI(settings), settings, names)
+	return serviceStatuses(ctx, daemon, newTailscaleAPI(settings), settings, names, t.logsHint())
 }
 
 // Helpers
 
-func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, hint string, api tailscaleAPI, settings TailscaleSettings, names []string) ([]ServiceStatus, error) {
+func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleAPI, settings TailscaleSettings, names []string, hint string) ([]ServiceStatus, error) {
 	serve, err := daemon.ServeStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading serve status from the local tailscaled: %w", err)

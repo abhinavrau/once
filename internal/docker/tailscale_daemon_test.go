@@ -140,6 +140,23 @@ func TestFakeTailscaleDaemonServeStatusFunnels(t *testing.T) {
 		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.9:80"}}}},
 		"AllowFunnel": {"once.tail1234.ts.net:443": true},` + writebook + `}`))
 
+	// The two sides are programmed from separate labels, so the join is on the
+	// backend address: a scheme that differs between them still attributes.
+	assert.Equal(t, map[string]string{"writebook": "once.tail1234.ts.net:443"}, funnels(`{
+		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "https://10.0.0.5:80"}}}},
+		"AllowFunnel": {"once.tail1234.ts.net:443": true},` + writebook + `}`))
+
+	// Several endpoints funnelling one backend read the same on every poll.
+	assert.Equal(t, map[string]string{"writebook": "once.tail1234.ts.net:443"}, funnels(`{
+		"Web": {
+			"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}},
+			"once.tail1234.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}
+		},
+		"AllowFunnel": {
+			"once.tail1234.ts.net:443": true,
+			"once.tail1234.ts.net:8443": true
+		},` + writebook + `}`))
+
 	// Two apps funnelled at once are keyed apart by name, each with the public
 	// endpoint it serves on.
 	assert.Equal(t, map[string]string{
