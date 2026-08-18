@@ -62,7 +62,7 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 // the only way to put it in front of the user. A probe that cannot run says
 // nothing either way, so it lets the wait proceed rather than inventing a
 // diagnosis.
-func requireServeEnabled(ctx context.Context, daemon TailscaleDaemon) error {
+func requireServeEnabled(ctx context.Context, daemon TailnetReader) error {
 	url, err := daemon.ServeEnablementURL(ctx)
 	if err != nil || url == "" {
 		return nil
@@ -73,7 +73,7 @@ func requireServeEnabled(ctx context.Context, daemon TailscaleDaemon) error {
 // waitForAdvertised polls the local daemon's serve status until every expected
 // service is advertised, or fails at timeout: with the daemon's error if it
 // couldn't be read, else naming the services still missing.
-func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []string, hint string, timeout, poll time.Duration, announce func(string)) error {
+func waitForAdvertised(ctx context.Context, daemon TailnetReader, expected []string, hint string, timeout, poll time.Duration, announce func(string)) error {
 	if announce != nil {
 		announce(fmt.Sprintf("waiting up to %s for the local tailscaled to advertise: %s", timeout, strings.Join(expected, ", ")))
 	}

@@ -458,9 +458,9 @@ func (t *Tailscale) resolveMode(ctx context.Context, requested string) (string, 
 	return TailscaleModeSidecar, false, nil
 }
 
-// daemonFor returns the TailscaleDaemon matching where tailscaled runs: the
+// daemonFor returns the TailnetReader matching where tailscaled runs: the
 // host CLI in host mode, docker exec into the sidecar otherwise.
-func (t *Tailscale) daemonFor(mode string) TailscaleDaemon {
+func (t *Tailscale) daemonFor(mode string) TailnetReader {
 	if mode == TailscaleModeHost {
 		return NewHostTailscaleDaemon()
 	}
@@ -472,7 +472,7 @@ func (t *Tailscale) daemonFor(mode string) TailscaleDaemon {
 // daemonFor pair at each read path's start. It never resolves a requested
 // mode (that is resolveMode's, at enable time) - read paths bind from the
 // stored mode as-is.
-func (t *Tailscale) session(ctx context.Context) (TailscaleSettings, TailscaleDaemon, error) {
+func (t *Tailscale) session(ctx context.Context) (TailscaleSettings, TailnetReader, error) {
 	settings, err := t.LoadSettings(ctx)
 	if err != nil {
 		return TailscaleSettings{}, nil, err
@@ -838,7 +838,7 @@ func hostModeNotice(requested string, fresh bool) string {
 // named app, and returns the endpoint's "host:port" - the public address the
 // funnel serves on. Timeout and poll are parameters so tests can run the
 // timeout path fast.
-func waitForFunnel(ctx context.Context, daemon TailscaleDaemon, name, hint string, timeout, poll time.Duration) (string, error) {
+func waitForFunnel(ctx context.Context, daemon TailnetReader, name, hint string, timeout, poll time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		status, err := daemon.ServeStatus(ctx)
@@ -884,7 +884,7 @@ func sidecarWedged(state *container.State) bool {
 // control plane must not fail enable, and the later waits surface persistent
 // problems. daemon, crashed, and the durations are parameters so tests can
 // drive the wait with fakes.
-func waitForSidecarLogin(ctx context.Context, daemon TailscaleDaemon, crashed func(context.Context) (string, bool), timeout, poll time.Duration) error {
+func waitForSidecarLogin(ctx context.Context, daemon TailnetReader, crashed func(context.Context) (string, bool), timeout, poll time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		if msg, ok := crashed(ctx); ok {
@@ -908,7 +908,7 @@ func waitForSidecarLogin(ctx context.Context, daemon TailscaleDaemon, crashed fu
 // Magic DNS suffix. Bounded and non-fatal: returns "" on timeout, so a slow
 // control-plane join never fails enable - DomainSuffix() lazily persists the
 // suffix once the daemon reports it.
-func waitForMagicDNSSuffix(ctx context.Context, daemon TailscaleDaemon) (string, error) {
+func waitForMagicDNSSuffix(ctx context.Context, daemon TailnetReader) (string, error) {
 	deadline := time.Now().Add(suffixWaitTimeout)
 	for {
 		suffix, err := daemon.MagicDNSSuffix(ctx)

@@ -37,7 +37,7 @@ func (t *Tailscale) ServiceStatuses(ctx context.Context, names []string) ([]Serv
 
 // Helpers
 
-func serviceStatuses(ctx context.Context, daemon TailscaleDaemon, api tailscaleAPI, settings TailscaleSettings, names []string, hint string) ([]ServiceStatus, error) {
+func serviceStatuses(ctx context.Context, daemon TailnetReader, api tailscaleAPI, settings TailscaleSettings, names []string, hint string) ([]ServiceStatus, error) {
 	serve, err := daemon.ServeStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading serve status from the local tailscaled: %w", err)

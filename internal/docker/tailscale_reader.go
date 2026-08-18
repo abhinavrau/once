@@ -15,13 +15,13 @@ import (
 	"github.com/docker/docker/client"
 )
 
-// TailscaleDaemon reads state from a local tailscaled via `tailscale ... --json`:
+// TailnetReader reads state from a local tailscaled via `tailscale ... --json`:
 // the tailnet's Magic DNS suffix, which services are advertised, and funnel
 // state. It is the single seam between Once and the daemon, whether that daemon
 // is the Once-managed sidecar (docker exec) or a host tailscaled (host CLI).
 // Every method is a read: ServeEnablementURL runs a serve command, but one the
 // CLI is guaranteed to reject before it writes anything.
-type TailscaleDaemon interface {
+type TailnetReader interface {
 	// MagicDNSSuffix returns the tailnet's Magic DNS suffix (e.g.
 	// tail1234.ts.net), or "" when the daemon doesn't report one yet.
 	MagicDNSSuffix(ctx context.Context) (string, error)
@@ -83,15 +83,15 @@ const (
 
 var serveProbeArgs = []string{"serve", "--bg", "--https=443", serveProbeTarget}
 
-// NewHostTailscaleDaemon returns a TailscaleDaemon backed by the host's
+// NewHostTailscaleDaemon returns a TailnetReader backed by the host's
 // tailscale CLI, for when Once uses a tailscaled already running on the host.
-func NewHostTailscaleDaemon() TailscaleDaemon {
+func NewHostTailscaleDaemon() TailnetReader {
 	return &cliTailscaleDaemon{run: runHostTailscale, probe: runHostTailscaleBounded}
 }
 
-// NewSidecarTailscaleDaemon returns a TailscaleDaemon that runs the tailscale
+// NewSidecarTailscaleDaemon returns a TailnetReader that runs the tailscale
 // CLI inside the named Once-managed sidecar container via docker exec.
-func NewSidecarTailscaleDaemon(c *client.Client, containerName string) TailscaleDaemon {
+func NewSidecarTailscaleDaemon(c *client.Client, containerName string) TailnetReader {
 	return &cliTailscaleDaemon{
 		run: func(ctx context.Context, args ...string) (ExecResult, error) {
 			return execInContainer(ctx, c, containerName, append([]string{"tailscale"}, args...))
@@ -107,7 +107,7 @@ func NewSidecarTailscaleDaemon(c *client.Client, containerName string) Tailscale
 	}
 }
 
-// cliTailscaleDaemon implements TailscaleDaemon over runners that execute
+// cliTailscaleDaemon implements TailnetReader over runners that execute
 // `tailscale args...` somewhere (host CLI or docker exec) and report its
 // stdout, stderr, and exit code. probe is the same, for a command that may
 // never return on its own: it is killed at timeout and reports what the
@@ -180,7 +180,7 @@ func (d *cliTailscaleDaemon) statusJSON(ctx context.Context) (string, error) {
 	return stripCLIWarnings(res.Stdout), nil
 }
 
-// FakeTailscaleDaemon implements TailscaleDaemon from canned CLI JSON, routing
+// FakeTailscaleDaemon implements TailnetReader from canned CLI JSON, routing
 // it through the same parsing as the real implementations. For tests.
 type FakeTailscaleDaemon struct {
 	StatusJSON  string // canned `tailscale status --json` output

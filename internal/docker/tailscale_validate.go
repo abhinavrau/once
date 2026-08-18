@@ -97,7 +97,7 @@ const (
 // devices API, so it is skipped on the headscale control seam; the local
 // checks apply everywhere. The API seam and daemon are parameterised so tests
 // can use the canned-JSON fakes.
-func validateHostModePreflight(ctx context.Context, api tailscaleAPI, daemon TailscaleDaemon, settings TailscaleSettings) error {
+func validateHostModePreflight(ctx context.Context, api tailscaleAPI, daemon TailnetReader, settings TailscaleSettings) error {
 	if !hostTailscaledPresent() {
 		return fmt.Errorf("host mode needs a running tailscaled on this host, but its socket %s is missing; install and start Tailscale, or use --mode sidecar",
 			filepath.Join(hostTailscaledDir(), tailscaledSocketFile))

@@ -37,7 +37,7 @@ func (t *Tailscale) ShadowWarnings(ctx context.Context, names []string) []string
 
 // Helpers
 
-func shadowWarnings(ctx context.Context, daemon TailscaleDaemon, names []string) []string {
+func shadowWarnings(ctx context.Context, daemon TailnetReader, names []string) []string {
 	machines, err := daemon.MachineHostnames(ctx)
 	if err != nil {
 		return nil
