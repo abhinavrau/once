@@ -227,7 +227,7 @@ func TestWaitForFunnel(t *testing.T) {
 		}
 	}`
 
-	daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON}
+	daemon := &FakeTailnetReader{ServeJSON: serveJSON}
 	hostPort, err := waitForFunnel(t.Context(), daemon, "writebook", testLogsHint, time.Second, time.Millisecond)
 	require.NoError(t, err)
 	assert.Equal(t, "once.tail1234.ts.net:443", hostPort)
@@ -238,17 +238,17 @@ func TestWaitForFunnel(t *testing.T) {
 	assert.ErrorContains(t, err, testLogsHint)
 
 	// No funnel at all, or a daemon that keeps erroring, times out the same way.
-	daemon = &FakeTailscaleDaemon{ServeJSON: `{}`}
+	daemon = &FakeTailnetReader{ServeJSON: `{}`}
 	_, err = waitForFunnel(t.Context(), daemon, "writebook", testLogsHint, 50*time.Millisecond, 10*time.Millisecond)
 	require.ErrorContains(t, err, "funnel did not activate")
 
-	daemon = &FakeTailscaleDaemon{ServeErr: assert.AnError}
+	daemon = &FakeTailnetReader{ServeErr: assert.AnError}
 	_, err = waitForFunnel(t.Context(), daemon, "writebook", testLogsHint, 50*time.Millisecond, 10*time.Millisecond)
 	require.ErrorContains(t, err, "funnel did not activate")
 }
 
 func TestWaitForSidecarLogin(t *testing.T) {
-	running := &FakeTailscaleDaemon{StatusJSON: `{"BackendState": "Running"}`}
+	running := &FakeTailnetReader{StatusJSON: `{"BackendState": "Running"}`}
 	healthy := func(context.Context) (string, bool) { return "", false }
 
 	require.NoError(t, waitForSidecarLogin(t.Context(), running, healthy, time.Second, time.Millisecond))
@@ -263,10 +263,10 @@ func TestWaitForSidecarLogin(t *testing.T) {
 
 	// A daemon that is slow to log in or unreachable is non-fatal at timeout:
 	// the suffix and verify waits that follow surface persistent problems.
-	slow := &FakeTailscaleDaemon{StatusErr: assert.AnError}
+	slow := &FakeTailnetReader{StatusErr: assert.AnError}
 	require.NoError(t, waitForSidecarLogin(t.Context(), slow, healthy, 30*time.Millisecond, 10*time.Millisecond))
 
-	needsLogin := &FakeTailscaleDaemon{StatusJSON: `{"BackendState": "NeedsLogin"}`}
+	needsLogin := &FakeTailnetReader{StatusJSON: `{"BackendState": "NeedsLogin"}`}
 	require.NoError(t, waitForSidecarLogin(t.Context(), needsLogin, healthy, 30*time.Millisecond, 10*time.Millisecond))
 }
 

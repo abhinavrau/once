@@ -258,16 +258,6 @@ func (n *nodesTopology) validateHost(ctx context.Context, settings TailscaleSett
 	return validateNodesHostAgainstTailnet(ctx, n.reader(settings), newTailscaleAPI(settings), name)
 }
 
-// validateNodesHostAgainstTailnet is validateHost's live check, factored out
-// so it is testable against a fake reader and a fake tailscaleAPI without a
-// real TSDProxy or Tailscale API to talk to.
-func validateNodesHostAgainstTailnet(ctx context.Context, reader TailnetReader, api tailscaleAPI, name string) error {
-	if status, err := reader.ServeStatus(ctx); err == nil && slices.Contains(status.Services, name) {
-		return nil
-	}
-	return refuseIfDeviceExists(ctx, api, name)
-}
-
 // logsHint names the container whose logs explain a tailnet read that came
 // back short.
 func (n *nodesTopology) logsHint() string {
@@ -408,6 +398,33 @@ func (n *nodesTopology) buildConfig(settings TailscaleSettings) ([]byte, error) 
 		AdminAllowLocalhost: true,
 	}
 	return yaml.Marshal(cfg)
+}
+
+// bestEffortDeleteTaggedDevices deletes every tailnet device carrying
+// settings.Tag through the Runtime Credential's devices:core scope
+// (ADR-0015: leaving nodes best-effort deletes the per-app devices) - every
+// device that tag can name is one nodesTopology itself created, since the
+// tag is documented as Once's own. Best effort: an unreachable API, missing
+// credentials, or an unset tag are not errors - this must never fail a
+// topology switch or a teardown that is otherwise done. Skipped entirely on
+// the Control Seam, which has no SaaS devices API.
+func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, settings TailscaleSettings) {
+	if controlSeamActive() || settings.Tag == "" || settings.ClientID == "" || settings.ClientSecret == "" {
+		return
+	}
+	deleteTaggedDevices(ctx, newTailscaleAPI(settings), settings.Tag)
+}
+
+// Helpers
+
+// validateNodesHostAgainstTailnet is validateHost's live check, factored out
+// so it is testable against a fake reader and a fake tailscaleAPI without a
+// real TSDProxy or Tailscale API to talk to.
+func validateNodesHostAgainstTailnet(ctx context.Context, reader TailnetReader, api tailscaleAPI, name string) error {
+	if status, err := reader.ServeStatus(ctx); err == nil && slices.Contains(status.Services, name) {
+		return nil
+	}
+	return refuseIfDeviceExists(ctx, api, name)
 }
 
 // nodesProviderConfig builds the one Tailscale provider TSDProxy's config
@@ -585,21 +602,6 @@ func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name string) er
 		}
 	}
 	return nil
-}
-
-// bestEffortDeleteTaggedDevices deletes every tailnet device carrying
-// settings.Tag through the Runtime Credential's devices:core scope
-// (ADR-0015: leaving nodes best-effort deletes the per-app devices) - every
-// device that tag can name is one nodesTopology itself created, since the
-// tag is documented as Once's own. Best effort: an unreachable API, missing
-// credentials, or an unset tag are not errors - this must never fail a
-// topology switch or a teardown that is otherwise done. Skipped entirely on
-// the Control Seam, which has no SaaS devices API.
-func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, settings TailscaleSettings) {
-	if controlSeamActive() || settings.Tag == "" || settings.ClientID == "" || settings.ClientSecret == "" {
-		return
-	}
-	deleteTaggedDevices(ctx, newTailscaleAPI(settings), settings.Tag)
 }
 
 // deleteTaggedDevices is bestEffortDeleteTaggedDevices' live sweep, factored

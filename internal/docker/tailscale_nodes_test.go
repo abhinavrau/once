@@ -259,7 +259,7 @@ func TestValidateNodesCredentialsMissingDevicesScope(t *testing.T) {
 // validateHost
 
 func TestValidateNodesHostAgainstTailnetRefusesExistingDevice(t *testing.T) {
-	reader := &FakeTailscaleDaemon{ServeJSON: `{}`}
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
 	api := newFakeTailscaleAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
@@ -272,7 +272,7 @@ func TestValidateNodesHostAgainstTailnetRefusesExistingDevice(t *testing.T) {
 }
 
 func TestValidateNodesHostAgainstTailnetAllowsFreeHost(t *testing.T) {
-	reader := &FakeTailscaleDaemon{ServeJSON: `{}`}
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
 	api := newFakeTailscaleAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"someone-elses-laptop","tags":[]}]}`)
@@ -286,7 +286,7 @@ func TestValidateNodesHostAgainstTailnetAllowsFreeHost(t *testing.T) {
 // exemption: an app whose own node already advertises this Host under
 // TSDProxy is never refused by its own device, so the API is not even asked.
 func TestValidateNodesHostAgainstTailnetExemptsOwnNode(t *testing.T) {
-	reader := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	reader := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 	reporter := &recordingReporter{}
 	api := newFakeTailscaleAPI(reporter)
 
@@ -297,7 +297,7 @@ func TestValidateNodesHostAgainstTailnetExemptsOwnNode(t *testing.T) {
 }
 
 func TestValidateNodesHostAgainstTailnetIsBestEffortOnAPIFailure(t *testing.T) {
-	reader := &FakeTailscaleDaemon{ServeJSON: `{}`}
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
 	api := newFakeTailscaleAPI(t)
 	api.fail(http.MethodGet, nodesDevicePath, assert.AnError)
 

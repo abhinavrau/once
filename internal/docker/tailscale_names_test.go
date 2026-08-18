@@ -21,7 +21,7 @@ func TestValidateTailscaleServiceName(t *testing.T) {
 }
 
 func TestShadowWarnings(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{StatusJSON: `{
+	daemon := &FakeTailnetReader{StatusJSON: `{
 		"Self": {"HostName": "once-tailscale", "DNSName": "once-tailscale.tail1234.ts.net."},
 		"Peer": {
 			"nodekey:aaa": {"HostName": "Grafana-Box", "DNSName": "grafana.tail1234.ts.net."},
@@ -37,7 +37,7 @@ func TestShadowWarnings(t *testing.T) {
 }
 
 func TestShadowWarningsBestEffort(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{StatusErr: assert.AnError}
+	daemon := &FakeTailnetReader{StatusErr: assert.AnError}
 	assert.Empty(t, shadowWarnings(t.Context(), daemon, []string{"grafana"}))
 }
 

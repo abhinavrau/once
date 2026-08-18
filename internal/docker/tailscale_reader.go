@@ -83,16 +83,16 @@ const (
 
 var serveProbeArgs = []string{"serve", "--bg", "--https=443", serveProbeTarget}
 
-// NewHostTailscaleDaemon returns a TailnetReader backed by the host's
+// NewHostTailnetReader returns a TailnetReader backed by the host's
 // tailscale CLI, for when Once uses a tailscaled already running on the host.
-func NewHostTailscaleDaemon() TailnetReader {
-	return &cliTailscaleDaemon{run: runHostTailscale, probe: runHostTailscaleBounded}
+func NewHostTailnetReader() TailnetReader {
+	return &cliTailnetReader{run: runHostTailscale, probe: runHostTailscaleBounded}
 }
 
-// NewSidecarTailscaleDaemon returns a TailnetReader that runs the tailscale
+// NewSidecarTailnetReader returns a TailnetReader that runs the tailscale
 // CLI inside the named Once-managed sidecar container via docker exec.
-func NewSidecarTailscaleDaemon(c *client.Client, containerName string) TailnetReader {
-	return &cliTailscaleDaemon{
+func NewSidecarTailnetReader(c *client.Client, containerName string) TailnetReader {
+	return &cliTailnetReader{
 		run: func(ctx context.Context, args ...string) (ExecResult, error) {
 			return execInContainer(ctx, c, containerName, append([]string{"tailscale"}, args...))
 		},
@@ -107,17 +107,17 @@ func NewSidecarTailscaleDaemon(c *client.Client, containerName string) TailnetRe
 	}
 }
 
-// cliTailscaleDaemon implements TailnetReader over runners that execute
+// cliTailnetReader implements TailnetReader over runners that execute
 // `tailscale args...` somewhere (host CLI or docker exec) and report its
 // stdout, stderr, and exit code. probe is the same, for a command that may
 // never return on its own: it is killed at timeout and reports what the
 // command printed before that.
-type cliTailscaleDaemon struct {
+type cliTailnetReader struct {
 	run   func(ctx context.Context, args ...string) (ExecResult, error)
 	probe func(ctx context.Context, timeout time.Duration, args ...string) (ExecResult, error)
 }
 
-func (d *cliTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error) {
+func (d *cliTailnetReader) MagicDNSSuffix(ctx context.Context) (string, error) {
 	statusJSON, err := d.statusJSON(ctx)
 	if err != nil {
 		return "", err
@@ -125,7 +125,7 @@ func (d *cliTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error)
 	return parseMagicDNSSuffix(statusJSON)
 }
 
-func (d *cliTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, error) {
+func (d *cliTailnetReader) MachineHostnames(ctx context.Context) ([]string, error) {
 	statusJSON, err := d.statusJSON(ctx)
 	if err != nil {
 		return nil, err
@@ -133,7 +133,7 @@ func (d *cliTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, er
 	return parseMachineHostnames(statusJSON)
 }
 
-func (d *cliTailscaleDaemon) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
+func (d *cliTailnetReader) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
 	statusJSON, err := d.statusJSON(ctx)
 	if err != nil {
 		return TailscaleSelfStatus{}, err
@@ -141,7 +141,7 @@ func (d *cliTailscaleDaemon) SelfStatus(ctx context.Context) (TailscaleSelfStatu
 	return parseSelfStatus(statusJSON)
 }
 
-func (d *cliTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
+func (d *cliTailnetReader) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
 	res, err := d.run(ctx, "serve", "status", "--json")
 	if err != nil {
 		return TailscaleServeStatus{}, err
@@ -157,7 +157,7 @@ func (d *cliTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeSta
 	return parseServeStatus(stripCLIWarnings(res.Stdout))
 }
 
-func (d *cliTailscaleDaemon) ServeEnablementURL(ctx context.Context) (string, error) {
+func (d *cliTailnetReader) ServeEnablementURL(ctx context.Context) (string, error) {
 	res, err := d.probe(ctx, serveProbeTimeout, serveProbeArgs...)
 	if err != nil {
 		return "", err
@@ -169,7 +169,7 @@ func (d *cliTailscaleDaemon) ServeEnablementURL(ctx context.Context) (string, er
 
 // statusJSON runs `tailscale status --json` and returns its output with any
 // leading CLI warnings stripped.
-func (d *cliTailscaleDaemon) statusJSON(ctx context.Context) (string, error) {
+func (d *cliTailnetReader) statusJSON(ctx context.Context) (string, error) {
 	res, err := d.run(ctx, "status", "--json")
 	if err != nil {
 		return "", err
@@ -180,9 +180,9 @@ func (d *cliTailscaleDaemon) statusJSON(ctx context.Context) (string, error) {
 	return stripCLIWarnings(res.Stdout), nil
 }
 
-// FakeTailscaleDaemon implements TailnetReader from canned CLI JSON, routing
+// FakeTailnetReader implements TailnetReader from canned CLI JSON, routing
 // it through the same parsing as the real implementations. For tests.
-type FakeTailscaleDaemon struct {
+type FakeTailnetReader struct {
 	StatusJSON  string // canned `tailscale status --json` output
 	ServeJSON   string // canned `tailscale serve status --json` output
 	ProbeOutput string // canned output of the Serve-enablement probe
@@ -191,35 +191,35 @@ type FakeTailscaleDaemon struct {
 	ProbeErr    error
 }
 
-func (f *FakeTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error) {
+func (f *FakeTailnetReader) MagicDNSSuffix(ctx context.Context) (string, error) {
 	if f.StatusErr != nil {
 		return "", f.StatusErr
 	}
 	return parseMagicDNSSuffix(stripCLIWarnings(f.StatusJSON))
 }
 
-func (f *FakeTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, error) {
+func (f *FakeTailnetReader) MachineHostnames(ctx context.Context) ([]string, error) {
 	if f.StatusErr != nil {
 		return nil, f.StatusErr
 	}
 	return parseMachineHostnames(stripCLIWarnings(f.StatusJSON))
 }
 
-func (f *FakeTailscaleDaemon) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
+func (f *FakeTailnetReader) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
 	if f.StatusErr != nil {
 		return TailscaleSelfStatus{}, f.StatusErr
 	}
 	return parseSelfStatus(stripCLIWarnings(f.StatusJSON))
 }
 
-func (f *FakeTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
+func (f *FakeTailnetReader) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
 	if f.ServeErr != nil {
 		return TailscaleServeStatus{}, f.ServeErr
 	}
 	return parseServeStatus(stripCLIWarnings(f.ServeJSON))
 }
 
-func (f *FakeTailscaleDaemon) ServeEnablementURL(ctx context.Context) (string, error) {
+func (f *FakeTailnetReader) ServeEnablementURL(ctx context.Context) (string, error) {
 	if f.ProbeErr != nil {
 		return "", f.ProbeErr
 	}
