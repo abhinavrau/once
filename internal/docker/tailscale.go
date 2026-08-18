@@ -427,7 +427,6 @@ func (t *Tailscale) socketVolumeName() string {
 	return t.namespace.name + "-tailscale-socket"
 }
 
-
 // resolveMode is the only implementation of the ADR-0007 mode rule: an
 // explicit mode wins, an empty one keeps an already-enabled install's stored
 // mode, a stored mode that is missing or unrecognized (a corrupt or legacy

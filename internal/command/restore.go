@@ -370,4 +370,3 @@ func promptNoEcho(prompt string) (string, error) {
 	}
 	return strings.TrimSpace(string(secret)), nil
 }
-

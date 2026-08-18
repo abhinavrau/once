@@ -299,4 +299,3 @@ func printRepoPasswordBanner(kit ui.RecoveryKit) {
 	fmt.Println(line)
 	fmt.Println()
 }
-
