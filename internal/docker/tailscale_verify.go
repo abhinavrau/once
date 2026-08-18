@@ -45,10 +45,11 @@ func (t *Tailscale) VerifyServices(ctx context.Context, expected []string, progr
 			progress(DeployProgress{Stage: DeployStageWaiting, Status: line})
 		}
 	}
-	if err := waitForAdvertised(ctx, daemon, expected, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
+	hint := t.logsHint()
+	if err := waitForAdvertised(ctx, daemon, hint, expected, serviceVerifyTimeout, serviceVerifyPoll, announce); err != nil {
 		return err
 	}
-	return waitForApproved(ctx, newTailscaleAPI(settings), settings, expected, serviceVerifyTimeout, serviceVerifyPoll, announce)
+	return waitForApproved(ctx, newTailscaleAPI(settings), settings, expected, hint, serviceVerifyTimeout, serviceVerifyPoll, announce)
 }
 
 // Helpers
@@ -72,7 +73,7 @@ func requireServeEnabled(ctx context.Context, daemon TailscaleDaemon) error {
 // waitForAdvertised polls the local daemon's serve status until every expected
 // service is advertised, or fails at timeout: with the daemon's error if it
 // couldn't be read, else naming the services still missing.
-func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []string, timeout, poll time.Duration, announce func(string)) error {
+func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, hint string, expected []string, timeout, poll time.Duration, announce func(string)) error {
 	if announce != nil {
 		announce(fmt.Sprintf("waiting up to %s for the local tailscaled to advertise: %s", timeout, strings.Join(expected, ", ")))
 	}
@@ -90,7 +91,7 @@ func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []s
 			if err != nil {
 				return fmt.Errorf("reading serve status from the local tailscaled: %w", err)
 			}
-			return fmt.Errorf("not yet advertised by the local tailscaled: %s; check the once-docktail container logs", strings.Join(missing, ", "))
+			return fmt.Errorf("not yet advertised by the local tailscaled: %s; check %s", strings.Join(missing, ", "), hint)
 		}
 		select {
 		case <-ctx.Done():
@@ -104,7 +105,7 @@ func waitForAdvertised(ctx context.Context, daemon TailscaleDaemon, expected []s
 // Docktail uses) until every expected service has an approved advertising
 // host. A host stuck at not-approved fails immediately: approval needs a
 // human or an autoApprovers rule, so waiting cannot fix it.
-func waitForApproved(ctx context.Context, api tailscaleAPI, settings TailscaleSettings, expected []string, timeout, poll time.Duration, announce func(string)) error {
+func waitForApproved(ctx context.Context, api tailscaleAPI, settings TailscaleSettings, expected []string, hint string, timeout, poll time.Duration, announce func(string)) error {
 	if announce != nil {
 		announce(fmt.Sprintf("waiting up to %s for the tailnet to approve: %s", timeout, strings.Join(expected, ", ")))
 	}
@@ -131,7 +132,7 @@ func waitForApproved(ctx context.Context, api tailscaleAPI, settings TailscaleSe
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("never appeared in the tailnet: %s; check the once-docktail container logs", strings.Join(unapproved, ", "))
+			return fmt.Errorf("never appeared in the tailnet: %s; check %s", strings.Join(unapproved, ", "), hint)
 		}
 		select {
 		case <-ctx.Done():

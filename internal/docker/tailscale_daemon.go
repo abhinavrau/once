@@ -58,14 +58,12 @@ type TailscaleServeStatus struct {
 	// Services holds the bare names of advertised services (the svc: prefix
 	// stripped), sorted.
 	Services []string
-	// AllowFunnel maps "host:port" to whether funnel is enabled there.
-	AllowFunnel map[string]bool
-	// FunnelBackends maps each proxy destination (e.g. http://172.18.0.5:80)
-	// served through a funnel-enabled endpoint to that endpoint's "host:port"
-	// (e.g. once-tailscale-1.tail1234.ts.net:443). This is what attributes a
-	// funnel to a specific app and names its public URL: funnel is per-node,
-	// so AllowFunnel alone can't say whose backend went public.
-	FunnelBackends map[string]string
+	// Funnels maps an app (service) name to the "host:port" its live Funnel
+	// serves on (e.g. once-tailscale-1.tail1234.ts.net:443). Funnel is
+	// per-node, so naming the app is what says whose backend went public and
+	// what names its public URL. An app absent from the map has no live
+	// Funnel.
+	Funnels map[string]string
 }
 
 // The Serve-enablement probe: the `tailscale serve` invocation that reveals
@@ -398,15 +396,24 @@ func parseSelfStatus(statusJSON string) (TailscaleSelfStatus, error) {
 
 // parseServeStatus reads advertised services and funnel state from `tailscale
 // serve status --json` output (the daemon's ServeConfig).
+//
+// The serve config knows funnels only by the node endpoint they serve on and
+// the backend they proxy to, so naming the app they belong to is a join done
+// here, once: a funnel-enabled endpoint and the service advertising the same
+// backend are the same app. A funnel whose backend matches no service is left
+// unattributed rather than guessed at.
 func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
-	var config struct {
-		Services    map[string]json.RawMessage
-		AllowFunnel map[string]bool
-		Web         map[string]struct {
-			Handlers map[string]struct {
-				Proxy string
-			}
+	type webConfig struct {
+		Handlers map[string]struct {
+			Proxy string
 		}
+	}
+	var config struct {
+		Services map[string]struct {
+			Web map[string]webConfig
+		}
+		AllowFunnel map[string]bool
+		Web         map[string]webConfig
 	}
 	if err := json.Unmarshal([]byte(serveJSON), &config); err != nil {
 		return TailscaleServeStatus{}, fmt.Errorf("parsing tailscale serve status: %w", err)
@@ -418,17 +425,28 @@ func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
 	}
 	slices.Sort(services)
 
-	backends := map[string]string{}
+	funnelled := map[string]string{}
 	for hostPort, enabled := range config.AllowFunnel {
 		if !enabled {
 			continue
 		}
 		for _, handler := range config.Web[hostPort].Handlers {
 			if handler.Proxy != "" {
-				backends[handler.Proxy] = hostPort
+				funnelled[handler.Proxy] = hostPort
 			}
 		}
 	}
 
-	return TailscaleServeStatus{Services: services, AllowFunnel: config.AllowFunnel, FunnelBackends: backends}, nil
+	funnels := map[string]string{}
+	for name, service := range config.Services {
+		for _, web := range service.Web {
+			for _, handler := range web.Handlers {
+				if hostPort, ok := funnelled[handler.Proxy]; ok {
+					funnels[strings.TrimPrefix(name, "svc:")] = hostPort
+				}
+			}
+		}
+	}
+
+	return TailscaleServeStatus{Services: services, Funnels: funnels}, nil
 }

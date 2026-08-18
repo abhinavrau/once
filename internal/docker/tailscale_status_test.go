@@ -189,7 +189,7 @@ func TestServiceStatusesSurfacesDaemonError(t *testing.T) {
 // Helpers
 
 func serviceStatusesAgainst(api tailscaleAPI, daemon TailscaleDaemon, names ...string) ([]ServiceStatus, error) {
-	return serviceStatuses(context.Background(), daemon, api,
+	return serviceStatuses(context.Background(), daemon, testLogsHint, api,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", DomainSuffix: "tail1234.ts.net"},
 		names)
 }
