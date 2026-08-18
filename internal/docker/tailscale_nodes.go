@@ -143,8 +143,20 @@ func (n *nodesTopology) relabel(ctx context.Context, settings TailscaleSettings)
 // which network the app itself is on. network is unused: TSDProxy resolves
 // the target from the Docker provider's own targetHostname config
 // (tsdproxy.yaml), the same for every app, not per-container.
+//
+// The node's own edge listener is HTTPS (443) on SaaS, where TSDProxy holds
+// a real tailnet certificate (ADR-0015) - but headscale's Control Seam has
+// no `tailscale cert` capability at all: tsnet refuses to listen TLS at all
+// without it ("you must enable HTTPS in the admin panel"), so the Control
+// Seam listens plain HTTP on 80 instead. Funnel needs Funnel itself, which
+// headscale does not implement either, so this only ever matters for the
+// happy SaaS path in practice - but the port must still name a valid
+// protocol under the seam, or every node fails to start.
 func (n *nodesTopology) appLabels(host, network string, funnelPort int) map[string]string {
 	port := "443/https:80/http, no_autodetect"
+	if controlSeamActive() {
+		port = "80/http:80/http, no_autodetect"
+	}
 	if funnelPort != 0 {
 		port += ", tailscale_funnel"
 	}
@@ -344,11 +356,16 @@ func (n *nodesTopology) create(ctx context.Context, settings TailscaleSettings) 
 
 // writeConfig copies tsdproxy.yaml into the container's config directory
 // before it starts, the same CopyToContainer doctrine proxy.go's copyFiles
-// uses for kamal-proxy's TLS files.
+// uses for kamal-proxy's TLS files. TSDProxy's image is FROM scratch (no
+// shell, no directory tree at all beyond the binary), so tsdproxyConfigPath
+// does not exist yet for CopyToContainer to write into directly - the tar
+// entry carries the full "config/tsdproxy.yaml" path instead, extracted
+// under "/", which always exists, so the config directory is created as
+// part of the extraction.
 func (n *nodesTopology) writeConfig(ctx context.Context, containerID string, config []byte) error {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	header := &tar.Header{Name: "tsdproxy.yaml", Mode: 0o600, Size: int64(len(config))}
+	header := &tar.Header{Name: strings.TrimPrefix(tsdproxyConfigPath, "/") + "/tsdproxy.yaml", Mode: 0o600, Size: int64(len(config))}
 	if err := tw.WriteHeader(header); err != nil {
 		return fmt.Errorf("writing tar header: %w", err)
 	}
@@ -358,7 +375,7 @@ func (n *nodesTopology) writeConfig(ctx context.Context, containerID string, con
 	if err := tw.Close(); err != nil {
 		return fmt.Errorf("closing tar writer: %w", err)
 	}
-	if err := n.namespace.client.CopyToContainer(ctx, containerID, tsdproxyConfigPath, &buf, container.CopyToContainerOptions{}); err != nil {
+	if err := n.namespace.client.CopyToContainer(ctx, containerID, "/", &buf, container.CopyToContainerOptions{}); err != nil {
 		return fmt.Errorf("writing tsdproxy config: %w", err)
 	}
 	return nil

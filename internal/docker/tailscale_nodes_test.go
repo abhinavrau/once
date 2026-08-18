@@ -41,6 +41,20 @@ func TestNodesAppLabelsPlain(t *testing.T) {
 	}, labels)
 }
 
+// TestNodesAppLabelsPlainHTTPOnControlSeam pins the headscale-only variant:
+// tsnet refuses to listen TLS without a `tailscale cert` capability the
+// Control Seam does not have ("you must enable HTTPS in the admin panel"),
+// so every node under the seam listens plain HTTP instead.
+func TestNodesAppLabelsPlainHTTPOnControlSeam(t *testing.T) {
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", "tskey-abc")
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", "http://headscale:8080")
+	n := newNodesTopology(&Namespace{name: "once"})
+
+	labels := n.appLabels("whoami", "once", 0)
+
+	assert.Equal(t, "80/http:80/http, no_autodetect", labels["tsdproxy.port.1"])
+}
+
 func TestNodesAppLabelsWithFunnel(t *testing.T) {
 	n := newNodesTopology(&Namespace{name: "once"})
 
