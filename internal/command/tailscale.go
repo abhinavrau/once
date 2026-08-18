@@ -66,10 +66,9 @@ Under --topology %s:
 Under --topology %s:
 %s
 
-Put the client's secret in %s and run this command with --client-id. The
-secret comes from the environment so that it never appears on a command
-line, which every user on this machine can read. The credential is probed
-before anything boots.`,
+The secret comes from the environment (%s) so that it never appears on a
+command line, which every user on this machine can read. The credential is
+probed before anything boots.`,
 			docker.TailnetTopologyNodes, docker.TailnetTopologyServices, docker.TailnetTopologyNodes,
 			docker.TailnetTopologyNodes, nodesFacts.SetupIntro,
 			docker.TailnetTopologyServices, servicesFacts.SetupIntro,

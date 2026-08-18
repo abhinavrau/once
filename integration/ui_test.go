@@ -183,6 +183,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	d.send(keyMsg("t"))
 	d.waitForView("Client ID", 5*time.Second)
 	d.selectRadioOption("topology", "Services")
+	require.Contains(t, d.viewContent(), "(•) Sidecar", "selecting Services should reveal the Mode field")
 	d.fillField("client-id", "unused-with-control-seam")
 	d.fillField("client-secret", "unused-with-control-seam")
 	d.click("submit")
