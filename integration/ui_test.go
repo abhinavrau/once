@@ -163,7 +163,9 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	app := ui.NewApp(ns, "")
 	d := newAppDriver(t, app)
 	d.start()
-	d.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+	// The enable form with a Mode radio runs to ~46 rows; the overlay clips
+	// what does not fit, so give it room and assert the whole form rendered.
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 50})
 
 	// -- esc dismisses the overlay --
 	d.send(keyMsg("t"))
@@ -186,6 +188,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	require.Contains(t, d.viewContent(), "(•) Sidecar", "selecting Services should reveal the Mode field")
 	d.fillField("client-id", "unused-with-control-seam")
 	d.fillField("client-secret", "unused-with-control-seam")
+	require.Contains(t, d.viewContent(), "close", "the form's help must be visible: an overlay taller than the window is clipped")
 	d.click("submit")
 
 	// The form runs the real EnableTailscale and stays open (showing progress,

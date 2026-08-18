@@ -107,9 +107,7 @@ const servicesSetupIntro = `Setup, once per tailnet:
     tailnet policy file (https://login.tailscale.com/admin/acls).
  2. In the admin console (Settings -> Trust credentials), create an OAuth
     client with write access to Auth Keys, Devices Core, and Services,
-    tagged with your tag (default tag:once).
- 3. Put the client's secret in ONCE_TAILSCALE_CLIENT_SECRET and run
-    'once tailscale enable' with --client-id.`
+    tagged with your tag (default tag:once).`
 
 // servicesTopology is the Services topology's adapter (ADR-0002 behind the
 // seam): one shared tailnet node, driven by once-docktail, advertises a

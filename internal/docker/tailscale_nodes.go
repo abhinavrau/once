@@ -56,9 +56,7 @@ const nodesSetupIntro = `Setup, once per tailnet:
     snippet into your tailnet policy file (https://login.tailscale.com/admin/acls).
  2. In the admin console (Settings -> Trust credentials), create an OAuth
     client with write access to Auth Keys and Devices Core, tagged with
-    your tag (default tag:once).
- 3. Put the client's secret in ONCE_TAILSCALE_CLIENT_SECRET and run
-    'once tailscale enable' with --client-id.`
+    your tag (default tag:once).`
 
 var _ tailnetTopology = (*nodesTopology)(nil)
 

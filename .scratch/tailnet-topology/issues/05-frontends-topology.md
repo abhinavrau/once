@@ -36,3 +36,18 @@ adapter-supplied prose now).
       and the dashboard when the label lacks a topology
 - [ ] Integration ui tests updated for the new field key; suite green under
       `flock`
+
+**Follow-up (orchestrator):** `TestUITailscaleFormEnablesViaControlSeam` was
+failing deterministically at 120x40: the enable form with the Topology radio
+plus the Services Mode radio runs to ~46 rows, `OverlayCenter` clips an
+overlay taller than the window at both ends, so the form's title and help
+line vanished and the test's "wait until `close` disappears" fell through
+before submit. Fixed the visible causes: the facts' `SetupIntro` no longer
+carries the CLI-only step 3 (secret env var + `--client-id`) - the CLI's
+enable help already says that, and it was wrong prose inside the TUI, whose
+Client ID/Secret fields sit right below; the test now runs at 120x50 and
+asserts the form's help is visible before submitting, so a future overflow is
+a named assertion. Open UX question, not decided here: the form still
+overflows terminals under ~46 rows (min size is 80x24; before this ticket it
+overflowed under ~38). Options: compact radios (label and options on one
+row), a scrollable overlay, or a shorter intro. Needs a product call.
