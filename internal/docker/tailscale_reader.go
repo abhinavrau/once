@@ -15,13 +15,13 @@ import (
 	"github.com/docker/docker/client"
 )
 
-// TailscaleDaemon reads state from a local tailscaled via `tailscale ... --json`:
+// TailnetReader reads state from a local tailscaled via `tailscale ... --json`:
 // the tailnet's Magic DNS suffix, which services are advertised, and funnel
 // state. It is the single seam between Once and the daemon, whether that daemon
 // is the Once-managed sidecar (docker exec) or a host tailscaled (host CLI).
 // Every method is a read: ServeEnablementURL runs a serve command, but one the
 // CLI is guaranteed to reject before it writes anything.
-type TailscaleDaemon interface {
+type TailnetReader interface {
 	// MagicDNSSuffix returns the tailnet's Magic DNS suffix (e.g.
 	// tail1234.ts.net), or "" when the daemon doesn't report one yet.
 	MagicDNSSuffix(ctx context.Context) (string, error)
@@ -58,14 +58,12 @@ type TailscaleServeStatus struct {
 	// Services holds the bare names of advertised services (the svc: prefix
 	// stripped), sorted.
 	Services []string
-	// AllowFunnel maps "host:port" to whether funnel is enabled there.
-	AllowFunnel map[string]bool
-	// FunnelBackends maps each proxy destination (e.g. http://172.18.0.5:80)
-	// served through a funnel-enabled endpoint to that endpoint's "host:port"
-	// (e.g. once-tailscale-1.tail1234.ts.net:443). This is what attributes a
-	// funnel to a specific app and names its public URL: funnel is per-node,
-	// so AllowFunnel alone can't say whose backend went public.
-	FunnelBackends map[string]string
+	// Funnels maps an app (service) name to the "host:port" its live Funnel
+	// serves on (e.g. once-tailscale-1.tail1234.ts.net:443). Funnel is
+	// per-node, so naming the app is what says whose backend went public and
+	// what names its public URL. An app absent from the map has no live
+	// Funnel.
+	Funnels map[string]string
 }
 
 // The Serve-enablement probe: the `tailscale serve` invocation that reveals
@@ -85,16 +83,16 @@ const (
 
 var serveProbeArgs = []string{"serve", "--bg", "--https=443", serveProbeTarget}
 
-// NewHostTailscaleDaemon returns a TailscaleDaemon backed by the host's
+// NewHostTailnetReader returns a TailnetReader backed by the host's
 // tailscale CLI, for when Once uses a tailscaled already running on the host.
-func NewHostTailscaleDaemon() TailscaleDaemon {
-	return &cliTailscaleDaemon{run: runHostTailscale, probe: runHostTailscaleBounded}
+func NewHostTailnetReader() TailnetReader {
+	return &cliTailnetReader{run: runHostTailscale, probe: runHostTailscaleBounded}
 }
 
-// NewSidecarTailscaleDaemon returns a TailscaleDaemon that runs the tailscale
+// NewSidecarTailnetReader returns a TailnetReader that runs the tailscale
 // CLI inside the named Once-managed sidecar container via docker exec.
-func NewSidecarTailscaleDaemon(c *client.Client, containerName string) TailscaleDaemon {
-	return &cliTailscaleDaemon{
+func NewSidecarTailnetReader(c *client.Client, containerName string) TailnetReader {
+	return &cliTailnetReader{
 		run: func(ctx context.Context, args ...string) (ExecResult, error) {
 			return execInContainer(ctx, c, containerName, append([]string{"tailscale"}, args...))
 		},
@@ -109,17 +107,17 @@ func NewSidecarTailscaleDaemon(c *client.Client, containerName string) Tailscale
 	}
 }
 
-// cliTailscaleDaemon implements TailscaleDaemon over runners that execute
+// cliTailnetReader implements TailnetReader over runners that execute
 // `tailscale args...` somewhere (host CLI or docker exec) and report its
 // stdout, stderr, and exit code. probe is the same, for a command that may
 // never return on its own: it is killed at timeout and reports what the
 // command printed before that.
-type cliTailscaleDaemon struct {
+type cliTailnetReader struct {
 	run   func(ctx context.Context, args ...string) (ExecResult, error)
 	probe func(ctx context.Context, timeout time.Duration, args ...string) (ExecResult, error)
 }
 
-func (d *cliTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error) {
+func (d *cliTailnetReader) MagicDNSSuffix(ctx context.Context) (string, error) {
 	statusJSON, err := d.statusJSON(ctx)
 	if err != nil {
 		return "", err
@@ -127,7 +125,7 @@ func (d *cliTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error)
 	return parseMagicDNSSuffix(statusJSON)
 }
 
-func (d *cliTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, error) {
+func (d *cliTailnetReader) MachineHostnames(ctx context.Context) ([]string, error) {
 	statusJSON, err := d.statusJSON(ctx)
 	if err != nil {
 		return nil, err
@@ -135,7 +133,7 @@ func (d *cliTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, er
 	return parseMachineHostnames(statusJSON)
 }
 
-func (d *cliTailscaleDaemon) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
+func (d *cliTailnetReader) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
 	statusJSON, err := d.statusJSON(ctx)
 	if err != nil {
 		return TailscaleSelfStatus{}, err
@@ -143,7 +141,7 @@ func (d *cliTailscaleDaemon) SelfStatus(ctx context.Context) (TailscaleSelfStatu
 	return parseSelfStatus(statusJSON)
 }
 
-func (d *cliTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
+func (d *cliTailnetReader) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
 	res, err := d.run(ctx, "serve", "status", "--json")
 	if err != nil {
 		return TailscaleServeStatus{}, err
@@ -159,7 +157,7 @@ func (d *cliTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeSta
 	return parseServeStatus(stripCLIWarnings(res.Stdout))
 }
 
-func (d *cliTailscaleDaemon) ServeEnablementURL(ctx context.Context) (string, error) {
+func (d *cliTailnetReader) ServeEnablementURL(ctx context.Context) (string, error) {
 	res, err := d.probe(ctx, serveProbeTimeout, serveProbeArgs...)
 	if err != nil {
 		return "", err
@@ -171,7 +169,7 @@ func (d *cliTailscaleDaemon) ServeEnablementURL(ctx context.Context) (string, er
 
 // statusJSON runs `tailscale status --json` and returns its output with any
 // leading CLI warnings stripped.
-func (d *cliTailscaleDaemon) statusJSON(ctx context.Context) (string, error) {
+func (d *cliTailnetReader) statusJSON(ctx context.Context) (string, error) {
 	res, err := d.run(ctx, "status", "--json")
 	if err != nil {
 		return "", err
@@ -182,9 +180,9 @@ func (d *cliTailscaleDaemon) statusJSON(ctx context.Context) (string, error) {
 	return stripCLIWarnings(res.Stdout), nil
 }
 
-// FakeTailscaleDaemon implements TailscaleDaemon from canned CLI JSON, routing
+// FakeTailnetReader implements TailnetReader from canned CLI JSON, routing
 // it through the same parsing as the real implementations. For tests.
-type FakeTailscaleDaemon struct {
+type FakeTailnetReader struct {
 	StatusJSON  string // canned `tailscale status --json` output
 	ServeJSON   string // canned `tailscale serve status --json` output
 	ProbeOutput string // canned output of the Serve-enablement probe
@@ -193,35 +191,35 @@ type FakeTailscaleDaemon struct {
 	ProbeErr    error
 }
 
-func (f *FakeTailscaleDaemon) MagicDNSSuffix(ctx context.Context) (string, error) {
+func (f *FakeTailnetReader) MagicDNSSuffix(ctx context.Context) (string, error) {
 	if f.StatusErr != nil {
 		return "", f.StatusErr
 	}
 	return parseMagicDNSSuffix(stripCLIWarnings(f.StatusJSON))
 }
 
-func (f *FakeTailscaleDaemon) MachineHostnames(ctx context.Context) ([]string, error) {
+func (f *FakeTailnetReader) MachineHostnames(ctx context.Context) ([]string, error) {
 	if f.StatusErr != nil {
 		return nil, f.StatusErr
 	}
 	return parseMachineHostnames(stripCLIWarnings(f.StatusJSON))
 }
 
-func (f *FakeTailscaleDaemon) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
+func (f *FakeTailnetReader) SelfStatus(ctx context.Context) (TailscaleSelfStatus, error) {
 	if f.StatusErr != nil {
 		return TailscaleSelfStatus{}, f.StatusErr
 	}
 	return parseSelfStatus(stripCLIWarnings(f.StatusJSON))
 }
 
-func (f *FakeTailscaleDaemon) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
+func (f *FakeTailnetReader) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
 	if f.ServeErr != nil {
 		return TailscaleServeStatus{}, f.ServeErr
 	}
 	return parseServeStatus(stripCLIWarnings(f.ServeJSON))
 }
 
-func (f *FakeTailscaleDaemon) ServeEnablementURL(ctx context.Context) (string, error) {
+func (f *FakeTailnetReader) ServeEnablementURL(ctx context.Context) (string, error) {
 	if f.ProbeErr != nil {
 		return "", f.ProbeErr
 	}
@@ -398,15 +396,24 @@ func parseSelfStatus(statusJSON string) (TailscaleSelfStatus, error) {
 
 // parseServeStatus reads advertised services and funnel state from `tailscale
 // serve status --json` output (the daemon's ServeConfig).
+//
+// The serve config knows funnels only by the node endpoint they serve on and
+// the backend they proxy to, so naming the app they belong to is a join done
+// here, once: a funnel-enabled endpoint and the service advertising the same
+// backend are the same app. A funnel whose backend matches no service is left
+// unattributed rather than guessed at.
 func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
-	var config struct {
-		Services    map[string]json.RawMessage
-		AllowFunnel map[string]bool
-		Web         map[string]struct {
-			Handlers map[string]struct {
-				Proxy string
-			}
+	type webConfig struct {
+		Handlers map[string]struct {
+			Proxy string
 		}
+	}
+	var config struct {
+		Services map[string]struct {
+			Web map[string]webConfig
+		}
+		AllowFunnel map[string]bool
+		Web         map[string]webConfig
 	}
 	if err := json.Unmarshal([]byte(serveJSON), &config); err != nil {
 		return TailscaleServeStatus{}, fmt.Errorf("parsing tailscale serve status: %w", err)
@@ -418,17 +425,48 @@ func parseServeStatus(serveJSON string) (TailscaleServeStatus, error) {
 	}
 	slices.Sort(services)
 
-	backends := map[string]string{}
+	funnelled := map[string]string{}
 	for hostPort, enabled := range config.AllowFunnel {
 		if !enabled {
 			continue
 		}
 		for _, handler := range config.Web[hostPort].Handlers {
 			if handler.Proxy != "" {
-				backends[handler.Proxy] = hostPort
+				recordEndpoint(funnelled, backendAddress(handler.Proxy), hostPort)
 			}
 		}
 	}
 
-	return TailscaleServeStatus{Services: services, AllowFunnel: config.AllowFunnel, FunnelBackends: backends}, nil
+	funnels := map[string]string{}
+	for name, service := range config.Services {
+		for _, web := range service.Web {
+			for _, handler := range web.Handlers {
+				if hostPort, ok := funnelled[backendAddress(handler.Proxy)]; ok {
+					recordEndpoint(funnels, strings.TrimPrefix(name, "svc:"), hostPort)
+				}
+			}
+		}
+	}
+
+	return TailscaleServeStatus{Services: services, Funnels: funnels}, nil
+}
+
+// backendAddress reduces a proxy target to the "host:port" it forwards to. The
+// two sides of the funnel join are programmed from separate labels, so they
+// compare on the backend itself rather than on a scheme each side derives -
+// the same comparison docktail makes against its own serve config.
+func backendAddress(proxy string) string {
+	if _, address, ok := strings.Cut(proxy, "://"); ok {
+		return address
+	}
+	return proxy
+}
+
+// recordEndpoint keeps the lowest of several endpoints for one key, so a serve
+// config with more than one match (mid funnel-port change, say) reads the same
+// on every poll instead of following map order.
+func recordEndpoint(endpoints map[string]string, key, hostPort string) {
+	if existing, ok := endpoints[key]; !ok || hostPort < existing {
+		endpoints[key] = hostPort
+	}
 }

@@ -29,8 +29,18 @@ type tailscaleCommand struct {
 	clientSecret string
 	tag          string
 	mode         string
-	json         bool
-	duration     time.Duration
+	// topology is the requested Tailnet Topology (ADR-0015): empty keeps an
+	// enabled install's stored topology, or defaults a fresh enable to nodes -
+	// docker.ValidateTailscaleTopology/Namespace.EnableTailscale do the actual
+	// resolving and validation; this command only carries the flag through.
+	topology string
+	// policyTopology is separate from topology: `policy` prints a snippet with
+	// no install to read a stored topology from, so it needs its own default
+	// (Services, matching this flag's pre-ticket-05 behavior) rather than an
+	// empty value with nothing to resolve against.
+	policyTopology string
+	json           bool
+	duration       time.Duration
 }
 
 func newTailscaleCommand() *tailscaleCommand {
@@ -40,30 +50,42 @@ func newTailscaleCommand() *tailscaleCommand {
 		Short: "Manage Tailscale integration",
 	}
 
+	nodesFacts := mustTailscaleTopologyFacts(docker.TailnetTopologyNodes)
+	servicesFacts := mustTailscaleTopologyFacts(docker.TailnetTopologyServices)
+
 	enable := &cobra.Command{
 		Use:   "enable",
-		Short: "Enable Tailscale and boot the Docktail containers",
-		Long: `Enable Tailscale and boot the Docktail containers.
+		Short: "Enable Tailscale and boot the tailnet topology's containers",
+		Long: fmt.Sprintf(`Enable Tailscale and boot the requested tailnet topology's containers
+(--topology %s|%s; an already-enabled install keeps its stored topology when
+--topology is left unset, a fresh enable becomes %s).
 
-Setup, once per tailnet:
- 1. Run ` + "`once tailscale policy`" + ` and merge the printed snippet into your
-    tailnet policy file (https://login.tailscale.com/admin/acls).
- 2. In the admin console (Settings -> Trust credentials), create an OAuth
-    client with write access to Auth Keys, Devices Core, and Services,
-    tagged with your tag (default tag:once).
- 3. Put the client's secret in ` + envClientSecret + ` and run this
-    command with --client-id. The secret comes from the environment so that
-    it never appears on a command line, which every user on this machine can
-    read. The credential is probed before anything boots, then stored for
-    Docktail and the sidecar.`,
+Under --topology %s:
+%s
+
+Under --topology %s:
+%s
+
+The secret comes from the environment (%s) so that it never appears on a
+command line, which every user on this machine can read. The credential is
+probed before anything boots.`,
+			docker.TailnetTopologyNodes, docker.TailnetTopologyServices, docker.TailnetTopologyNodes,
+			docker.TailnetTopologyNodes, nodesFacts.SetupIntro,
+			docker.TailnetTopologyServices, servicesFacts.SetupIntro,
+			envClientSecret),
 		Example: "  read -rs " + envClientSecret + " && export " + envClientSecret + `
   once tailscale enable --client-id k123CNTRL`,
 		PreRunE: t.resolveClientSecret,
-		RunE:    withLegacyTSDProxyWarning(t.enable),
+		RunE:    WithNamespace(t.enable),
 	}
-	enable.Flags().StringVar(&t.clientID, "client-id", "", "OAuth client ID (scopes auth_keys, devices:core, services; tagged)")
-	enable.Flags().StringVar(&t.tag, "tag", "tag:once", "Tailscale tag the OAuth client is tagged with")
-	enable.Flags().StringVar(&t.mode, "mode", "", "tailscaled to drive: sidecar (Once-managed, the default) or host (an existing host daemon); unset keeps an enabled install's current mode")
+	enable.Flags().StringVar(&t.clientID, "client-id", "", "OAuth client ID (tagged; the required scopes depend on --topology - see the setup steps above)")
+	enable.Flags().StringVar(&t.tag, "tag", nodesFacts.DefaultSettings.Tag, "Tailscale tag the OAuth client is tagged with")
+	enable.Flags().StringVar(&t.mode, "mode", "", fmt.Sprintf(
+		"tailscaled to drive under the %s topology (%s, the default, or %s); unset keeps an enabled install's current mode, or that topology's default for a fresh enable; not used under %s",
+		docker.TailnetTopologyServices, servicesFacts.ModeChoices[0], servicesFacts.ModeChoices[1], docker.TailnetTopologyNodes))
+	enable.Flags().StringVar(&t.topology, "topology", "", fmt.Sprintf(
+		"tailnet topology: %s or %s; unset keeps an enabled install's current topology, or defaults a fresh enable to %s",
+		docker.TailnetTopologyServices, docker.TailnetTopologyNodes, docker.TailnetTopologyNodes))
 	_ = enable.MarkFlagRequired("client-id")
 	// Removed flag, kept registered (hidden) so it fails with a clean-break
 	// error naming its replacement instead of cobra's "unknown flag". It keeps
@@ -74,20 +96,22 @@ Setup, once per tailnet:
 	policy := &cobra.Command{
 		Use:   "policy",
 		Short: "Print the tailnet policy snippet Once needs",
-		Run:   func(cmd *cobra.Command, args []string) { printPolicySnippet(t.tag) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return t.policy() },
 	}
-	policy.Flags().StringVar(&t.tag, "tag", "tag:once", "Tailscale tag the policy sections are built for")
+	policy.Flags().StringVar(&t.tag, "tag", nodesFacts.DefaultSettings.Tag, "Tailscale tag the policy sections are built for")
+	policy.Flags().StringVar(&t.policyTopology, "topology", docker.TailnetTopologyServices, fmt.Sprintf(
+		"tailnet topology to print the policy snippet for: %s or %s", docker.TailnetTopologyServices, docker.TailnetTopologyNodes))
 
 	disable := &cobra.Command{
 		Use:   "disable",
-		Short: "Disable Tailscale and remove the Docktail containers",
-		RunE:  withLegacyTSDProxyWarning(t.disable),
+		Short: "Disable Tailscale and remove its containers",
+		RunE:  WithNamespace(t.disable),
 	}
 
 	status := &cobra.Command{
 		Use:   "status",
-		Short: "Show each exposed app's tailnet URL and advertised/approved state",
-		RunE:  withLegacyTSDProxyWarning(t.status),
+		Short: "Show the tailnet topology and each exposed app's URL and state",
+		RunE:  WithNamespace(t.status),
 	}
 	status.Flags().BoolVar(&t.json, "json", false, "emit structured JSON instead of prose")
 
@@ -105,7 +129,7 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 		Use:   "enable <app-name>",
 		Short: "Grant temporary public access to an app via Tailscale Funnel",
 		Args:  cobra.ExactArgs(1),
-		RunE:  withLegacyTSDProxyWarning(t.funnelEnable),
+		RunE:  WithNamespace(t.funnelEnable),
 	}
 	enable.Flags().DurationVar(&t.duration, "duration", docker.DefaultFunnelDuration, "how long the Funnel stays open (max 24h)")
 
@@ -113,7 +137,7 @@ func (t *tailscaleCommand) newFunnelCommand() *cobra.Command {
 		Use:   "disable <app-name>",
 		Short: "Revoke an app's public Funnel access immediately",
 		Args:  cobra.ExactArgs(1),
-		RunE:  withLegacyTSDProxyWarning(t.funnelDisable),
+		RunE:  WithNamespace(t.funnelDisable),
 	}
 
 	funnel.AddCommand(enable, disable)
@@ -144,6 +168,7 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 		ClientSecret: t.clientSecret,
 		Tag:          t.tag,
 		Mode:         t.mode,
+		Topology:     t.topology,
 	}
 	var warnings []string
 	err := runShowingProgress("tailscale enable", func(progress docker.DeployProgressCallback) error {
@@ -153,13 +178,35 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 	})
 	printWarnings(warnings)
 	if errors.Is(err, docker.ErrTagNotInPolicy) {
-		printPolicySnippet(t.tag)
+		// The requested topology decides which snippet is relevant; an
+		// unset flag mirrors resolveTopology's own fresh-enable default so
+		// the printed snippet matches what the failed enable just tried to
+		// boot in the common case (no install yet).
+		topology := t.topology
+		if topology == "" {
+			topology = docker.TailnetTopologyNodes
+		}
+		if facts, factsErr := docker.TailscaleTopologyFacts(topology); factsErr == nil {
+			printPolicySnippet(facts, t.tag)
+		}
 	}
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("Tailscale enabled")
+	return nil
+}
+
+// policy prints the tailnet policy snippet the requested topology needs;
+// unlike enable/disable/status it touches no Docker namespace, so it needs
+// no install to already exist.
+func (t *tailscaleCommand) policy() error {
+	facts, err := docker.TailscaleTopologyFacts(t.policyTopology)
+	if err != nil {
+		return err
+	}
+	printPolicySnippet(facts, t.tag)
 	return nil
 }
 
@@ -181,6 +228,7 @@ const stateNotRunning = "not running"
 // and no service states could be read.
 type tailscaleStatusReport struct {
 	Enabled      bool                   `json:"enabled"`
+	Topology     string                 `json:"topology,omitempty"`
 	DomainSuffix string                 `json:"domainSuffix,omitempty"`
 	Services     []docker.ServiceStatus `json:"services,omitempty"`
 }
@@ -205,6 +253,7 @@ func (t *tailscaleCommand) status(ctx context.Context, ns *docker.Namespace, cmd
 		fmt.Println("The tailnet's Magic DNS suffix is not known yet (the tailnet may still be spinning up); re-run in a moment")
 		return nil
 	}
+	fmt.Println("Topology:", report.Topology)
 	warnings := tailnetDNSWarnings(ctx, resolvableServiceURLs(report.Services))
 	for i, s := range report.Services {
 		fmt.Printf("%s\t%s\t%s\n", s.Name, s.URL, s.State)
@@ -236,8 +285,15 @@ func (t *tailscaleCommand) statusReport(ctx context.Context, ns *docker.Namespac
 
 	settings, err := ns.Tailscale().LoadSettings(ctx)
 	if err != nil {
+		if errors.Is(err, docker.ErrOlderOnceSetup) {
+			// Show the facade's own sentence verbatim, not stacked behind a
+			// "reading Tailscale settings:" prefix that only restates where
+			// it came from.
+			return report, err
+		}
 		return report, fmt.Errorf("reading Tailscale settings: %w", err)
 	}
+	report.Topology = settings.Topology
 	report.DomainSuffix = settings.DomainSuffix
 	if settings.DomainSuffix == "" {
 		return report, nil
@@ -272,7 +328,7 @@ func (t *tailscaleCommand) statusReport(ctx context.Context, ns *docker.Namespac
 	}
 	for i, s := range statuses {
 		if app := funnelApps[s.Name]; app != nil {
-			statuses[i].FunnelURL = settings.FunnelURL(app.Settings.ActiveFunnelPort())
+			statuses[i].FunnelURL = settings.FunnelURL(s.Name, app.Settings.ActiveFunnelPort())
 			statuses[i].FunnelExpiresAt = app.Settings.FunnelExpiresAt
 		}
 	}
@@ -331,18 +387,6 @@ func resolvableServiceURLs(services []docker.ServiceStatus) []string {
 	return urls
 }
 
-// withLegacyTSDProxyWarning runs a tailscale subcommand after surfacing the
-// pre-Docktail upgrade message when a legacy once-tsdproxy container is still
-// around. Once never migrates or removes it; the user does.
-func withLegacyTSDProxyWarning(fn NamespaceRunE) func(*cobra.Command, []string) error {
-	return WithNamespace(func(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
-		if w := ns.Tailscale().LegacyTSDProxyWarning(ctx); w != "" {
-			printWarnings([]string{w})
-		}
-		return fn(ctx, ns, cmd, args)
-	})
-}
-
 // hintTailscaleEnable points a CLI user at the fix when a deploy or Funnel
 // enable is refused because Tailscale is not enabled.
 func hintTailscaleEnable(err error) error {
@@ -358,10 +402,21 @@ func printWarnings(warnings []string) {
 	}
 }
 
-func printPolicySnippet(tag string) {
+func printPolicySnippet(facts docker.TopologyFacts, tag string) {
 	fmt.Println()
 	fmt.Println("Merge this snippet into your tailnet policy file (https://login.tailscale.com/admin/acls), then run `once tailscale enable`:")
 	fmt.Println()
-	fmt.Println(docker.PolicySnippet(tag))
+	fmt.Println(facts.PolicySnippet(tag))
 	fmt.Println()
+}
+
+// mustTailscaleTopologyFacts looks up topology's facts for a flag's
+// construction-time default/help text; topology must be one of the two
+// docker package constants, so the lookup can never actually fail.
+func mustTailscaleTopologyFacts(topology string) docker.TopologyFacts {
+	facts, err := docker.TailscaleTopologyFacts(topology)
+	if err != nil {
+		panic(err)
+	}
+	return facts
 }

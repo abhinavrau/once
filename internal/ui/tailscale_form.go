@@ -13,9 +13,10 @@ import (
 	"github.com/basecamp/once/internal/docker"
 )
 
-// tailscaleModeChoices maps the mode radio's option order to settings values;
-// sidecar first so a fresh enable defaults to it (ADR-0007).
-var tailscaleModeChoices = []string{docker.TailscaleModeSidecar, docker.TailscaleModeHost}
+// tailscaleTopologyChoices maps the topology radio's option order to
+// settings values (ADR-0015); nodes first, since that is the fresh-enable
+// default.
+var tailscaleTopologyChoices = []string{docker.TailnetTopologyNodes, docker.TailnetTopologyServices}
 
 const tailscaleFormTextWidth = 72
 
@@ -27,7 +28,7 @@ var (
 type TailscaleFormCloseMsg struct{}
 
 type tailscaleEnableSubmitMsg struct {
-	id, secret, tag, mode string
+	id, secret, tag, mode, topology string
 }
 
 type tailscaleDisableSubmitMsg struct{}
@@ -41,8 +42,9 @@ type tailscaleStatusMsg string
 
 // TailscaleForm is the dashboard-global overlay for enabling/disabling
 // Tailscale. Enabling runs the same flow as the CLI: probe the pasted OAuth
-// credential and boot the Docktail topology. The credential's tag must be
-// defined in the tailnet policy first; ctrl+p copies the required snippet.
+// credential and boot the requested tailnet topology. The credential's tag
+// must be defined in the tailnet policy first; ctrl+p copies the required
+// snippet for whichever topology is currently selected.
 type TailscaleForm struct {
 	namespace     *docker.Namespace
 	enabled       bool
@@ -60,10 +62,11 @@ type TailscaleForm struct {
 func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 	enabled, _ := ns.Tailscale().Enabled(context.Background())
 	var settings docker.TailscaleSettings
+	var loadErr error
 	if enabled {
-		settings, _ = ns.Tailscale().LoadSettings(context.Background())
+		settings, loadErr = ns.Tailscale().LoadSettings(context.Background())
 	}
-	return newTailscaleForm(ns, enabled, settings)
+	return newTailscaleForm(ns, enabled, settings, loadErr)
 }
 
 func (m TailscaleForm) Init() tea.Cmd {
@@ -87,7 +90,8 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
 		}
 		if key.Matches(msg, tailscaleCopyKey) {
-			return m, tea.SetClipboard(docker.PolicySnippet(m.form.TextField("tag").Value()))
+			facts := tailscaleFactsFor(selectedTailscaleTopology(m.form))
+			return m, tea.SetClipboard(facts.PolicySnippet(m.form.TextField("tag").Value()))
 		}
 		m.err = nil
 		m.warnings = nil
@@ -187,6 +191,7 @@ func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 			ClientSecret: msg.secret,
 			Tag:          msg.tag,
 			Mode:         msg.mode,
+			Topology:     msg.topology,
 		}
 		progress := func(p docker.DeployProgress) {
 			if p.Stage == docker.DeployStageWaiting {
@@ -211,9 +216,9 @@ func (m TailscaleForm) setupView() string {
 		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Warning).Width(tailscaleFormTextWidth).Render(strings.Join(m.warnings, "\n")), "")
 	}
 
-	intro := "Tailscale is enabled. Enable re-applies the settings below\n(changing the mode, credentials, or tag rebuilds the topology)."
+	intro := "Tailscale is enabled. Enable re-applies the settings below\n(changing the topology, mode, credentials, or tag rebuilds it)."
 	if !m.enabled {
-		intro = "Merge the tailnet policy snippet (ctrl+p copies it) at\nlogin.tailscale.com/admin/acls, then create an OAuth client in the\nadmin console (Settings -> Trust credentials) with write access to\nAuth Keys, Devices Core, and Services, tagged with the tag below,\nand paste it here."
+		intro = tailscaleFactsFor(selectedTailscaleTopology(m.form)).SetupIntro
 	}
 	parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Muted).Render(intro), "", m.form.View())
 
@@ -227,15 +232,23 @@ func (m TailscaleForm) setupView() string {
 // same lifecycle the CLI runs: unchanged settings are a no-op, changed ones
 // rebuild the topology), with Disable as a secondary action. The fields are not
 // required there because an enabled install's stored credentials may be blank;
-// requiring them would leave neither action able to submit.
-func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.TailscaleSettings) TailscaleForm {
+// requiring them would leave neither action able to submit. loadErr, when
+// set, is the facade's own read failure (ErrOlderOnceSetup for a label that
+// predates ADR-0015) shown verbatim instead of the usual setup intro.
+func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.TailscaleSettings, loadErr error) TailscaleForm {
 	m := TailscaleForm{
 		namespace: ns,
 		enabled:   enabled,
+		err:       loadErr,
 		help:      NewHelp(),
 		progress:  NewProgress(0, Colors.Border),
 	}
 	m.help.SetBindings([]key.Binding{tailscaleCopyKey, tailscaleFormCloseKey})
+
+	topology := settings.Topology
+	if topology == "" {
+		topology = docker.TailnetTopologyNodes
+	}
 
 	clientIDField := NewTextField("K123456CNTRL")
 	clientIDField.SetValue(settings.ClientID)
@@ -244,31 +257,55 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 	clientSecretField.SetEchoPassword()
 	clientSecretField.SetValue(settings.ClientSecret)
 
-	tagField := NewTextField("tag:once")
+	defaultTag := tailscaleFactsFor(topology).DefaultSettings.Tag
+	tagField := NewTextField(defaultTag)
 	if enabled {
 		tagField.SetValue(settings.Tag)
 	} else {
-		tagField.SetValue("tag:once")
+		tagField.SetValue(defaultTag)
 	}
 
-	modeField := NewRadioField("Sidecar", "Host")
-	if i := slices.Index(tailscaleModeChoices, settings.Mode); i >= 0 {
-		modeField.SetSelected(i)
+	topologyField := NewRadioField(tailscaleTopologyLabels()...)
+	topologyField.SetSelected(max(slices.Index(tailscaleTopologyChoices, topology), 0))
+
+	items := []FormItem{
+		{Key: "client-id", Label: "Client ID", Field: clientIDField, Required: !enabled},
+		{Key: "client-secret", Label: "Client Secret", Field: clientSecretField, Required: !enabled},
+		{Key: "tag", Label: "Tag", Field: tagField, Required: !enabled},
+		{Key: "topology", Label: "Topology", Field: topologyField},
+	}
+	if choices := tailscaleFactsFor(topology).ModeChoices; choices != nil {
+		items = append(items, newTailscaleModeItem(choices, settings.Mode))
 	}
 
-	m.form = NewForm("Enable",
-		FormItem{Key: "client-id", Label: "Client ID", Field: clientIDField, Required: !enabled},
-		FormItem{Key: "client-secret", Label: "Client Secret", Field: clientSecretField, Required: !enabled},
-		FormItem{Key: "tag", Label: "Tag", Field: tagField, Required: !enabled},
-		FormItem{Key: "mode", Label: "Mode", Field: modeField},
-	)
+	m.form = NewForm("Enable", items...)
+	// The Mode radio only exists for a topology whose facts offer mode
+	// choices (Services, ADR-0015): every rebuild - a keypress or a click on
+	// the topology radio - reconciles its presence with whatever is
+	// currently selected.
+	m.form.OnRebuild(func(f *Form) {
+		facts := tailscaleFactsFor(selectedTailscaleTopology(*f))
+		switch {
+		case facts.ModeChoices != nil && !formHasItem(*f, "mode"):
+			f.AppendItems(newTailscaleModeItem(facts.ModeChoices, ""))
+		case facts.ModeChoices == nil && formHasItem(*f, "mode"):
+			f.RemoveItem("mode")
+		}
+	})
+
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
 		return func() tea.Msg {
+			topology := selectedTailscaleTopology(*f)
+			mode := ""
+			if formHasItem(*f, "mode") {
+				mode = tailscaleFactsFor(topology).ModeChoices[f.RadioField("mode").Selected()]
+			}
 			return tailscaleEnableSubmitMsg{
-				id:     f.TextField("client-id").Value(),
-				secret: f.TextField("client-secret").Value(),
-				tag:    f.TextField("tag").Value(),
-				mode:   tailscaleModeChoices[f.RadioField("mode").Selected()],
+				id:       f.TextField("client-id").Value(),
+				secret:   f.TextField("client-secret").Value(),
+				tag:      f.TextField("tag").Value(),
+				mode:     mode,
+				topology: topology,
 			}
 		}
 	})
@@ -294,4 +331,67 @@ func listenTailscaleStatus(ch chan string) tea.Cmd {
 		}
 		return tailscaleStatusMsg(status)
 	}
+}
+
+// tailscaleFactsFor returns topology's facts, falling back to the nodes
+// topology's for a corrupt or unrecognized value - the form must never crash
+// on bad stored state, and nodes (no mode, the fresh-enable default) is the
+// safe shape to fall back to.
+func tailscaleFactsFor(topology string) docker.TopologyFacts {
+	facts, err := docker.TailscaleTopologyFacts(topology)
+	if err != nil {
+		facts, _ = docker.TailscaleTopologyFacts(docker.TailnetTopologyNodes)
+	}
+	return facts
+}
+
+// tailscaleTopologyLabels renders tailscaleTopologyChoices as the radio's
+// display labels (e.g. "nodes" -> "Nodes"), so the option text is derived
+// from the docker package's own constants rather than typed out twice.
+func tailscaleTopologyLabels() []string {
+	labels := make([]string, len(tailscaleTopologyChoices))
+	for i, choice := range tailscaleTopologyChoices {
+		labels[i] = capitalizeFirst(choice)
+	}
+	return labels
+}
+
+// selectedTailscaleTopology reads the form's topology radio field.
+func selectedTailscaleTopology(f Form) string {
+	return tailscaleTopologyChoices[f.RadioField("topology").Selected()]
+}
+
+// formHasItem reports whether f has a field with this key, without the
+// panic Form.RadioField/TextField raise for an absent one - needed here
+// because the Mode field's very presence is conditional.
+func formHasItem(f Form, key string) bool {
+	for _, item := range f.items {
+		if item.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// newTailscaleModeItem builds the Mode radio for a topology whose facts offer
+// mode choices, preselecting storedMode when it names one of them and the
+// first (default) choice otherwise.
+func newTailscaleModeItem(choices []string, storedMode string) FormItem {
+	labels := make([]string, len(choices))
+	for i, choice := range choices {
+		labels[i] = capitalizeFirst(choice)
+	}
+	field := NewRadioField(labels...)
+	field.SetSelected(max(slices.Index(choices, storedMode), 0))
+	return FormItem{Key: "mode", Label: "Mode", Field: field}
+}
+
+// capitalizeFirst upper-cases s's first byte, for turning a settings value
+// (docker.TailscaleModeSidecar, TailnetTopologyNodes, ...) into the label a
+// radio field displays, without typing that word out a second time.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

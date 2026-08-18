@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -411,6 +412,15 @@ func (f *Form) AppendItems(items ...FormItem) {
 	f.items = append(f.items, items...)
 }
 
+// RemoveItem drops the keyed field, a no-op if the form has no such key. Used
+// by a form whose field set depends on another field's current value (e.g.
+// TailscaleForm's Mode radio, present only for a topology whose facts offer
+// mode choices) - typically from an OnRebuild callback, which already
+// re-clamps focus afterward.
+func (f *Form) RemoveItem(key string) {
+	f.items = slices.DeleteFunc(f.items, func(item FormItem) bool { return item.Key == key })
+}
+
 func (f Form) ItemCount() int {
 	return len(f.items)
 }
@@ -517,6 +527,10 @@ func (f Form) handleClick(target string) (Form, tea.Cmd) {
 				field.Cycle()
 			}
 			form, focusCmd := f.focusIndex(i)
+			if form.onRebuild != nil {
+				form.onRebuild(&form)
+				form.focused = min(form.focused, form.totalCount()-1)
+			}
 			return form, tea.Batch(toggleCmd, focusCmd)
 		}
 	}

@@ -16,7 +16,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/stretchr/testify/assert"
@@ -254,13 +253,33 @@ func plantModelessDocktail(t *testing.T, ctx context.Context, cli *client.Client
 	require.NoError(t, err)
 }
 
+// plantTopologyLessDocktail replaces the once-docktail container with a
+// stopped stand-in carrying a label with no "topology" key at all - a
+// pre-ADR-0015 install - for the older-Once self-heal path.
+// docker.TailscaleSettings.Marshal always writes "topology" (not omitempty),
+// so the label is built by hand rather than through it.
+func plantTopologyLessDocktail(t *testing.T, ctx context.Context, cli *client.Client, name string, settings docker.TailscaleSettings) {
+	t.Helper()
+	require.NoError(t, cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}))
+	label := fmt.Sprintf(`{"clientId":%q,"clientSecret":%q,"tag":%q,"domainSuffix":%q,"mode":%q}`,
+		settings.ClientID, settings.ClientSecret, settings.Tag, settings.DomainSuffix, settings.Mode)
+	_, err := cli.ContainerCreate(ctx,
+		&container.Config{Image: whoamiImage, Labels: map[string]string{"once": label}},
+		nil, nil, nil, name)
+	require.NoError(t, err)
+}
+
 // controlSeamSettings are the TailscaleSettings used with the control seam,
 // where OAuth credentials are never exercised - EnableTailscale drops them
 // before they reach the label, so they are set here to prove exactly that.
+// Topology is explicit (ticket 03: a fresh enable otherwise defaults to
+// nodes, which has no adapter until ticket 04) so this suite keeps exercising
+// the Docktail/sidecar topology it was written for.
 func controlSeamSettings() docker.TailscaleSettings {
 	return docker.TailscaleSettings{
 		ClientID:     "unused-with-control-seam",
 		ClientSecret: "unused-with-control-seam",
+		Topology:     docker.TailnetTopologyServices,
 	}
 }
 
@@ -388,6 +407,20 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	sticky, err := cli.ContainerInspect(ctx, docktailName)
 	require.NoError(t, err)
 	assert.Equal(t, rebuilt.ID, sticky.ID, "an unset mode must keep the stored one without a rebuild")
+
+	// A stored label carrying no topology at all (a pre-ADR-0015 install)
+	// refuses every read path with the older-Once error, and self-heals on a
+	// re-enable exactly like a missing mode does - back to the topology the
+	// re-enable explicitly asked for (Services, on this branch: ticket 03
+	// ships only that adapter).
+	plantTopologyLessDocktail(t, ctx, cli, docktailName, healed)
+	_, err = ns.Tailscale().LoadSettings(ctx)
+	require.ErrorContains(t, err, "older version of Once")
+	_, err = ns.EnableTailscale(ctx, controlSeamSettings(), nil)
+	require.NoError(t, err)
+	rehealed, err := ns.Tailscale().LoadSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, docker.TailnetTopologyServices, rehealed.Topology, "the rebuilt label must record the resolved topology")
 
 	// `deploy --expose tailnet` works now that Tailscale is up: the app is
 	// advertised as a Service named from the App Name (its Host); the local
@@ -584,8 +617,6 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 	sidecarName := ns.Name() + "-tailscale"
 	adminName := ns.Name() + "-admin"
 	stateVolume := ns.Name() + "-tailscale-state"
-	legacyName := ns.Name() + "-tsdproxy"
-	legacyVolume := ns.Name() + "-tsdproxy-data"
 
 	_, err = cli.ContainerInspect(ctx, docktailName)
 	require.NoError(t, err, "docktail container should exist after enable")
@@ -595,16 +626,6 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 	require.NoError(t, err, "admin container should exist after boot")
 	_, err = cli.VolumeInspect(ctx, stateVolume)
 	require.NoError(t, err, "state volume should exist after enable")
-
-	// Plant pre-Docktail remnants: teardown must sweep the old-name container
-	// and volume too, and their presence must surface the upgrade warning.
-	assert.Empty(t, ns.Tailscale().LegacyTSDProxyWarning(ctx))
-	pullImage(t, ctx, cli, whoamiImage)
-	_, err = cli.ContainerCreate(ctx, &container.Config{Image: whoamiImage}, nil, nil, nil, legacyName)
-	require.NoError(t, err)
-	_, err = cli.VolumeCreate(ctx, volume.CreateOptions{Name: legacyVolume})
-	require.NoError(t, err)
-	assert.Contains(t, ns.Tailscale().LegacyTSDProxyWarning(ctx), "once tailscale enable")
 
 	require.NoError(t, ns.Teardown(ctx, true))
 
@@ -616,10 +637,6 @@ func TestTeardownRemovesTailscaleSystemResources(t *testing.T) {
 	assert.True(t, errdefs.IsNotFound(err), "admin container should be gone after teardown")
 	_, err = cli.VolumeInspect(ctx, stateVolume)
 	assert.True(t, errdefs.IsNotFound(err), "state volume should be deleted by teardown")
-	_, err = cli.ContainerInspect(ctx, legacyName)
-	assert.True(t, errdefs.IsNotFound(err), "legacy tsdproxy container should be gone after teardown")
-	_, err = cli.VolumeInspect(ctx, legacyVolume)
-	assert.True(t, errdefs.IsNotFound(err), "legacy tsdproxy volume should be deleted by teardown")
 }
 
 // TestTeardownNoopWhenTailscaleNeverEnabled proves teardown is safe and

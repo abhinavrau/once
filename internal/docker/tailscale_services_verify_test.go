@@ -12,21 +12,21 @@ import (
 )
 
 func TestWaitForAdvertisedAllServicesPresent(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{
+	daemon := &FakeTailnetReader{
 		ServeJSON: `{"Services":{"svc:whoami":{},"svc:once-admin":{}}}`,
 	}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, time.Second, time.Millisecond, nil)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, testLogsHint, time.Second, time.Millisecond, nil)
 	require.NoError(t, err)
 }
 
 func TestWaitForAdvertisedAnnouncesPhaseOnce(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{
+	daemon := &FakeTailnetReader{
 		ServeJSON: `{"Services":{"svc:whoami":{},"svc:once-admin":{}}}`,
 	}
 
 	var lines []string
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, time.Second, time.Millisecond,
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, testLogsHint, time.Second, time.Millisecond,
 		func(line string) { lines = append(lines, line) })
 	require.NoError(t, err)
 	require.Len(t, lines, 1, "an immediately-resolved wait must announce exactly once")
@@ -35,11 +35,11 @@ func TestWaitForAdvertisedAnnouncesPhaseOnce(t *testing.T) {
 }
 
 func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{
+	daemon := &FakeTailnetReader{
 		ServeJSON: `{"Services":{"svc:whoami":{}}}`,
 	}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, 10*time.Millisecond, time.Millisecond, nil)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami", "once-admin"}, testLogsHint, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "once-admin")
 	assert.NotContains(t, err.Error(), "whoami,", "advertised services must not be reported missing")
@@ -47,24 +47,24 @@ func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
 }
 
 func TestWaitForAdvertisedSurfacesDaemonError(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ServeErr: errors.New("no tailscaled socket")}
+	daemon := &FakeTailnetReader{ServeErr: errors.New("no tailscaled socket")}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, 10*time.Millisecond, time.Millisecond, nil)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, testLogsHint, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no tailscaled socket")
 	assert.NotContains(t, err.Error(), "not yet advertised", "a daemon failure must not read as services being slow")
 }
 
 func TestWaitForAdvertisedEmptyServeConfig(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{}`}
 
-	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, 10*time.Millisecond, time.Millisecond, nil)
+	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, testLogsHint, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whoami")
 }
 
 func TestRequireServeEnabledSurfacesTheEnablementLink(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ProbeOutput: serveDisabledOutput}
+	daemon := &FakeTailnetReader{ProbeOutput: serveDisabledOutput}
 
 	err := requireServeEnabled(context.Background(), daemon)
 	require.Error(t, err)
@@ -74,7 +74,7 @@ func TestRequireServeEnabledSurfacesTheEnablementLink(t *testing.T) {
 }
 
 func TestRequireServeEnabledPassesWhenServeIsEnabled(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ProbeOutput: serveEnabledOutput}
+	daemon := &FakeTailnetReader{ProbeOutput: serveEnabledOutput}
 
 	require.NoError(t, requireServeEnabled(context.Background(), daemon))
 }
@@ -82,7 +82,7 @@ func TestRequireServeEnabledPassesWhenServeIsEnabled(t *testing.T) {
 // An unrunnable probe says nothing about the tailnet, so it must not block the
 // enable with a diagnosis it cannot support.
 func TestRequireServeEnabledIgnoresProbeFailures(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ProbeErr: errors.New("no tailscaled socket")}
+	daemon := &FakeTailnetReader{ProbeErr: errors.New("no tailscaled socket")}
 
 	require.NoError(t, requireServeEnabled(context.Background(), daemon))
 }
@@ -174,14 +174,15 @@ func TestVerifyServicesSkipsControlSeam(t *testing.T) {
 	t.Setenv(envControlURL, "http://headscale:8080")
 	t.Setenv(envAuthKey, "tskey-auth-abc")
 
-	// Services do not exist on headscale; verification must short-circuit
-	// before touching Docker or any API.
-	err := (&Tailscale{}).VerifyServices(context.Background(), []string{"whoami"}, nil)
+	// Services do not exist on headscale; the adapter's verify must
+	// short-circuit before touching Docker or any API.
+	err := (&servicesTopology{}).verify(context.Background(), TailscaleSettings{}, []string{"whoami"}, nil)
 	require.NoError(t, err)
 }
 
 func TestVerifyServicesNoExpectedServices(t *testing.T) {
-	err := (&Tailscale{}).VerifyServices(context.Background(), nil, nil)
+	// The facade's own shortcut, ahead of resolving any topology.
+	err := (&Tailscale{}).Verify(context.Background(), nil, nil)
 	require.NoError(t, err)
 }
 
@@ -207,5 +208,5 @@ func approvalAPI(t *testing.T, hosts map[string]string) *fakeTailscaleAPI {
 func waitForApprovedAgainst(api tailscaleAPI, announce func(string), expected ...string) error {
 	return waitForApproved(context.Background(), api,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"},
-		expected, 50*time.Millisecond, time.Millisecond, announce)
+		expected, testLogsHint, 50*time.Millisecond, time.Millisecond, announce)
 }

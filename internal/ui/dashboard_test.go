@@ -267,7 +267,7 @@ func TestDashboard_UncheckedTailnetURLIsNotMarked(t *testing.T) {
 	d.apps[0].Settings.Exposure = docker.ExposureTailnet
 	d.buildPanels()
 	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
-	d, _ = updateDashboard(d, tailscaleInfoMsg{enabled: true, suffix: "tailnet.ts.net"})
+	d, _ = updateDashboard(d, tailscaleInfoMsg{enabled: true, settings: docker.TailscaleSettings{DomainSuffix: "tailnet.ts.net"}})
 
 	view := ansi.Strip(d.View())
 	assert.Contains(t, view, "https://app-0.example.com.tailnet.ts.net")
@@ -291,14 +291,27 @@ func TestDashboard_TailnetWarningNoteShrinksTheViewport(t *testing.T) {
 func TestDashboardTailnetDNSWarningsSkipsHostsThatResolve(t *testing.T) {
 	stubLookupHost(t, nil, errors.New("server misbehaving"))
 
-	warnings := tailnetDNSWarnings(context.Background(), []string{"books", "chat"}, "tailnet.ts.net")
+	settings := docker.TailscaleSettings{DomainSuffix: "tailnet.ts.net"}
+	warnings := tailnetDNSWarnings(context.Background(), []string{"books", "chat"}, settings)
 
 	assert.Len(t, warnings, 2)
 	assert.Contains(t, warnings["https://books.tailnet.ts.net"], "books.tailnet.ts.net does not resolve")
 	assert.Contains(t, warnings["https://chat.tailnet.ts.net"], "chat.tailnet.ts.net does not resolve")
 
 	stubLookupHost(t, []string{"100.64.0.1"}, nil)
-	assert.Empty(t, tailnetDNSWarnings(context.Background(), []string{"books"}, "tailnet.ts.net"))
+	assert.Empty(t, tailnetDNSWarnings(context.Background(), []string{"books"}, settings))
+}
+
+func TestDashboard_OlderTailscaleSetupShowsTheFacadeMessageVerbatim(t *testing.T) {
+	d := testDashboard(1)
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	d, _ = updateDashboard(d, tailscaleInfoMsg{enabled: true, setupWarning: docker.ErrOlderOnceSetup.Error()})
+
+	// The note word-wraps at the dashboard's width, so compare with
+	// whitespace normalized rather than asserting a literal substring.
+	view := normalizeWhitespace(ansi.Strip(d.View()))
+	assert.Contains(t, view, normalizeWhitespace(docker.ErrOlderOnceSetup.Error()))
 }
 
 func TestDashboardResolvableTailnetHostsSkipsStoppedAndNonTailnetApps(t *testing.T) {
@@ -323,11 +336,11 @@ func tailnetDashboard(t *testing.T) Dashboard {
 	d.buildPanels()
 	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	const suffix = "tailnet.ts.net"
+	settings := docker.TailscaleSettings{DomainSuffix: "tailnet.ts.net"}
 	d, _ = updateDashboard(d, tailscaleInfoMsg{
 		enabled:  true,
-		suffix:   suffix,
-		warnings: tailnetDNSWarnings(context.Background(), d.resolvableTailnetHosts(), suffix),
+		settings: settings,
+		warnings: tailnetDNSWarnings(context.Background(), d.resolvableTailnetHosts(), settings),
 	})
 	return d
 }

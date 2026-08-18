@@ -113,9 +113,9 @@ func TestValidateTailscaleMode(t *testing.T) {
 func TestResolveModeExplicitWinsWithoutDocker(t *testing.T) {
 	// An explicit mode resolves without touching Docker (a nil client would
 	// panic), so the host-mode pre-flight still runs before any Docker work.
-	ts := NewTailscale(&Namespace{name: "test"})
+	s := newServicesTopology(&Namespace{name: "test"})
 
-	mode, fresh, err := ts.resolveMode(context.Background(), TailscaleModeHost)
+	mode, fresh, err := s.resolveMode(context.Background(), TailscaleModeHost)
 	require.NoError(t, err)
 	assert.Equal(t, TailscaleModeHost, mode)
 	assert.False(t, fresh)
@@ -159,15 +159,25 @@ func TestTailnetURL(t *testing.T) {
 
 func TestSettingsFunnelURL(t *testing.T) {
 	s := TailscaleSettings{NodeHost: "once-tailscale-1.tailnet-name.ts.net"}
-	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net", s.FunnelURL(443))
-	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net:8443", s.FunnelURL(8443))
+	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net", s.FunnelURL("books", 443))
+	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net:8443", s.FunnelURL("books", 8443))
 	// No node host, or no active port -> no URL.
-	assert.Empty(t, TailscaleSettings{}.FunnelURL(443))
-	assert.Empty(t, s.FunnelURL(0))
+	assert.Empty(t, TailscaleSettings{}.FunnelURL("books", 443))
+	assert.Empty(t, s.FunnelURL("books", 0))
+}
+
+func TestSettingsFunnelURLUnderNodesIsTheAppsOwnTailnetURL(t *testing.T) {
+	// Under nodes, every app is its own node: Funnel serves on the app's own
+	// tailnet URL, not a shared node host - and 443 is the only port it ever
+	// offers Funnel on.
+	s := TailscaleSettings{Topology: TailnetTopologyNodes, DomainSuffix: "tailnet-name.ts.net"}
+	assert.Equal(t, "https://books.tailnet-name.ts.net", s.FunnelURL("books", 443))
+	assert.Empty(t, s.FunnelURL("books", 0))
+	assert.Empty(t, TailscaleSettings{Topology: TailnetTopologyNodes}.FunnelURL("books", 443), "no suffix known yet -> no URL")
 }
 
 func TestDocktailLabelsWhenEnabled(t *testing.T) {
-	labels := docktailLabels("writebook", "once", true, 0)
+	labels := (&servicesTopology{}).appLabels("writebook", "once", 0)
 
 	assert.Equal(t, map[string]string{
 		"docktail.service.enable":           "true",
@@ -179,51 +189,66 @@ func TestDocktailLabelsWhenEnabled(t *testing.T) {
 }
 
 func TestDocktailLabelsWithFunnel(t *testing.T) {
-	labels := docktailLabels("writebook", "once", true, 443)
+	labels := (&servicesTopology{}).appLabels("writebook", "once", 443)
 
 	assert.Equal(t, "true", labels["docktail.service.enable"])
 	assert.Equal(t, "true", labels["docktail.funnel.enable"])
 	assert.Equal(t, "80", labels["docktail.funnel.port"])
 	assert.Equal(t, "443", labels["docktail.funnel.funnel-port"])
 
-	assert.Equal(t, "8443", docktailLabels("writebook", "once", true, 8443)["docktail.funnel.funnel-port"])
+	assert.Equal(t, "8443", (&servicesTopology{}).appLabels("writebook", "once", 8443)["docktail.funnel.funnel-port"])
 }
 
-func TestDocktailLabelsWhenDisabled(t *testing.T) {
-	assert.Nil(t, docktailLabels("writebook", "once", false, 0))
+func TestAppLabelsNilWhenDisabled(t *testing.T) {
+	// The facade, not the adapter, owns the disabled shortcut: appLabels
+	// itself has no notion of "enabled" (ticket 03).
+	labels, err := (&Tailscale{}).AppLabels(context.Background(), false, "writebook", "once", 0)
+	require.NoError(t, err)
+	assert.Nil(t, labels)
 	// Funnel only matters when Tailscale is enabled.
-	assert.Nil(t, docktailLabels("writebook", "once", false, 443))
+	labels, err = (&Tailscale{}).AppLabels(context.Background(), false, "writebook", "once", 443)
+	require.NoError(t, err)
+	assert.Nil(t, labels)
 }
 
-func TestWaitForFunnelBackend(t *testing.T) {
-	serveJSON := func(backend string) string {
-		return `{
-			"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "` + backend + `"}}}},
-			"AllowFunnel": {"once.tail1234.ts.net:443": true}
-		}`
-	}
+func TestWaitForFunnel(t *testing.T) {
+	// writebook is funnelled: the node's funnel-enabled endpoint proxies to the
+	// same backend the service does. campfire is advertised but not funnelled.
+	serveJSON := `{
+		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}},
+		"AllowFunnel": {"once.tail1234.ts.net:443": true},
+		"Services": {
+			"svc:writebook": {
+				"Web": {"writebook.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}}
+			},
+			"svc:campfire": {
+				"Web": {"campfire.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.6:80"}}}}
+			}
+		}
+	}`
 
-	daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON("http://10.0.0.5:80")}
-	hostPort, err := waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", time.Second, time.Millisecond)
+	daemon := &FakeTailnetReader{ServeJSON: serveJSON}
+	hostPort, err := waitForFunnel(t.Context(), daemon, "writebook", testLogsHint, time.Second, time.Millisecond)
 	require.NoError(t, err)
 	assert.Equal(t, "once.tail1234.ts.net:443", hostPort)
 
 	// Another app's active Funnel must not count as this app's activation.
-	_, err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.6:80", 50*time.Millisecond, 10*time.Millisecond)
-	require.ErrorContains(t, err, "funnel did not activate")
+	_, err = waitForFunnel(t.Context(), daemon, "campfire", testLogsHint, 50*time.Millisecond, 10*time.Millisecond)
+	require.ErrorContains(t, err, "funnel did not activate for campfire")
+	assert.ErrorContains(t, err, testLogsHint)
 
 	// No funnel at all, or a daemon that keeps erroring, times out the same way.
-	daemon = &FakeTailscaleDaemon{ServeJSON: `{}`}
-	_, err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
+	daemon = &FakeTailnetReader{ServeJSON: `{}`}
+	_, err = waitForFunnel(t.Context(), daemon, "writebook", testLogsHint, 50*time.Millisecond, 10*time.Millisecond)
 	require.ErrorContains(t, err, "funnel did not activate")
 
-	daemon = &FakeTailscaleDaemon{ServeErr: assert.AnError}
-	_, err = waitForFunnelBackend(t.Context(), daemon, "http://10.0.0.5:80", 50*time.Millisecond, 10*time.Millisecond)
+	daemon = &FakeTailnetReader{ServeErr: assert.AnError}
+	_, err = waitForFunnel(t.Context(), daemon, "writebook", testLogsHint, 50*time.Millisecond, 10*time.Millisecond)
 	require.ErrorContains(t, err, "funnel did not activate")
 }
 
 func TestWaitForSidecarLogin(t *testing.T) {
-	running := &FakeTailscaleDaemon{StatusJSON: `{"BackendState": "Running"}`}
+	running := &FakeTailnetReader{StatusJSON: `{"BackendState": "Running"}`}
 	healthy := func(context.Context) (string, bool) { return "", false }
 
 	require.NoError(t, waitForSidecarLogin(t.Context(), running, healthy, time.Second, time.Millisecond))
@@ -238,10 +263,10 @@ func TestWaitForSidecarLogin(t *testing.T) {
 
 	// A daemon that is slow to log in or unreachable is non-fatal at timeout:
 	// the suffix and verify waits that follow surface persistent problems.
-	slow := &FakeTailscaleDaemon{StatusErr: assert.AnError}
+	slow := &FakeTailnetReader{StatusErr: assert.AnError}
 	require.NoError(t, waitForSidecarLogin(t.Context(), slow, healthy, 30*time.Millisecond, 10*time.Millisecond))
 
-	needsLogin := &FakeTailscaleDaemon{StatusJSON: `{"BackendState": "NeedsLogin"}`}
+	needsLogin := &FakeTailnetReader{StatusJSON: `{"BackendState": "NeedsLogin"}`}
 	require.NoError(t, waitForSidecarLogin(t.Context(), needsLogin, healthy, 30*time.Millisecond, 10*time.Millisecond))
 }
 
@@ -253,29 +278,38 @@ func TestValidateFunnelDuration(t *testing.T) {
 	assert.ErrorIs(t, ValidateFunnelDuration(MaxFunnelDuration+time.Minute), ErrFunnelDurationTooLong)
 }
 
+// tailnetLabelsFor stands in for what the facade's AppLabels hands
+// deployWithVolume once Tailscale is enabled: the active topology's
+// appLabels for this app's Host, network, and Funnel port.
+func tailnetLabelsFor(app *Application) map[string]string {
+	return (&servicesTopology{}).appLabels(app.Settings.Host, app.namespace.name, app.Settings.ActiveFunnelPort())
+}
+
 func TestContainerConfigInjectsDocktailLabels(t *testing.T) {
 	// The advertised service name is the app's Host (the tailnet name knob),
 	// not its unique app name.
 	app := testTailnetApplication("writebook-abc123", "writebook")
 
-	enabled := app.containerConfig(nil, true)
+	enabled := app.containerConfig(nil, tailnetLabelsFor(app))
 	assert.Equal(t, app.Settings.Marshal(), enabled.Labels[labelKey])
 	assert.Equal(t, "true", enabled.Labels["docktail.service.enable"])
 	assert.Equal(t, "writebook", enabled.Labels["docktail.service.name"])
 	assert.Equal(t, "once-test", enabled.Labels["docktail.service.network"])
 
-	disabled := app.containerConfig(nil, false)
+	disabled := app.containerConfig(nil, nil)
 	assert.Equal(t, app.Settings.Marshal(), disabled.Labels[labelKey])
 	assert.NotContains(t, disabled.Labels, "docktail.service.enable")
 }
 
 func TestContainerConfigExposureExclusivity(t *testing.T) {
 	// Even with Tailscale globally enabled, only tailnet-exposed apps carry
-	// docktail labels.
+	// docktail labels - deployWithVolume achieves that by only asking
+	// AppLabels for a tailnet-exposed app; containerConfig itself just merges
+	// whatever it is handed.
 	for _, exposure := range []Exposure{ExposureLocal, ExposurePublic} {
 		app := testTailnetApplication("writebook", "writebook.localhost")
 		app.Settings.Exposure = exposure
-		cfg := app.containerConfig(nil, true)
+		cfg := app.containerConfig(nil, nil)
 		assert.NotContains(t, cfg.Labels, "docktail.service.enable")
 		assert.Equal(t, app.Settings.Marshal(), cfg.Labels[labelKey])
 	}
@@ -286,11 +320,11 @@ func TestContainerConfigFunnelLabelTracksSettings(t *testing.T) {
 	app := testTailnetApplication("writebook", "writebook")
 	app.Settings.FunnelExpiresAt = &expires
 
-	withFunnel := app.containerConfig(nil, true)
+	withFunnel := app.containerConfig(nil, tailnetLabelsFor(app))
 	assert.Equal(t, "true", withFunnel.Labels["docktail.funnel.enable"])
 
 	app.Settings.FunnelExpiresAt = nil
-	withoutFunnel := app.containerConfig(nil, true)
+	withoutFunnel := app.containerConfig(nil, tailnetLabelsFor(app))
 	assert.NotContains(t, withoutFunnel.Labels, "docktail.funnel.enable")
 }
 
@@ -309,6 +343,10 @@ func TestEnableFunnelRequiresTailnetExposure(t *testing.T) {
 }
 
 // Helpers
+
+// testLogsHint stands in for what logsHint hands the read paths: the container
+// whose logs explain a read that came back short.
+const testLogsHint = "the once-docktail container logs"
 
 // testTailnetApplication builds a tailnet-exposed app attached to a namespace
 // whose network name the docktail labels reference. No Docker client is needed

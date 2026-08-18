@@ -15,7 +15,7 @@ func TestServiceStatusesApproved(t *testing.T) {
 	api := statusAPI(t, map[string]string{
 		"whoami": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`,
 	})
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "whoami")
 	require.NoError(t, err)
@@ -29,7 +29,7 @@ func TestServiceStatusesPendingApproval(t *testing.T) {
 	api := statusAPI(t, map[string]string{
 		"whoami": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"not-approved","configured":"ready"}]}`,
 	})
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "whoami")
 	require.NoError(t, err)
@@ -43,7 +43,7 @@ func TestServiceStatusesNotAdvertised(t *testing.T) {
 	api := statusAPI(t, map[string]string{
 		"whoami": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`,
 	})
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "whoami")
 	require.NoError(t, err)
@@ -54,7 +54,7 @@ func TestServiceStatusesNotAdvertised(t *testing.T) {
 
 func TestServiceStatusesAdvertisedButUnknownToTailnet(t *testing.T) {
 	api := statusAPI(t, map[string]string{"whoami": `{"hosts":[]}`})
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "whoami")
 	require.NoError(t, err)
@@ -68,7 +68,7 @@ func TestServiceStatusesMultipleServicesInOrder(t *testing.T) {
 		"once-admin": `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:manual","configured":"ready"}]}`,
 		"whoami":     `{"hosts":[{"stableNodeID":"n1","approvalLevel":"not-approved","configured":"ready"}]}`,
 	})
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:once-admin":{},"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:once-admin":{},"svc:whoami":{}}}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "once-admin", "whoami")
 	require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestServiceStatusesMultipleServicesInOrder(t *testing.T) {
 // blaming every service on the container logs.
 func TestServiceStatusesRejectedCredentialsWithNothingAdvertised(t *testing.T) {
 	api := rejectingAPI(t)
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "once-admin", "whoami")
 	require.ErrorIs(t, err, errRevokedCredentials, "revoked credentials must not read as merely unadvertised services")
@@ -105,7 +105,7 @@ func TestServiceStatusesRejectedCredentialsWithNothingAdvertised(t *testing.T) {
 
 func TestServiceStatusesRejectedCredentialsReportedBeforeAnyService(t *testing.T) {
 	api := rejectingAPI(t)
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	_, err := serviceStatusesAgainst(api, daemon, "once-admin", "whoami")
 	require.ErrorIs(t, err, errRevokedCredentials)
@@ -122,7 +122,7 @@ func TestServiceStatusesRejectedCredentialsForwardsAuthenticateErrorVerbatim(t *
 	api := newFakeTailscaleAPI(t)
 	rejected := fmt.Errorf("Tailscale rejected the OAuth credentials (401 Unauthorized); check the client ID and secret are correct and not revoked: %w", ErrOAuthCredentialsRejected)
 	api.fail(authenticateMethod, "", rejected)
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	_, err := serviceStatusesAgainst(api, daemon, "whoami")
 	require.Error(t, err)
@@ -138,7 +138,7 @@ func TestServiceStatusesToleratesUnwellTailnetInCredentialCheck(t *testing.T) {
 	api.fail(authenticateMethod, "", fmt.Errorf("stub: %w", ErrOAuthTokenEndpointUnavailable))
 	api.reply(http.MethodGet, serviceDevicesPath("whoami"),
 		http.StatusOK, `{"hosts":[{"stableNodeID":"n1","approvalLevel":"approved:auto","configured":"ready"}]}`)
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "whoami")
 	require.NoError(t, err)
@@ -155,7 +155,7 @@ func TestServiceStatusesUnprovenCredentialCheckAbortsToo(t *testing.T) {
 	api := newFakeTailscaleAPI(t)
 	unreachable := errors.New("contacting the Tailscale API: connection refused")
 	api.fail(authenticateMethod, "", unreachable)
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	_, err := serviceStatusesAgainst(api, daemon, "whoami")
 	require.ErrorIs(t, err, unreachable)
@@ -168,7 +168,7 @@ func TestServiceStatusesControlSeamSkipsCloudAPI(t *testing.T) {
 
 	// The seam cans nothing: a cloud call would fail the test.
 	api := newFakeTailscaleAPI(t)
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{"Services":{"svc:whoami":{}}}`}
 
 	statuses, err := serviceStatusesAgainst(api, daemon, "whoami", "other")
 	require.NoError(t, err)
@@ -179,7 +179,7 @@ func TestServiceStatusesControlSeamSkipsCloudAPI(t *testing.T) {
 }
 
 func TestServiceStatusesSurfacesDaemonError(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ServeErr: errors.New("no tailscaled socket")}
+	daemon := &FakeTailnetReader{ServeErr: errors.New("no tailscaled socket")}
 
 	_, err := serviceStatusesAgainst(newFakeTailscaleAPI(t), daemon, "whoami")
 	require.Error(t, err)
@@ -188,10 +188,10 @@ func TestServiceStatusesSurfacesDaemonError(t *testing.T) {
 
 // Helpers
 
-func serviceStatusesAgainst(api tailscaleAPI, daemon TailscaleDaemon, names ...string) ([]ServiceStatus, error) {
+func serviceStatusesAgainst(api tailscaleAPI, daemon TailnetReader, names ...string) ([]ServiceStatus, error) {
 	return serviceStatuses(context.Background(), daemon, api,
 		TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once", DomainSuffix: "tail1234.ts.net"},
-		names)
+		names, testLogsHint)
 }
 
 // statusAPI is a healthy SaaS tailnet as a status run sees it: the up-front

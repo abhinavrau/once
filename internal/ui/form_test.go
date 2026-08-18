@@ -537,6 +537,39 @@ func TestForm_PanicsOnWrongFieldType(t *testing.T) {
 	})
 }
 
+func TestFormRemoveItem(t *testing.T) {
+	form := NewForm("Done",
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("second")},
+	)
+
+	form.RemoveItem("first")
+
+	assert.Equal(t, 1, form.ItemCount())
+	assert.Equal(t, "second", form.items[0].Key)
+}
+
+func TestFormRemoveItem_NoOpWhenAbsent(t *testing.T) {
+	form := NewForm("Done",
+		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},
+	)
+
+	assert.NotPanics(t, func() { form.RemoveItem("missing") })
+	assert.Equal(t, 1, form.ItemCount())
+}
+
+func TestFormOnRebuild_CalledOnRadioClick(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "exposure", Label: "Exposure", Field: NewRadioField("Local", "Public")},
+	)
+	called := false
+	form.OnRebuild(func(f *Form) { called = true })
+
+	form = updateForm(form, MouseEvent{IsClick: true, Target: fieldTarget("exposure")})
+
+	assert.True(t, called, "a click that changes a field's value must rebuild, exactly like a keypress does")
+}
+
 func TestFormAppendItems_PanicsOnDuplicateKey(t *testing.T) {
 	form := NewForm("Done",
 		FormItem{Key: "first", Label: "First", Field: NewTextField("first")},

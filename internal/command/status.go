@@ -34,11 +34,15 @@ func (s *statusCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobr
 		return fmt.Errorf("no application found at host %q", args[0])
 	}
 
-	tailnet := tailnetURLs(ctx, ns)
-	if s.json {
-		return printJSON(newAppReport(app, tailnet[app.Settings.Name]))
+	settings, tailnetEnabled, err := tailscaleSettingsForReport(ctx, ns)
+	if err != nil && !s.json {
+		printWarnings([]string{docker.ErrorMessage(err)})
 	}
 
-	printAppLines(ctx, []*docker.Application{app}, tailnet)
+	if s.json {
+		return printJSON(newAppReport(app, tailnetURLFor(app, settings, tailnetEnabled), funnelURLFor(app, settings, tailnetEnabled)))
+	}
+
+	printAppLines(ctx, []*docker.Application{app}, settings, tailnetEnabled)
 	return nil
 }

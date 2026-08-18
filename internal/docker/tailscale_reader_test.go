@@ -27,10 +27,10 @@ const statusJSON = `{
 	}
 }`
 
-func TestFakeTailscaleDaemonMagicDNSSuffix(t *testing.T) {
+func TestFakeTailnetReaderMagicDNSSuffix(t *testing.T) {
 	suffix := func(statusJSON string) string {
 		t.Helper()
-		daemon := &FakeTailscaleDaemon{StatusJSON: statusJSON}
+		daemon := &FakeTailnetReader{StatusJSON: statusJSON}
 		s, err := daemon.MagicDNSSuffix(t.Context())
 		require.NoError(t, err)
 		return s
@@ -45,18 +45,18 @@ func TestFakeTailscaleDaemonMagicDNSSuffix(t *testing.T) {
 	assert.Equal(t, "", suffix(`{"BackendState": "NeedsLogin"}`))
 }
 
-func TestFakeTailscaleDaemonMagicDNSSuffixErrors(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{StatusJSON: "not json"}
+func TestFakeTailnetReaderMagicDNSSuffixErrors(t *testing.T) {
+	daemon := &FakeTailnetReader{StatusJSON: "not json"}
 	_, err := daemon.MagicDNSSuffix(t.Context())
 	require.ErrorContains(t, err, "parsing tailscale status")
 
-	daemon = &FakeTailscaleDaemon{StatusErr: assert.AnError}
+	daemon = &FakeTailnetReader{StatusErr: assert.AnError}
 	_, err = daemon.MagicDNSSuffix(t.Context())
 	require.ErrorIs(t, err, assert.AnError)
 }
 
-func TestFakeTailscaleDaemonMachineHostnames(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{StatusJSON: statusJSON}
+func TestFakeTailnetReaderMachineHostnames(t *testing.T) {
+	daemon := &FakeTailnetReader{StatusJSON: statusJSON}
 
 	// The DNSName's first label wins over HostName ("grafana", not
 	// "Grafana-Box"); a node without a DNSName falls back to its lowercased
@@ -65,26 +65,28 @@ func TestFakeTailscaleDaemonMachineHostnames(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"grafana", "laptop", "once-tailscale"}, names)
 
-	daemon = &FakeTailscaleDaemon{StatusJSON: `{"BackendState": "NeedsLogin"}`}
+	daemon = &FakeTailnetReader{StatusJSON: `{"BackendState": "NeedsLogin"}`}
 	names, err = daemon.MachineHostnames(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, names)
 
-	daemon = &FakeTailscaleDaemon{StatusJSON: "not json"}
+	daemon = &FakeTailnetReader{StatusJSON: "not json"}
 	_, err = daemon.MachineHostnames(t.Context())
 	require.ErrorContains(t, err, "parsing tailscale status")
 
-	daemon = &FakeTailscaleDaemon{StatusErr: assert.AnError}
+	daemon = &FakeTailnetReader{StatusErr: assert.AnError}
 	_, err = daemon.MachineHostnames(t.Context())
 	require.ErrorIs(t, err, assert.AnError)
 }
 
 // serveJSON matches the ServeConfig shape `tailscale serve status --json`
-// emits, per docktail's parsing of the same output.
+// emits, per docktail's parsing of the same output. The node's funnel-enabled
+// endpoint proxies to the same backend as svc:writebook, which is how the
+// funnel is attributed to that app.
 const serveJSON = `{
 	"TCP": {"443": {"HTTPS": true}},
 	"Web": {
-		"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.7:80"}}}
+		"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}
 	},
 	"AllowFunnel": {"once.tail1234.ts.net:443": true},
 	"Services": {
@@ -99,45 +101,68 @@ const serveJSON = `{
 	}
 }`
 
-func TestFakeTailscaleDaemonServeStatus(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON}
+func TestFakeTailnetReaderServeStatus(t *testing.T) {
+	daemon := &FakeTailnetReader{ServeJSON: serveJSON}
 
 	status, err := daemon.ServeStatus(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"campfire", "writebook"}, status.Services)
-	assert.True(t, status.AllowFunnel["once.tail1234.ts.net:443"])
-	assert.False(t, status.AllowFunnel["other.tail1234.ts.net:443"])
-	assert.Equal(t, map[string]string{"http://10.0.0.7:80": "once.tail1234.ts.net:443"}, status.FunnelBackends)
+	assert.Equal(t, map[string]string{"writebook": "once.tail1234.ts.net:443"}, status.Funnels)
 }
 
-func TestFakeTailscaleDaemonServeStatusFunnelBackends(t *testing.T) {
-	backends := func(serveJSON string) map[string]string {
+func TestFakeTailnetReaderServeStatusFunnels(t *testing.T) {
+	funnels := func(serveJSON string) map[string]string {
 		t.Helper()
-		daemon := &FakeTailscaleDaemon{ServeJSON: serveJSON}
+		daemon := &FakeTailnetReader{ServeJSON: serveJSON}
 		status, err := daemon.ServeStatus(t.Context())
 		require.NoError(t, err)
-		return status.FunnelBackends
+		return status.Funnels
 	}
 
-	// A serve-only endpoint (funnel disabled or absent) contributes no backend.
-	assert.Empty(t, backends(`{
+	writebook := `"Services": {"svc:writebook": {
+		"Web": {"writebook.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}}
+	}}`
+
+	// A serve-only endpoint (funnel disabled or absent) funnels nothing.
+	assert.Empty(t, funnels(`{
 		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}},
-		"AllowFunnel": {"once.tail1234.ts.net:443": false}
-	}`))
-	assert.Empty(t, backends(`{
-		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}}
-	}`))
+		"AllowFunnel": {"once.tail1234.ts.net:443": false},`+writebook+`}`))
+	assert.Empty(t, funnels(`{
+		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}},`+writebook+`}`))
 
 	// A funnel flag with no matching web handler (config still settling)
-	// contributes no backend either.
-	assert.Empty(t, backends(`{"AllowFunnel": {"once.tail1234.ts.net:443": true}}`))
+	// attributes nothing either.
+	assert.Empty(t, funnels(`{"AllowFunnel": {"once.tail1234.ts.net:443": true},`+writebook+`}`))
 
-	// Multiple funnel-enabled endpoints report all their backends with the
-	// public endpoint each serves on.
+	// A live funnel whose backend belongs to no advertised service is not
+	// attributed to any app: it may be another node's, or a stale entry.
+	assert.Empty(t, funnels(`{
+		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.9:80"}}}},
+		"AllowFunnel": {"once.tail1234.ts.net:443": true},`+writebook+`}`))
+
+	// The two sides are programmed from separate labels, so the join is on the
+	// backend address: a scheme that differs between them still attributes.
+	assert.Equal(t, map[string]string{"writebook": "once.tail1234.ts.net:443"}, funnels(`{
+		"Web": {"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "https://10.0.0.5:80"}}}},
+		"AllowFunnel": {"once.tail1234.ts.net:443": true},`+writebook+`}`))
+
+	// Several endpoints funnelling one backend read the same on every poll.
+	assert.Equal(t, map[string]string{"writebook": "once.tail1234.ts.net:443"}, funnels(`{
+		"Web": {
+			"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}},
+			"once.tail1234.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}
+		},
+		"AllowFunnel": {
+			"once.tail1234.ts.net:443": true,
+			"once.tail1234.ts.net:8443": true
+		},`+writebook+`}`))
+
+	// Two apps funnelled at once are keyed apart by name, each with the public
+	// endpoint it serves on.
 	assert.Equal(t, map[string]string{
-		"http://10.0.0.6:80": "once.tail1234.ts.net:443",
-		"http://10.0.0.5:80": "once.tail1234.ts.net:8443",
-	}, backends(`{
+		"writebook": "once.tail1234.ts.net:8443",
+		"campfire":  "once.tail1234.ts.net:443",
+	}, funnels(`{
 		"Web": {
 			"once.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.6:80"}}},
 			"once.tail1234.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}
@@ -145,39 +170,47 @@ func TestFakeTailscaleDaemonServeStatusFunnelBackends(t *testing.T) {
 		"AllowFunnel": {
 			"once.tail1234.ts.net:443": true,
 			"once.tail1234.ts.net:8443": true
+		},
+		"Services": {
+			"svc:writebook": {
+				"Web": {"writebook.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.5:80"}}}}
+			},
+			"svc:campfire": {
+				"Web": {"campfire.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://10.0.0.6:80"}}}}
+			}
 		}
 	}`))
 }
 
-func TestFakeTailscaleDaemonServeStatusEmpty(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{}`}
+func TestFakeTailnetReaderServeStatusEmpty(t *testing.T) {
+	daemon := &FakeTailnetReader{ServeJSON: `{}`}
 
 	status, err := daemon.ServeStatus(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, status.Services)
-	assert.Empty(t, status.AllowFunnel)
+	assert.Empty(t, status.Funnels)
 }
 
-func TestFakeTailscaleDaemonServeStatusErrors(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ServeJSON: "not json"}
+func TestFakeTailnetReaderServeStatusErrors(t *testing.T) {
+	daemon := &FakeTailnetReader{ServeJSON: "not json"}
 	_, err := daemon.ServeStatus(t.Context())
 	require.ErrorContains(t, err, "parsing tailscale serve status")
 
-	daemon = &FakeTailscaleDaemon{ServeErr: assert.AnError}
+	daemon = &FakeTailnetReader{ServeErr: assert.AnError}
 	_, err = daemon.ServeStatus(t.Context())
 	require.ErrorIs(t, err, assert.AnError)
 }
 
-func TestFakeTailscaleDaemonServeEnablementURL(t *testing.T) {
-	url, err := (&FakeTailscaleDaemon{ProbeOutput: serveDisabledOutput}).ServeEnablementURL(t.Context())
+func TestFakeTailnetReaderServeEnablementURL(t *testing.T) {
+	url, err := (&FakeTailnetReader{ProbeOutput: serveDisabledOutput}).ServeEnablementURL(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "https://login.tailscale.com/f/serve?node=nodeIDabc123CNTRL", url)
 
-	url, err = (&FakeTailscaleDaemon{}).ServeEnablementURL(t.Context())
+	url, err = (&FakeTailnetReader{}).ServeEnablementURL(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, url)
 
-	_, err = (&FakeTailscaleDaemon{ProbeErr: assert.AnError}).ServeEnablementURL(t.Context())
+	_, err = (&FakeTailnetReader{ProbeErr: assert.AnError}).ServeEnablementURL(t.Context())
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -204,9 +237,9 @@ USAGE
 For more information, see https://tailscale.com/kb/1242/tailscale-serve
 `
 
-func TestCLITailscaleDaemon(t *testing.T) {
-	daemon := func(res ExecResult, err error) *cliTailscaleDaemon {
-		return &cliTailscaleDaemon{run: func(ctx context.Context, args ...string) (ExecResult, error) {
+func TestCLITailnetReader(t *testing.T) {
+	daemon := func(res ExecResult, err error) *cliTailnetReader {
+		return &cliTailnetReader{run: func(ctx context.Context, args ...string) (ExecResult, error) {
 			return res, err
 		}}
 	}
@@ -233,7 +266,7 @@ func TestCLITailscaleDaemon(t *testing.T) {
 		status, err := daemon(res, nil).ServeStatus(t.Context())
 		require.NoError(t, err)
 		assert.Empty(t, status.Services)
-		assert.Empty(t, status.AllowFunnel)
+		assert.Empty(t, status.Funnels)
 	})
 
 	t.Run("command failures surface stderr", func(t *testing.T) {
@@ -260,13 +293,13 @@ func TestCLITailscaleDaemon(t *testing.T) {
 	})
 }
 
-func TestCLITailscaleDaemonServeEnablementURL(t *testing.T) {
+func TestCLITailnetReaderServeEnablementURL(t *testing.T) {
 	type probeCall struct {
 		timeout time.Duration
 		args    []string
 	}
-	daemon := func(called *probeCall, res ExecResult, err error) *cliTailscaleDaemon {
-		return &cliTailscaleDaemon{probe: func(ctx context.Context, timeout time.Duration, args ...string) (ExecResult, error) {
+	daemon := func(called *probeCall, res ExecResult, err error) *cliTailnetReader {
+		return &cliTailnetReader{probe: func(ctx context.Context, timeout time.Duration, args ...string) (ExecResult, error) {
 			*called = probeCall{timeout: timeout, args: args}
 			return res, err
 		}}

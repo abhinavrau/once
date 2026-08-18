@@ -117,7 +117,7 @@ func funnelURLForApp(ts *docker.Tailscale, app *docker.Application) string {
 	if err != nil {
 		return ""
 	}
-	return settings.FunnelURL(app.Settings.ActiveFunnelPort())
+	return settings.FunnelURL(app.Settings.Host, app.Settings.ActiveFunnelPort())
 }
 
 // parseFunnelDuration applies the same bounds the Funnel spine applies, so a
