@@ -485,11 +485,11 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 func (a *Application) registerRouting(ctx context.Context, containerID string, tailscaleEnabled bool) error {
 	if a.Settings.Exposure == ExposureTailnet {
 		if tailscaleEnabled {
-			settings, err := a.namespace.Tailscale().LoadSettings(ctx)
+			viaProxy, err := a.namespace.Tailscale().RoutesTailnetAppsViaProxy(ctx)
 			if err != nil {
 				return err
 			}
-			if topologyRoutesTailnetAppsViaProxy(settings.Topology) {
+			if viaProxy {
 				return a.registerNodesRoute(ctx, containerID)
 			}
 		}

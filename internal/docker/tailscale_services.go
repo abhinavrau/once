@@ -253,9 +253,9 @@ func (s *servicesTopology) probe(ctx context.Context, settings TailscaleSettings
 // CLI in host mode, docker exec into the sidecar otherwise.
 func (s *servicesTopology) reader(settings TailscaleSettings) TailnetReader {
 	if settings.Mode == TailscaleModeHost {
-		return NewHostTailscaleDaemon()
+		return NewHostTailnetReader()
 	}
-	return NewSidecarTailscaleDaemon(s.namespace.client, s.sidecarName())
+	return NewSidecarTailnetReader(s.namespace.client, s.sidecarName())
 }
 
 // verify confirms each expected service is reachable-in-principle after
@@ -516,7 +516,7 @@ func (s *servicesTopology) awaitSidecarLogin(ctx context.Context) error {
 	if s.awaitLogin != nil {
 		return s.awaitLogin(ctx)
 	}
-	reader := NewSidecarTailscaleDaemon(s.namespace.client, s.sidecarName())
+	reader := NewSidecarTailnetReader(s.namespace.client, s.sidecarName())
 	return waitForSidecarLogin(ctx, reader, s.sidecarCrashed, sidecarLoginTimeout, sidecarLoginPoll)
 }
 

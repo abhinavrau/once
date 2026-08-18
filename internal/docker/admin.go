@@ -164,8 +164,12 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 	// forwards it to the Proxy rather than the container directly, so it
 	// needs a Proxy route on its own tailnet Host too.
 	if tailscaleEnabled {
-		settings, err := a.namespace.Tailscale().LoadSettings(ctx)
-		if err == nil && topologyRoutesTailnetAppsViaProxy(settings.Topology) {
+		viaProxy, err := a.namespace.Tailscale().RoutesTailnetAppsViaProxy(ctx)
+		if err != nil {
+			a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+			return err
+		}
+		if viaProxy {
 			if err := registerNodesProxyRoute(ctx, a.namespace, "once-admin", "once-admin", resp.ID, ""); err != nil {
 				a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 				return fmt.Errorf("registering once-admin with the proxy: %w", err)

@@ -319,6 +319,18 @@ func (t *Tailscale) LoadSettings(ctx context.Context) (TailscaleSettings, error)
 	return settings, nil
 }
 
+// RoutesTailnetAppsViaProxy reports whether the enabled topology reaches
+// tailnet apps through the Proxy (nodes) rather than advertising their
+// containers directly (services), which decides whether a tailnet app or
+// once-admin needs a Proxy route on its tailnet Host.
+func (t *Tailscale) RoutesTailnetAppsViaProxy(ctx context.Context) (bool, error) {
+	settings, err := t.LoadSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	return topologyRoutesTailnetAppsViaProxy(settings.Topology), nil
+}
+
 // DomainSuffix returns the tailnet's MagicDNS suffix (e.g. tailnet-name.ts.net).
 // It prefers the value persisted in settings; otherwise it reads the suffix
 // from the active topology's reader and persists it, so enables that raced a

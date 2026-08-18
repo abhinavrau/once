@@ -19,7 +19,7 @@ func TestHostPreflightRequiresHostSocket(t *testing.T) {
 	t.Setenv("ONCE_TAILSCALED_DIR", t.TempDir())
 
 	// The daemon fake errors if consulted: the socket check must come first.
-	err := preflightAgainst(newFakeTailscaleAPI(t), &FakeTailscaleDaemon{StatusErr: errors.New("daemon must not be consulted")})
+	err := preflightAgainst(newFakeTailscaleAPI(t), &FakeTailnetReader{StatusErr: errors.New("daemon must not be consulted")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), tailscaledSocketFile)
 	assert.Contains(t, err.Error(), "--mode sidecar")
@@ -115,13 +115,13 @@ func plantHostSocket(t *testing.T) {
 	t.Setenv("ONCE_TAILSCALED_DIR", dir)
 }
 
-func fakeHostDaemon(version string, tags ...string) *FakeTailscaleDaemon {
+func fakeHostDaemon(version string, tags ...string) *FakeTailnetReader {
 	self := map[string]any{"PublicKey": "nodekey:host"}
 	if len(tags) > 0 {
 		self["Tags"] = tags
 	}
 	status, _ := json.Marshal(map[string]any{"Version": version, "Self": self})
-	return &FakeTailscaleDaemon{StatusJSON: string(status)}
+	return &FakeTailnetReader{StatusJSON: string(status)}
 }
 
 func preflightAgainst(api tailscaleAPI, daemon TailnetReader) error {

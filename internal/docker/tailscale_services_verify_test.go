@@ -12,7 +12,7 @@ import (
 )
 
 func TestWaitForAdvertisedAllServicesPresent(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{
+	daemon := &FakeTailnetReader{
 		ServeJSON: `{"Services":{"svc:whoami":{},"svc:once-admin":{}}}`,
 	}
 
@@ -21,7 +21,7 @@ func TestWaitForAdvertisedAllServicesPresent(t *testing.T) {
 }
 
 func TestWaitForAdvertisedAnnouncesPhaseOnce(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{
+	daemon := &FakeTailnetReader{
 		ServeJSON: `{"Services":{"svc:whoami":{},"svc:once-admin":{}}}`,
 	}
 
@@ -35,7 +35,7 @@ func TestWaitForAdvertisedAnnouncesPhaseOnce(t *testing.T) {
 }
 
 func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{
+	daemon := &FakeTailnetReader{
 		ServeJSON: `{"Services":{"svc:whoami":{}}}`,
 	}
 
@@ -47,7 +47,7 @@ func TestWaitForAdvertisedReportsMissingServices(t *testing.T) {
 }
 
 func TestWaitForAdvertisedSurfacesDaemonError(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ServeErr: errors.New("no tailscaled socket")}
+	daemon := &FakeTailnetReader{ServeErr: errors.New("no tailscaled socket")}
 
 	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, testLogsHint, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
@@ -56,7 +56,7 @@ func TestWaitForAdvertisedSurfacesDaemonError(t *testing.T) {
 }
 
 func TestWaitForAdvertisedEmptyServeConfig(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ServeJSON: `{}`}
+	daemon := &FakeTailnetReader{ServeJSON: `{}`}
 
 	err := waitForAdvertised(context.Background(), daemon, []string{"whoami"}, testLogsHint, 10*time.Millisecond, time.Millisecond, nil)
 	require.Error(t, err)
@@ -64,7 +64,7 @@ func TestWaitForAdvertisedEmptyServeConfig(t *testing.T) {
 }
 
 func TestRequireServeEnabledSurfacesTheEnablementLink(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ProbeOutput: serveDisabledOutput}
+	daemon := &FakeTailnetReader{ProbeOutput: serveDisabledOutput}
 
 	err := requireServeEnabled(context.Background(), daemon)
 	require.Error(t, err)
@@ -74,7 +74,7 @@ func TestRequireServeEnabledSurfacesTheEnablementLink(t *testing.T) {
 }
 
 func TestRequireServeEnabledPassesWhenServeIsEnabled(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ProbeOutput: serveEnabledOutput}
+	daemon := &FakeTailnetReader{ProbeOutput: serveEnabledOutput}
 
 	require.NoError(t, requireServeEnabled(context.Background(), daemon))
 }
@@ -82,7 +82,7 @@ func TestRequireServeEnabledPassesWhenServeIsEnabled(t *testing.T) {
 // An unrunnable probe says nothing about the tailnet, so it must not block the
 // enable with a diagnosis it cannot support.
 func TestRequireServeEnabledIgnoresProbeFailures(t *testing.T) {
-	daemon := &FakeTailscaleDaemon{ProbeErr: errors.New("no tailscaled socket")}
+	daemon := &FakeTailnetReader{ProbeErr: errors.New("no tailscaled socket")}
 
 	require.NoError(t, requireServeEnabled(context.Background(), daemon))
 }

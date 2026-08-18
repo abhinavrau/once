@@ -82,7 +82,7 @@ func (r *recordingReporter) Errorf(format string, args ...any) {
 }
 
 // fakeTailscaleAPI is the tailscaleAPI seam (ADR-0011) for every flow test that
-// reaches the Tailscale SaaS API, in the mould of FakeTailscaleDaemon: canned
+// reaches the Tailscale SaaS API, in the mould of FakeTailnetReader: canned
 // JSON per expected request, so the flows' parsing cannot drift from the
 // production paths, and recorded calls so their request shapes can be asserted.
 // Token exchange and bearer mechanics live in the HTTP adapter and its own
