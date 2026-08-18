@@ -196,11 +196,19 @@ Tailscale isn't enabled. Fixed by checking `Tailscale.Enabled(ctx)` live in
 - `make test` (`go test ./internal/...`): all packages pass.
 - `go test ./integration/ -run 'TestRecoveryHandoff|Tailscale' -count=1
   -timeout 30m`: all 8 tests pass.
-- `make integration` (full suite): all pass except one flake
-  (`TestTailscaleEnableBootsDocktailTopology`, "sidecar never joined the
-  control plane" under full-suite load) that did not reproduce when
-  re-run alongside the recovery-handoff tests alone, or in a second full
-  run - see final report for the verbatim summary.
+- `make integration` (full suite, run twice): both runs pass everything
+  except `TestTailscaleEnableBootsDocktailTopology`, which failed both
+  times with "sidecar never joined the control plane" (a 90s
+  require.Eventually on the headscale control plane) - but only when run
+  as part of the full sequential suite. It passes cleanly (~27s, the
+  normal time) every other way it was run: twice standalone
+  (-run Tailscale), once alongside the recovery-handoff tests, and once
+  run back-to-back right after the single heaviest preceding test
+  (TestRestoreVaultwardenFromRepo) to try to reproduce the load - still
+  passed. This points at cumulative resource pressure from the full
+  suite's ~50 sequential Docker-backed tests, not this ticket's changes;
+  not chased further per AGENTS.md's guidance on environment-driven
+  flakiness.
 
 File moves (`git mv`, contents folded into `tailscale_services.go` or
 trimmed): `tailscale_validate.go`, `tailscale_verify.go`, `tailscale_status.go`
