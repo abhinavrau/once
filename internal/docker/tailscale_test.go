@@ -159,11 +159,21 @@ func TestTailnetURL(t *testing.T) {
 
 func TestSettingsFunnelURL(t *testing.T) {
 	s := TailscaleSettings{NodeHost: "once-tailscale-1.tailnet-name.ts.net"}
-	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net", s.FunnelURL(443))
-	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net:8443", s.FunnelURL(8443))
+	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net", s.FunnelURL("books", 443))
+	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net:8443", s.FunnelURL("books", 8443))
 	// No node host, or no active port -> no URL.
-	assert.Empty(t, TailscaleSettings{}.FunnelURL(443))
-	assert.Empty(t, s.FunnelURL(0))
+	assert.Empty(t, TailscaleSettings{}.FunnelURL("books", 443))
+	assert.Empty(t, s.FunnelURL("books", 0))
+}
+
+func TestSettingsFunnelURLUnderNodesIsTheAppsOwnTailnetURL(t *testing.T) {
+	// Under nodes, every app is its own node: Funnel serves on the app's own
+	// tailnet URL, not a shared node host - and 443 is the only port it ever
+	// offers Funnel on.
+	s := TailscaleSettings{Topology: TailnetTopologyNodes, DomainSuffix: "tailnet-name.ts.net"}
+	assert.Equal(t, "https://books.tailnet-name.ts.net", s.FunnelURL("books", 443))
+	assert.Empty(t, s.FunnelURL("books", 0))
+	assert.Empty(t, TailscaleSettings{Topology: TailnetTopologyNodes}.FunnelURL("books", 443), "no suffix known yet -> no URL")
 }
 
 func TestDocktailLabelsWhenEnabled(t *testing.T) {

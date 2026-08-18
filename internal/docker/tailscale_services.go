@@ -334,8 +334,8 @@ func (s *servicesTopology) logsHint() string {
 }
 
 // facts returns the Services topology's static, context-free data.
-func (s *servicesTopology) facts() topologyFacts {
-	return topologyFacts{
+func (s *servicesTopology) facts() TopologyFacts {
+	return TopologyFacts{
 		DefaultSettings: TailscaleSettings{Tag: "tag:once", Mode: TailscaleModeSidecar, Topology: TailnetTopologyServices},
 		OAuthScopes:     []string{"auth_keys", "devices:core", "services"},
 		PolicySnippet:   PolicySnippet,

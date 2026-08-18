@@ -176,9 +176,13 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	// -- open the form and enable Tailscale --
 	// The tag keeps its tag:once prefill and the mode its sidecar default.
 	// Under the control seam the credentials are unused: enable skips SaaS OAuth
-	// (and with it the credential probe) and boots directly.
+	// (and with it the credential probe) and boots directly. This test exercises
+	// the Services topology's own behavior (mode host/sidecar, once-docktail),
+	// so it selects Services explicitly - nodes is the fresh-enable default and
+	// has no Mode field at all.
 	d.send(keyMsg("t"))
 	d.waitForView("Client ID", 5*time.Second)
+	d.selectRadioOption("topology", "Services")
 	d.fillField("client-id", "unused-with-control-seam")
 	d.fillField("client-secret", "unused-with-control-seam")
 	d.click("submit")

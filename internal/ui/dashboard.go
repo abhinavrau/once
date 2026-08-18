@@ -65,8 +65,14 @@ type Dashboard struct {
 	overlay       Component
 
 	tailscaleEnabled bool
-	tailnetSuffix    string // tailnet MagicDNS suffix, for computing app service URLs
-	tailnetNodeHost  string // sidecar node hostname, for computing Funnel URLs
+	// tailscaleSettings is the facade's own settings, read whole so every
+	// per-app URL renders from one facade read (topology, domain suffix, node
+	// host) rather than being reconstructed here from separate cached fields.
+	tailscaleSettings docker.TailscaleSettings
+	// tailscaleSetupWarning is the older-install message (ErrOlderOnceSetup)
+	// verbatim, set when the stored label predates ADR-0015 and so carries no
+	// topology. Empty otherwise.
+	tailscaleSetupWarning string
 
 	// tailnetWarnings caches the warn-only note for each service URL that does
 	// not resolve from this machine, keyed by URL and refreshed with the rest
@@ -83,10 +89,10 @@ type Dashboard struct {
 type dashboardTickMsg struct{}
 
 type tailscaleInfoMsg struct {
-	enabled  bool
-	suffix   string
-	nodeHost string
-	warnings map[string]string
+	enabled      bool
+	settings     docker.TailscaleSettings
+	setupWarning string
+	warnings     map[string]string
 }
 
 type tailscaleRefreshMsg struct{}
@@ -261,8 +267,8 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 
 	case tailscaleInfoMsg:
 		m.tailscaleEnabled = msg.enabled
-		m.tailnetSuffix = msg.suffix
-		m.tailnetNodeHost = msg.nodeHost
+		m.tailscaleSettings = msg.settings
+		m.tailscaleSetupWarning = msg.setupWarning
 		m.tailnetWarnings = msg.warnings
 		m.updateViewportSize()
 		m.rebuildViewportContent()
@@ -341,6 +347,9 @@ func (m Dashboard) View() string {
 	if m.toggling {
 		parts = append(parts, m.progress.View())
 	}
+	if note := m.tailscaleSetupNote(); note != "" {
+		parts = append(parts, note)
+	}
 	if note := m.tailnetWarningNote(); note != "" {
 		parts = append(parts, note)
 	}
@@ -377,13 +386,13 @@ func (m Dashboard) helpBindings() []key.Binding {
 	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Backups, dashboardKeys.Quit}
 }
 
-// tailnetURL is the app's service URL: computed from the stored Magic DNS
-// suffix, never looked up live. Empty when the app has no tailnet service.
+// tailnetURL is the app's service URL, from the facade's own settings, never
+// looked up live. Empty when the app has no tailnet service.
 func (m Dashboard) tailnetURL(app docker.ApplicationSettings) string {
 	if app.Exposure != docker.ExposureTailnet {
 		return ""
 	}
-	return (docker.TailscaleSettings{DomainSuffix: m.tailnetSuffix}).TailnetURL(app.Host)
+	return m.tailscaleSettings.TailnetURL(app.Host)
 }
 
 // tailnetWarningNote spells out, below the panels, what the selected panel's
@@ -397,6 +406,18 @@ func (m Dashboard) tailnetWarningNote() string {
 		return ""
 	}
 	wrapped := lipgloss.NewStyle().Foreground(Colors.Warning).Width(max(m.width-4, 20)).Render("⚠ " + warning)
+	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, wrapped)
+}
+
+// tailscaleSetupNote renders the older-install message verbatim, once, below
+// the panels - the same message CLI status/list and the enable form show,
+// instead of a stack of inspect errors that all trace back to the same
+// missing topology.
+func (m Dashboard) tailscaleSetupNote() string {
+	if m.tailscaleSetupWarning == "" {
+		return ""
+	}
+	wrapped := lipgloss.NewStyle().Foreground(Colors.Warning).Width(max(m.width-4, 20)).Render("⚠ " + m.tailscaleSetupWarning)
 	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, wrapped)
 }
 
@@ -432,10 +453,12 @@ func (m Dashboard) scheduleTailscaleRefresh() tea.Cmd {
 	return tea.Every(5*time.Second, func(time.Time) tea.Msg { return tailscaleRefreshMsg{} })
 }
 
-// fetchTailscaleInfo asynchronously reads the global enabled state, the stored
-// Magic DNS suffix, and whether each service name resolves from here, so the
+// fetchTailscaleInfo asynchronously reads the global enabled state, the
+// facade's settings, and whether each service name resolves from here, so the
 // details card can stay current without blocking the UI. Failures degrade to
-// "not enabled".
+// "not enabled", except the one whose message must actually reach the user:
+// a stored label with no topology (ErrOlderOnceSetup) surfaces as the setup
+// warning instead of being swallowed like any other read failure.
 func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
 	ns := m.namespace
 	hosts := m.resolvableTailnetHosts()
@@ -445,13 +468,19 @@ func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
 		if err != nil || !enabled {
 			return tailscaleInfoMsg{enabled: false}
 		}
-		suffix, _ := ns.Tailscale().DomainSuffix(ctx)
-		settings, _ := ns.Tailscale().LoadSettings(ctx)
+		settings, err := ns.Tailscale().LoadSettings(ctx)
+		if err != nil {
+			return tailscaleInfoMsg{enabled: true, setupWarning: docker.ErrorMessage(err)}
+		}
+		// DomainSuffix self-heals a suffix that raced a slow control plane at
+		// enable time; LoadSettings alone would report it still empty.
+		if suffix, err := ns.Tailscale().DomainSuffix(ctx); err == nil && suffix != "" {
+			settings.DomainSuffix = suffix
+		}
 		return tailscaleInfoMsg{
 			enabled:  true,
-			suffix:   suffix,
-			nodeHost: settings.NodeHost,
-			warnings: tailnetDNSWarnings(ctx, hosts, suffix),
+			settings: settings,
+			warnings: tailnetDNSWarnings(ctx, hosts, settings.DomainSuffix),
 		}
 	}
 }
@@ -475,8 +504,11 @@ func (m *Dashboard) updateViewportSize() {
 		progressHeight = 1
 	}
 	noteHeight := 0
+	if note := m.tailscaleSetupNote(); note != "" {
+		noteHeight += lipgloss.Height(note)
+	}
 	if note := m.tailnetWarningNote(); note != "" {
-		noteHeight = lipgloss.Height(note)
+		noteHeight += lipgloss.Height(note)
 	}
 	if note := m.backupNote(); note != "" {
 		noteHeight += lipgloss.Height(note)
@@ -495,7 +527,7 @@ func (m *Dashboard) rebuildViewportContent() {
 		url := m.tailnetURL(app)
 		var funnelURL string
 		if app.Exposure == docker.ExposureTailnet {
-			funnelURL = (docker.TailscaleSettings{NodeHost: m.tailnetNodeHost}).FunnelURL(app.ActiveFunnelPort())
+			funnelURL = m.tailscaleSettings.FunnelURL(app.Host, app.ActiveFunnelPort())
 		}
 		m.panels[i].tailnetURL = url
 		m.panels[i].funnelURL = funnelURL

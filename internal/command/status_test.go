@@ -19,7 +19,7 @@ func TestAppReportJSONShape(t *testing.T) {
 		},
 		Running: true,
 	}
-	b, err := json.Marshal(newAppReport(local, ""))
+	b, err := json.Marshal(newAppReport(local, "", ""))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{
 		"name": "campfire",
@@ -36,14 +36,15 @@ func TestAppReportJSONShape(t *testing.T) {
 			Exposure: docker.ExposureTailnet,
 		},
 	}
-	b, err = json.Marshal(newAppReport(tailnet, "https://writebook.tail1234.ts.net"))
+	b, err = json.Marshal(newAppReport(tailnet, "https://writebook.tail1234.ts.net", "https://writebook.tail1234.ts.net"))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{
 		"name": "writebook",
 		"host": "writebook",
 		"exposure": "tailnet",
 		"running": false,
-		"tailnetUrl": "https://writebook.tail1234.ts.net"
+		"tailnetUrl": "https://writebook.tail1234.ts.net",
+		"funnelUrl": "https://writebook.tail1234.ts.net"
 	}`, string(b))
 }
 
@@ -54,6 +55,7 @@ func TestTailscaleStatusReportJSONShape(t *testing.T) {
 
 	b, err = json.Marshal(tailscaleStatusReport{
 		Enabled:      true,
+		Topology:     docker.TailnetTopologyNodes,
 		DomainSuffix: "tail1234.ts.net",
 		Services: []docker.ServiceStatus{
 			{Name: "once-admin", URL: "https://once-admin.tail1234.ts.net", State: "approved"},
@@ -62,6 +64,7 @@ func TestTailscaleStatusReportJSONShape(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{
 		"enabled": true,
+		"topology": "nodes",
 		"domainSuffix": "tail1234.ts.net",
 		"services": [
 			{"name": "once-admin", "url": "https://once-admin.tail1234.ts.net", "state": "approved"}

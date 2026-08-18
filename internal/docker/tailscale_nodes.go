@@ -277,8 +277,8 @@ func (n *nodesTopology) logsHint() string {
 }
 
 // facts returns the Nodes topology's static, context-free data.
-func (n *nodesTopology) facts() topologyFacts {
-	return topologyFacts{
+func (n *nodesTopology) facts() TopologyFacts {
+	return TopologyFacts{
 		DefaultSettings: TailscaleSettings{Tag: "tag:once", Topology: TailnetTopologyNodes},
 		OAuthScopes:     []string{"auth_keys", "devices:core"},
 		PolicySnippet:   NodesPolicySnippet,

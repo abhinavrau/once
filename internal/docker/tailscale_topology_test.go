@@ -44,12 +44,28 @@ func TestTopologyForReturnsBothAdapters(t *testing.T) {
 	assert.IsType(t, &nodesTopology{}, nodes)
 }
 
+// TestTailscaleTopologyFacts pins that facts are reachable with no namespace
+// at all - frontends call this before any install exists (the enable form's
+// topology selector, the CLI's flag help).
+func TestTailscaleTopologyFacts(t *testing.T) {
+	services, err := TailscaleTopologyFacts(TailnetTopologyServices)
+	require.NoError(t, err)
+	assert.Equal(t, []string{TailscaleModeSidecar, TailscaleModeHost}, services.ModeChoices)
+
+	nodes, err := TailscaleTopologyFacts(TailnetTopologyNodes)
+	require.NoError(t, err)
+	assert.Nil(t, nodes.ModeChoices)
+
+	_, err = TailscaleTopologyFacts("both")
+	assert.ErrorContains(t, err, `invalid tailnet topology "both"`)
+}
+
 // TestLegacyLabelDecodesWithEmptyTopology pins the signal LoadSettings uses
 // to refuse a pre-ADR-0015 label: UnmarshalTailscaleSettings tolerates
 // unknown/missing fields (ADR-0008), so a label with no "topology" key
 // decodes cleanly with Topology == "". LoadSettings itself needs a real
 // Docker daemon to find the label in the first place, so its refusal
-// (errOlderOnceSetup) and the self-heal on re-enable are integration-tested.
+// (ErrOlderOnceSetup) and the self-heal on re-enable are integration-tested.
 func TestLegacyLabelDecodesWithEmptyTopology(t *testing.T) {
 	settings, err := UnmarshalTailscaleSettings(`{"clientId":"id","clientSecret":"secret"}`)
 	require.NoError(t, err)

@@ -28,11 +28,14 @@ func ValidateTailscaleTopology(topology string) error {
 	return fmt.Errorf("invalid tailnet topology %q: must be %q or %q", topology, TailnetTopologyServices, TailnetTopologyNodes)
 }
 
-// errOlderOnceSetup is what every read path (session, LoadSettings) reports
+// ErrOlderOnceSetup is what every read path (session, LoadSettings) reports
 // against a provider container whose label predates ADR-0015 and so carries
 // no topology: no backward compatibility, the fix is re-running enable, which
 // resolveTopology rebuilds as nodes unless --topology services is given.
-var errOlderOnceSetup = errors.New("the Tailscale setup is from an older version of Once; re-run `once tailscale enable`")
+// Exported so every frontend (CLI status/list, the dashboard, the enable
+// form) can show this exact sentence once, instead of a stack of wrapped
+// inspect errors (ticket 05).
+var ErrOlderOnceSetup = errors.New("the Tailscale setup is from an older version of Once; re-run `once tailscale enable`")
 
 // tailnetTopology is the private seam behind the Tailscale facade (ADR-0015):
 // one implementation per Tailnet Topology, holding everything that varies by
@@ -97,18 +100,40 @@ type tailnetTopology interface {
 	// sensible enable defaults, the OAuth scopes the Runtime Credential
 	// needs, the tailnet policy snippet, the available --mode choices (nil
 	// where mode does not apply), and the setup steps shown before enable.
-	facts() topologyFacts
+	facts() TopologyFacts
 }
 
-// topologyFacts is a topology's static data, independent of any particular
-// install, for frontends to render (ticket 05 wires this up; ticket 03 only
-// opens the seam).
-type topologyFacts struct {
+// TopologyFacts is a topology's static data, independent of any particular
+// install: sensible enable defaults, the OAuth scopes the Runtime Credential
+// needs, the tailnet policy snippet, the available --mode choices (nil where
+// mode does not apply), and the setup steps shown before enable. Every field
+// is a plain value or a function of plain values - no adapter type leaks
+// through - so frontends can render a topology's specifics without typing
+// out any vendor's name, mode list, scope list, or ACL text themselves
+// (ticket 05).
+type TopologyFacts struct {
 	DefaultSettings TailscaleSettings
 	OAuthScopes     []string
 	PolicySnippet   func(tag string) string
 	ModeChoices     []string
 	SetupIntro      string
+}
+
+// TailscaleTopologyFacts returns topology's static facts, for a frontend that
+// has not yet enabled Tailscale (and so has no *Namespace to build a real
+// adapter from) - the enable form's topology selector and the CLI's flag help
+// both need this before any install exists. facts() never touches an
+// adapter's namespace, so an unbound adapter is enough. topology must be
+// TailnetTopologyServices or TailnetTopologyNodes.
+func TailscaleTopologyFacts(topology string) (TopologyFacts, error) {
+	switch topology {
+	case TailnetTopologyServices:
+		return (&servicesTopology{}).facts(), nil
+	case TailnetTopologyNodes:
+		return (&nodesTopology{}).facts(), nil
+	default:
+		return TopologyFacts{}, fmt.Errorf("invalid tailnet topology %q: must be %q or %q", topology, TailnetTopologyServices, TailnetTopologyNodes)
+	}
 }
 
 // topologyFor returns the adapter for a resolved topology (never ""; callers
