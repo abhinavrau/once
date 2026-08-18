@@ -21,20 +21,20 @@ adapter-supplied prose now).
 
 **Blocked by:** 04.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `--topology` flag exists with the two values, validated by the docker
+- [x] `--topology` flag exists with the two values, validated by the docker
       package (`ValidateTailnetTopology`), and the TUI selector uses the same
       values via named field keys (integration `ui_test.go` driver clicks
       `field:topology`)
-- [ ] `grep -rn "docktail\|tsdproxy\|sidecar\|tag:once\|auth_keys" internal/ui
+- [x] `grep -rn "docktail\|tsdproxy\|sidecar\|tag:once\|auth_keys" internal/ui
       internal/command` returns only test fixtures
-- [ ] `once tailscale status` prints the topology and, per app, the tailnet
+- [x] `once tailscale status` prints the topology and, per app, the tailnet
       URL and Funnel URL from one facade read; no `TailscaleSettings{`
       literal outside `internal/docker` and its tests
-- [ ] The older-install message appears once, verbatim, in CLI status, list,
+- [x] The older-install message appears once, verbatim, in CLI status, list,
       and the dashboard when the label lacks a topology
-- [ ] Integration ui tests updated for the new field key; suite green under
+- [x] Integration ui tests updated for the new field key; suite green under
       `flock`
 
 **Follow-up (orchestrator):** `TestUITailscaleFormEnablesViaControlSeam` was
@@ -51,3 +51,9 @@ a named assertion. Open UX question, not decided here: the form still
 overflows terminals under ~46 rows (min size is 80x24; before this ticket it
 overflowed under ~38). Options: compact radios (label and options on one
 row), a scrollable overlay, or a shorter intro. Needs a product call.
+
+**Test results (final, orchestrator):** `make build` clean; `golangci-lint
+run ./...` 0 issues; `gofmt -l .` clean; `make test` all packages ok;
+`go test ./integration/ -run 'Tailscale|UI'` green after the fix; full
+`make integration` under `flock`: `ok github.com/basecamp/once/integration
+831.649s` (51/51).
