@@ -88,5 +88,5 @@ means editing all of them.
 - 04 - Nodes adapter: TSDProxy per-node via the Proxy (blocked by 03)
 - 05 - Frontends: `--topology`, per-topology facts, older-install message
   (blocked by 04)
-- 06 - Non-public exposures answer to spoofed Host headers on the public IP
+- 06 - Non-public exposures answer to spoofed Host headers on the public IP (moved to `.scratch/proxy-source-restriction/`, ADR-0016)
   (separate feature; needs-triage)
