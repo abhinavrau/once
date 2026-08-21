@@ -499,6 +499,32 @@ func (a *Application) registerRouting(ctx context.Context, containerID string, t
 		return nil
 	}
 
+	return a.registerProxyRoute(ctx, containerID)
+}
+
+// reregisterRoute re-issues the app's Proxy route at its currently running
+// container, through the same registration a deploy uses. The caller has
+// already decided the app's route lives on the Proxy (reregisterTargets).
+func (a *Application) reregisterRoute(ctx context.Context) error {
+	name, err := a.ContainerName(ctx)
+	if err != nil {
+		return err
+	}
+	info, err := a.namespace.client.ContainerInspect(ctx, name)
+	if err != nil {
+		return fmt.Errorf("inspecting container: %w", err)
+	}
+
+	if a.Settings.Exposure == ExposureTailnet {
+		return a.registerNodesRoute(ctx, info.ID)
+	}
+	return a.registerProxyRoute(ctx, info.ID)
+}
+
+// registerProxyRoute registers the app's host route with the Proxy: the one
+// path shared by a deploy and a post-roll re-registration, so every route
+// option Once emits comes from here.
+func (a *Application) registerProxyRoute(ctx context.Context, containerID string) error {
 	if err := a.namespace.Proxy().Deploy(ctx, DeployOptions{
 		AppName:         a.Settings.Name,
 		Target:          containerID[:12],

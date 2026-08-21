@@ -3,7 +3,9 @@ package docker
 import (
 	"testing"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProxyContainerName(t *testing.T) {
@@ -78,5 +80,51 @@ func TestDeployArgs(t *testing.T) {
 			"--host", "chat.example.com",
 			"--tls",
 		}, args)
+	})
+}
+
+func TestPinnedImage(t *testing.T) {
+	proxy := NewProxy(&Namespace{name: "once"})
+	assert.Equal(t, proxyImage, proxy.PinnedImage())
+
+	proxy.OverrideImageForTest("basecamp/kamal-proxy:older")
+	assert.Equal(t, "basecamp/kamal-proxy:older", proxy.PinnedImage())
+
+	proxy.OverrideImageForTest("")
+	assert.Equal(t, proxyImage, proxy.PinnedImage())
+}
+
+func TestRollSettings(t *testing.T) {
+	inspect := func(label string) container.InspectResponse {
+		labels := map[string]string{}
+		if label != "" {
+			labels[labelKey] = label
+		}
+		return container.InspectResponse{
+			Config: &container.Config{Image: "basecamp/kamal-proxy:older", Labels: labels},
+		}
+	}
+	fallback := ProxySettings{HTTPPort: 80, HTTPSPort: 443, MetricsPort: 1318}
+
+	t.Run("prefers the container's label over the fallback", func(t *testing.T) {
+		labelled := ProxySettings{HTTPPort: 8080, HTTPSPort: 8443, MetricsPort: 9000}
+
+		settings, err := rollSettings(inspect(labelled.Marshal()), fallback)
+
+		require.NoError(t, err)
+		assert.Equal(t, labelled, settings)
+	})
+
+	t.Run("falls back without a label", func(t *testing.T) {
+		settings, err := rollSettings(inspect(""), fallback)
+
+		require.NoError(t, err)
+		assert.Equal(t, fallback, settings)
+	})
+
+	t.Run("fails on a corrupt label", func(t *testing.T) {
+		_, err := rollSettings(inspect("{not json"), fallback)
+
+		assert.ErrorContains(t, err, "unmarshalling proxy settings")
 	})
 }

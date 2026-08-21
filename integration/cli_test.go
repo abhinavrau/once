@@ -34,7 +34,7 @@ func TestCLIDeployExposureLifecycle(t *testing.T) {
 	})
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	require.NoError(t, err)
@@ -118,7 +118,7 @@ func TestCLIDeployTailnetRequiresTailscaleEnable(t *testing.T) {
 	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	err = runCLI("-n", nsName, "deploy", "ghcr.io/basecamp/once-campfire:main", "--expose", "tailnet")
 	require.ErrorIs(t, err, docker.ErrTailscaleNotEnabled)

@@ -31,6 +31,27 @@ func TestUniqueName(t *testing.T) {
 	assert.NotEqual(t, name, name2)
 }
 
+func TestReregisterTargets(t *testing.T) {
+	ns := &Namespace{name: "once"}
+	app := func(name string, exposure Exposure, running bool) *Application {
+		a := NewApplication(ns, ApplicationSettings{Name: name, Exposure: exposure})
+		a.Running = running
+		return a
+	}
+
+	local := app("chat", ExposureLocal, true)
+	stoppedLocal := app("wiki", ExposureLocal, false)
+	public := app("blog", ExposurePublic, true)
+	tailnet := app("vault", ExposureTailnet, true)
+	apps := []*Application{local, stoppedLocal, public, tailnet}
+
+	// Public routes are never re-issued, stopped apps have no running
+	// container to target, and tailnet routes live on the Proxy only when the
+	// topology routes them through it.
+	assert.Equal(t, []*Application{local}, reregisterTargets(apps, false))
+	assert.Equal(t, []*Application{local, tailnet}, reregisterTargets(apps, true))
+}
+
 func TestDeployPreconditionsRunBeforeDockerWork(t *testing.T) {
 	// The preconditions must run before any Docker work; the nil client would
 	// panic in Setup if a check were reordered below it.

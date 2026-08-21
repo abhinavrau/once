@@ -31,7 +31,7 @@ func TestUIInstallAndManageApp(t *testing.T) {
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
 	proxyPorts := getProxyPorts(t)
-	require.NoError(t, ns.Proxy().Boot(ctx, proxyPorts))
+	bootProxy(t, ctx, ns, proxyPorts)
 
 	app := ui.NewApp(ns, "")
 	d := newAppDriver(t, app)
@@ -140,7 +140,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	ns, err := docker.NewNamespace("once-ts-ui-test")
 	require.NoError(t, err)
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -295,7 +295,7 @@ func TestUIBackupsOverlayEnableFlow(t *testing.T) {
 	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:     "whoami",

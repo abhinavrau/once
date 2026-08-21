@@ -174,7 +174,14 @@ func (n *Namespace) Setup(ctx context.Context) error {
 		return err
 	}
 
-	return n.proxy.Boot(ctx, ProxySettings{})
+	rolled, err := n.proxy.Boot(ctx, ProxySettings{})
+	if err != nil {
+		return err
+	}
+	if rolled {
+		n.reregisterNonPublicRoutes(ctx)
+	}
+	return nil
 }
 
 func (n *Namespace) EnsureNetwork(ctx context.Context) error {
@@ -512,6 +519,36 @@ func (n *Namespace) containerAppName(containerName string) string {
 
 // Private
 
+// reregisterNonPublicRoutes re-issues the Proxy route of every running app
+// whose route lives on the Proxy and is not Public, immediately after an
+// image-pin roll, so the routes carry whatever options the current Once emits
+// (ADR-0016). Public routes and the Recovery Handoff route stay as the state
+// volume preserved them. One app's failure is reported and does not stop the
+// others - a broken route must not strand the rest.
+func (n *Namespace) reregisterNonPublicRoutes(ctx context.Context) {
+	if err := n.Refresh(ctx); err != nil {
+		slog.Error("Failed to load applications after proxy roll", "error", err)
+		return
+	}
+
+	tailnetViaProxy := false
+	if enabled, err := n.tailscale.Enabled(ctx); err != nil {
+		slog.Error("Failed to check Tailscale after proxy roll", "error", err)
+	} else if enabled {
+		tailnetViaProxy, err = n.tailscale.RoutesTailnetAppsViaProxy(ctx)
+		if err != nil {
+			slog.Error("Failed to resolve tailnet topology after proxy roll", "error", err)
+			tailnetViaProxy = false
+		}
+	}
+
+	for _, app := range reregisterTargets(n.applications, tailnetViaProxy) {
+		if err := app.reregisterRoute(ctx); err != nil {
+			slog.Error("Failed to re-register route after proxy roll", "app", app.Settings.Name, "error", err)
+		}
+	}
+}
+
 // deployWarnings collects the warn-only pre-deploy checks: a tailnet service
 // name shadowed by an existing tailnet machine, and the public DNS preflight.
 func (n *Namespace) deployWarnings(ctx context.Context, settings ApplicationSettings) []string {
@@ -727,6 +764,28 @@ func (n *Namespace) parseBackup(r io.Reader) (ApplicationSettings, ApplicationVo
 }
 
 // Helpers
+
+// reregisterTargets selects the running applications whose Proxy route is
+// re-issued after a proxy roll: Local always; Tailnet only when the enabled
+// topology routes tailnet apps via the Proxy (ADR-0015). Public apps keep
+// the route the proxy's volume preserved.
+func reregisterTargets(apps []*Application, tailnetViaProxy bool) []*Application {
+	var targets []*Application
+	for _, app := range apps {
+		if !app.Running {
+			continue
+		}
+		switch app.Settings.Exposure {
+		case ExposureLocal:
+			targets = append(targets, app)
+		case ExposureTailnet:
+			if tailnetViaProxy {
+				targets = append(targets, app)
+			}
+		}
+	}
+	return targets
+}
 
 var validNamespace = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 

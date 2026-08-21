@@ -42,7 +42,7 @@ func TestTailscaleEnableBootsNodesTopology(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, ns.EnsureNetwork(ctx))
 	proxyPorts := getProxyPorts(t)
-	require.NoError(t, ns.Proxy().Boot(ctx, proxyPorts))
+	bootProxy(t, ctx, ns, proxyPorts)
 	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -230,7 +230,7 @@ func TestTailscaleRoundTripsBetweenNodesAndServices(t *testing.T) {
 	ns, err := docker.NewNamespace(nsName)
 	require.NoError(t, err)
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
