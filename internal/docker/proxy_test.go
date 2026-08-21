@@ -65,6 +65,30 @@ func TestDeployArgs(t *testing.T) {
 		assert.Contains(t, args, "--tls")
 	})
 
+	t.Run("with an allow list, one flag per CIDR", func(t *testing.T) {
+		args := proxy.deployArgs(DeployOptions{
+			AppName:   "chat",
+			Target:    "localhost:3000",
+			Host:      "chat.localhost",
+			AllowFrom: []string{"172.20.0.0/16", "fd00:abcd::/64"},
+		})
+
+		assert.Equal(t, []string{
+			"kamal-proxy", "deploy", "chat",
+			"--target", "localhost:3000",
+			"--deploy-timeout", "120s",
+			"--host", "chat.localhost",
+			"--allow-from", "172.20.0.0/16",
+			"--allow-from", "fd00:abcd::/64",
+		}, args)
+	})
+
+	t.Run("without an allow list, no flag", func(t *testing.T) {
+		args := proxy.deployArgs(DeployOptions{AppName: "chat", Target: "localhost:3000"})
+
+		assert.NotContains(t, args, "--allow-from")
+	})
+
 	t.Run("with host and TLS", func(t *testing.T) {
 		args := proxy.deployArgs(DeployOptions{
 			AppName: "chat",

@@ -523,15 +523,26 @@ func (a *Application) reregisterRoute(ctx context.Context) error {
 
 // registerProxyRoute registers the app's host route with the Proxy: the one
 // path shared by a deploy and a post-roll re-registration, so every route
-// option Once emits comes from here.
+// option Once emits comes from here. A Local route answers only a Trusted
+// Source - the once network's subnets, read from Docker at registration time
+// (ADR-0016); a Public route answers any source.
 func (a *Application) registerProxyRoute(ctx context.Context, containerID string) error {
-	if err := a.namespace.Proxy().Deploy(ctx, DeployOptions{
+	opts := DeployOptions{
 		AppName:         a.Settings.Name,
 		Target:          containerID[:12],
 		Host:            a.Settings.Host,
 		TLS:             a.Settings.TLSEnabled(),
 		HealthCheckPath: a.Settings.Profile.HealthCheckPath(),
-	}); err != nil {
+	}
+	if a.Settings.Exposure == ExposureLocal {
+		subnets, err := a.namespace.NetworkSubnets(ctx)
+		if err != nil {
+			return fmt.Errorf("resolving trusted sources: %w", err)
+		}
+		opts.AllowFrom = subnets
+	}
+
+	if err := a.namespace.Proxy().Deploy(ctx, opts); err != nil {
 		if strings.Contains(err.Error(), "target not healthy") || strings.Contains(err.Error(), "deploy timed out") {
 			slog.Error("Application failed to start", "app", a.Settings.Name, "error", err)
 			return ErrAppNotStarted

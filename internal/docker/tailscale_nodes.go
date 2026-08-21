@@ -639,7 +639,10 @@ func deviceHasAnyTag(deviceTags, tags []string) bool {
 // install-wide fact learned once, not a per-app one). TLS is off: TSDProxy
 // already terminated it with the tailnet's own certificate before forwarding
 // here. Shared by application.go and admin.go, the two callers that create a
-// container tailnet apps answer through under nodes.
+// container tailnet apps answer through under nodes. The route answers only a
+// Trusted Source (ADR-0016): tailnet traffic arrives from the TSDProxy node,
+// a container on the once network, so the network's subnets admit it while an
+// outsider spoofing the tailnet Host gets an unknown-Host 404.
 func registerNodesProxyRoute(ctx context.Context, ns *Namespace, appName, host, containerID, healthCheckPath string) error {
 	suffix, err := ns.Tailscale().DomainSuffix(ctx)
 	if err != nil {
@@ -648,12 +651,17 @@ func registerNodesProxyRoute(ctx context.Context, ns *Namespace, appName, host, 
 	if suffix != "" {
 		host = host + "." + suffix
 	}
+	subnets, err := ns.NetworkSubnets(ctx)
+	if err != nil {
+		return fmt.Errorf("resolving trusted sources: %w", err)
+	}
 	if err := ns.Proxy().Deploy(ctx, DeployOptions{
 		AppName:         appName,
 		Target:          containerID[:12],
 		Host:            host,
 		TLS:             false,
 		HealthCheckPath: healthCheckPath,
+		AllowFrom:       subnets,
 	}); err != nil {
 		return fmt.Errorf("registering with proxy: %w", err)
 	}

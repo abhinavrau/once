@@ -42,7 +42,7 @@ _Avoid_: visibility, access mode.
 Reachable only from the machine Once runs on: the Proxy answers its Host only to a Trusted Source. Not a LAN level - a LAN client wanting the app uses Tailnet.
 
 **Trusted Source**:
-Where a request may come from for the Proxy to answer a non-Public route: the machine Once runs on, or a container on Once's own network (a tailnet node under the Nodes Topology). Anything else gets the same not-found answer as an unknown Host.
+Where a request may come from for the Proxy to answer a non-Public route: the machine Once runs on, or a container on Once's own network (a tailnet node under the Nodes Topology). Anything else gets the same not-found answer as an unknown Host. On Docker Desktop and rootless Docker the Proxy cannot see real source addresses, so Local/Tailnet enforcement degrades to Host routing there.
 _Avoid_: allow-list, whitelist, internal network.
 
 **Tailnet (exposure)**:

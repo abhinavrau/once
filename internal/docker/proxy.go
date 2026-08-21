@@ -18,7 +18,7 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
-const proxyImage = "basecamp/kamal-proxy:once-01"
+const proxyImage = "abhinavrau/kamal-proxy:once-02"
 
 const (
 	stateFileDir  = "/home/kamal-proxy/.config/kamal-proxy"
@@ -65,6 +65,11 @@ type DeployOptions struct {
 	// serve on a LAN IP, which no public CA will ever issue for.
 	TLSCertificatePath string
 	TLSPrivateKeyPath  string
+	// AllowFrom restricts the route to requests whose source address falls
+	// within one of these CIDRs; any other source gets the same 404 an
+	// unknown Host gets (ADR-0016). Empty means the route answers any source,
+	// as Public and Recovery Handoff routes must.
+	AllowFrom []string
 }
 
 type Proxy struct {
@@ -119,12 +124,9 @@ func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) (bool, error) 
 		return false, fmt.Errorf("inspecting proxy container: %w", err)
 	}
 
-	reader, err := p.namespace.client.ImagePull(ctx, p.PinnedImage(), image.PullOptions{})
-	if err != nil {
-		return false, fmt.Errorf("pulling proxy image: %w", err)
+	if err := p.ensurePinnedImage(ctx); err != nil {
+		return false, err
 	}
-	defer reader.Close()
-	_, _ = io.Copy(io.Discard, reader)
 
 	name := p.containerName()
 	metricsPortTCP := nat.Port(fmt.Sprintf("%d/tcp", settings.MetricsPort))
@@ -276,6 +278,22 @@ func (p *Proxy) ensureRunning(ctx context.Context, info container.InspectRespons
 	return nil
 }
 
+// ensurePinnedImage acquires the pinned image with pull-policy "missing":
+// inspect locally first, pull only when absent. Pins are immutable tags, so a
+// re-pull gains nothing - and the pin may exist only in the local daemon.
+func (p *Proxy) ensurePinnedImage(ctx context.Context) error {
+	if _, err := p.namespace.client.ImageInspect(ctx, p.PinnedImage()); err == nil {
+		return nil
+	}
+	reader, err := p.namespace.client.ImagePull(ctx, p.PinnedImage(), image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("pulling proxy image: %w", err)
+	}
+	defer reader.Close()
+	_, _ = io.Copy(io.Discard, reader)
+	return nil
+}
+
 func (p *Proxy) deployArgs(opts DeployOptions) []string {
 	args := []string{"kamal-proxy", "deploy", opts.AppName, "--target", opts.Target, "--deploy-timeout", deployTimeout}
 
@@ -295,6 +313,10 @@ func (p *Proxy) deployArgs(opts DeployOptions) []string {
 
 	if opts.HealthCheckPath != "" {
 		args = append(args, "--health-check-path", opts.HealthCheckPath)
+	}
+
+	for _, cidr := range opts.AllowFrom {
+		args = append(args, "--allow-from", cidr)
 	}
 
 	return args
