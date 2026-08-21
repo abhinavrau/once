@@ -36,7 +36,7 @@ func TestRecoveryHandoffServesThePageThroughTheProxy(t *testing.T) {
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
 	ports := getProxyPorts(t)
-	require.NoError(t, ns.Proxy().Boot(ctx, ports))
+	bootProxy(t, ctx, ns, ports)
 
 	// The daemon serves the page. once-admin is deliberately NOT booted here:
 	// only the Tailscale lifecycle boots it, so a plain install has none - and
