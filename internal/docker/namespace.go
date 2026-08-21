@@ -202,6 +202,25 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 	return err
 }
 
+// NetworkSubnets reports the IPAM subnets of the namespace's Docker network,
+// IPv4 and IPv6 alike. These are the Trusted Source CIDRs for non-public
+// routes (ADR-0016): the host's own traffic reaches the Proxy from the
+// network's gateway, and TSDProxy nodes live on the network as containers.
+func (n *Namespace) NetworkSubnets(ctx context.Context) ([]string, error) {
+	info, err := n.client.NetworkInspect(ctx, n.name, network.InspectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("inspecting network %q: %w", n.name, err)
+	}
+
+	var subnets []string
+	for _, config := range info.IPAM.Config {
+		if config.Subnet != "" {
+			subnets = append(subnets, config.Subnet)
+		}
+	}
+	return subnets, nil
+}
+
 // Deploy is the full deploy lifecycle shared by the CLI and TUI: validate the
 // settings, reject a host already in use, set up the namespace, assign the
 // app's unique name, run the warn-only checks, deploy with progress, destroy

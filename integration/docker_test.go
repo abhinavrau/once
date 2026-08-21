@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -58,12 +59,16 @@ func TestDockerDeployment(t *testing.T) {
 	assert.True(t, ns.HostInUse("campfire.localhost"))
 }
 
-// TestProxyRollsOnImagePinChange covers the image-pin roll (ADR-0016): a
-// proxy running an image other than the pinned one is replaced on Setup,
-// keeping its settings label and named volume, and every non-public route is
-// re-issued at its app's running container. A proxy already on the pin is
-// left alone, and a Public route is served untouched from the preserved
-// state volume.
+// TestProxyRollsOnImagePinChange covers the image-pin roll and the source
+// restriction it delivers (ADR-0016): a proxy running an image other than the
+// pinned one is replaced on Setup, keeping its settings label and named
+// volume, and every non-public route is re-issued at its app's running
+// container - now with the once network's subnets as its Trusted Source. A
+// proxy already on the pin is left alone. A request from the host's LAN
+// address arrives from outside the once subnet, exactly like a LAN client
+// spoofing the Host header: a Local route answers it 404, a Public route 200,
+// and an install still on once-01 answers it 200 until the roll closes the
+// hole.
 func TestProxyRollsOnImagePinChange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -78,18 +83,23 @@ func TestProxyRollsOnImagePinChange(t *testing.T) {
 	require.NoError(t, err)
 	defer cli.Close()
 
-	// Boot under a stand-in old pin: a real, older kamal-proxy tag.
-	const oldImage = "basecamp/kamal-proxy:v0.9.2"
-	ns.Proxy().OverrideImageForTest(oldImage)
 	ports := getProxyPorts(t)
 	rolled, err := ns.Proxy().Boot(ctx, ports)
 	require.NoError(t, err)
 	require.False(t, rolled)
 
 	proxyName := ns.Name() + "-proxy"
-	oldInfo, err := cli.ContainerInspect(ctx, proxyName)
+	pinnedInfo, err := cli.ContainerInspect(ctx, proxyName)
 	require.NoError(t, err)
-	require.Equal(t, oldImage, oldInfo.Config.Image)
+	require.Equal(t, ns.Proxy().PinnedImage(), pinnedInfo.Config.Image)
+
+	// A second boot under the same pin: no roll, no container churn.
+	rolled, err = ns.Proxy().Boot(ctx, ports)
+	require.NoError(t, err)
+	assert.False(t, rolled)
+	sameInfo, err := cli.ContainerInspect(ctx, proxyName)
+	require.NoError(t, err)
+	assert.Equal(t, pinnedInfo.ID, sameInfo.ID, "a proxy on the pinned image must not be replaced")
 
 	local := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:     "whoami",
@@ -107,8 +117,9 @@ func TestProxyRollsOnImagePinChange(t *testing.T) {
 	})
 	require.NotNil(t, public)
 
-	requestHost := func(host string) (int, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", ports.HTTPPort), nil)
+	lanAddress := hostLANAddress(t)
+	requestHost := func(address, host string) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/", address, ports.HTTPPort), nil)
 		if err != nil {
 			return 0, err
 		}
@@ -120,24 +131,42 @@ func TestProxyRollsOnImagePinChange(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode, nil
 	}
-	status, err := requestHost("whoami.localhost")
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, status)
+	assertHostStatus := func(address, host string, want int, reason string) {
+		t.Helper()
+		status, err := requestHost(address, host)
+		require.NoError(t, err)
+		assert.Equal(t, want, status, reason)
+	}
 
-	// A second boot under the same pin: no roll, no container churn.
-	rolled, err = ns.Proxy().Boot(ctx, ports)
+	// Under the pin, a Local route answers a Trusted Source and nobody else;
+	// a Public route answers anyone.
+	assertHostStatus("127.0.0.1", "whoami.localhost", http.StatusOK,
+		"loopback traffic arrives from the once gateway, a Trusted Source")
+	assertHostStatus(lanAddress, "whoami.localhost", http.StatusNotFound,
+		"a source outside the once subnet gets the same 404 an unknown Host gets")
+	assertHostStatus(lanAddress, "pub.example.com", http.StatusOK,
+		"a Public route answers any source")
+
+	// Downgrade to the previous pin the way an existing install looks before
+	// an upgrade: same settings label, same state volume, an image without
+	// source restriction - where the spoofed-Host hole is open.
+	const oldImage = "basecamp/kamal-proxy:once-01"
+	ns.Proxy().OverrideImageForTest(oldImage)
+	require.NoError(t, ns.Proxy().UpdateSettings(ctx, ports))
+	oldInfo, err := cli.ContainerInspect(ctx, proxyName)
 	require.NoError(t, err)
-	assert.False(t, rolled)
-	sameInfo, err := cli.ContainerInspect(ctx, proxyName)
-	require.NoError(t, err)
-	assert.Equal(t, oldInfo.ID, sameInfo.ID, "a proxy on the pinned image must not be replaced")
+	require.Equal(t, oldImage, oldInfo.Config.Image)
+
+	require.Eventually(t, func() bool {
+		status, err := requestHost(lanAddress, "whoami.localhost")
+		return err == nil && status == http.StatusOK
+	}, 30*time.Second, time.Second,
+		"on the old image the Local route answers a LAN source: the hole the roll closes")
 
 	// Drop the local app's route so its presence after the roll proves it was
 	// re-issued, not merely preserved by the state volume.
 	require.NoError(t, ns.Proxy().Remove(ctx, "whoami"))
-	status, err = requestHost("whoami.localhost")
-	require.NoError(t, err)
-	require.Equal(t, http.StatusNotFound, status)
+	assertHostStatus("127.0.0.1", "whoami.localhost", http.StatusNotFound, "the route is gone before the roll")
 
 	// Under the real pin, Setup rolls the proxy and re-registers the route.
 	ns.Proxy().OverrideImageForTest("")
@@ -162,14 +191,12 @@ func TestProxyRollsOnImagePinChange(t *testing.T) {
 	}
 	assert.True(t, volumeKept, "the proxy's named volume must survive the roll")
 
-	// The local route came back through re-registration; the public route was
-	// never touched and answers from the preserved state volume.
-	status, err = requestHost("whoami.localhost")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, status)
-	status, err = requestHost("pub.example.com")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, status)
+	// The local route came back through re-registration, source-restricted
+	// again; the public route was never touched and answers from the
+	// preserved state volume.
+	assertHostStatus("127.0.0.1", "whoami.localhost", http.StatusOK, "the roll re-issued the Local route")
+	assertHostStatus(lanAddress, "whoami.localhost", http.StatusNotFound, "the roll closed the spoofed-Host hole")
+	assertHostStatus(lanAddress, "pub.example.com", http.StatusOK, "a Public route still answers any source")
 
 	list, err := ns.Proxy().ExecOutput(ctx, []string{"kamal-proxy", "list"})
 	require.NoError(t, err)
@@ -1060,6 +1087,42 @@ func getFreePort(t *testing.T) int {
 	}
 	require.FailNow(t, "no free port in the test port block")
 	return 0
+}
+
+// hostLANAddress finds a private IPv4 on a real (non-Docker, non-loopback)
+// interface. Connecting to it from the host reaches the proxy with that
+// address as the source - outside the once network's subnets - which is
+// exactly how a LAN client arrives. Loopback won't do: Docker hands loopback
+// connections to the proxy from the bridge gateway, a Trusted Source.
+func hostLANAddress(t *testing.T) string {
+	t.Helper()
+	virtualPrefixes := []string{"docker", "br-", "veth", "tailscale"}
+
+	interfaces, err := net.Interfaces()
+	require.NoError(t, err)
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if slices.ContainsFunc(virtualPrefixes, func(prefix string) bool { return strings.HasPrefix(iface.Name, prefix) }) {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ipNet, ok := address.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ip := ipNet.IP.To4(); ip != nil && ip.IsPrivate() {
+				return ip.String()
+			}
+		}
+	}
+	require.FailNow(t, "no LAN address found to stand in for an outside source")
+	return ""
 }
 
 func getProxyPorts(t *testing.T) docker.ProxySettings {

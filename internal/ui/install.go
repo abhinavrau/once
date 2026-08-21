@@ -599,12 +599,9 @@ func (m Install) helpForState() (string, string) {
 }
 
 const (
-	// The Local sentence is the interim truth: once the Proxy source-restricts
-	// non-public routes (ADR-0016), flip it back to "only reachable from this
-	// machine".
 	installHostnameHelpText = `On this screen you choose where this application will be reachable, and the host it will answer at.
 
-Local means the application is not advertised anywhere, and answers only at its .localhost host. The host defaults to the application's name (like campfire.localhost).
+Local means the application is only reachable from this machine, at a .localhost address. The host defaults to the application's name (like campfire.localhost).
 
 Tailnet means the application is shared with your Tailscale network, at https://{app}.{tailnet suffix}. The host defaults to the application's name. Tailscale must be enabled first (press t on the dashboard).
 
