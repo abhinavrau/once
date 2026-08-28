@@ -300,7 +300,7 @@ func TestTailscaleEnableBootsDocktailTopology(t *testing.T) {
 	ns, err := docker.NewNamespace(nsName)
 	require.NoError(t, err)
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -677,7 +677,7 @@ func TestWhoamiDeploysViaHarness(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "whoami",

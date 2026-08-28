@@ -603,7 +603,7 @@ const (
 
 Local means the application is only reachable from this machine, at a .localhost address. The host defaults to the application's name (like campfire.localhost).
 
-Tailnet means the application is shared with your Tailscale network as a Tailscale Service. The host is the service name, and defaults to the application's name. Tailscale must be enabled first (press t on the dashboard).
+Tailnet means the application is shared with your Tailscale network, at https://{app}.{tailnet suffix}. The host defaults to the application's name. Tailscale must be enabled first (press t on the dashboard).
 
 Public means the application is reachable from the Internet. Enter a hostname under a domain that you own; you can use a subdomain so that one domain can support multiple applications (like chat.example.com). When your server is publicly reachable, ONCE will set up SSL automatically.
 

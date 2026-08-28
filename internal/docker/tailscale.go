@@ -48,6 +48,17 @@ const (
 	funnelActivationPoll    = time.Second
 )
 
+// routeSuffixWait bounds WaitForDomainSuffix, the write-path wait for the
+// tailnet to report its Magic DNS suffix. Longer than enable's own
+// suffixWaitTimeout because under nodes this waits on a node joining the
+// control plane from cold - TSDProxy walks Initializing -> Starting ->
+// Authenticating -> Running before it reports a URL - rather than on a
+// tailscaled that has already logged in.
+const (
+	routeSuffixWaitTimeout = 90 * time.Second
+	routeSuffixWaitPoll    = 2 * time.Second
+)
+
 var (
 	ErrFunnelDurationInvalid = errors.New("funnel duration must be positive")
 	ErrFunnelDurationTooLong = fmt.Errorf("funnel duration must not exceed %s", MaxFunnelDuration)
@@ -337,31 +348,24 @@ func (t *Tailscale) RoutesTailnetAppsViaProxy(ctx context.Context) (bool, error)
 // slow control plane self-heal. Returns "" when the daemon hasn't joined the
 // tailnet yet, so the suffix can't be known.
 func (t *Tailscale) DomainSuffix(ctx context.Context) (string, error) {
-	if t.domainSuffix != "" {
-		return t.domainSuffix, nil
-	}
+	return t.resolveDomainSuffix(ctx, func(ctx context.Context, reader TailnetReader) (string, error) {
+		return reader.MagicDNSSuffix(ctx)
+	})
+}
 
-	settings, reader, err := t.session(ctx)
-	if err != nil {
-		return "", err
-	}
-	if settings.DomainSuffix != "" {
-		t.domainSuffix = settings.DomainSuffix
-		return settings.DomainSuffix, nil
-	}
-
-	suffix, err := reader.MagicDNSSuffix(ctx)
-	if err != nil || suffix == "" {
-		return "", err
-	}
-	// ponytail: Docker labels are immutable, so baking the suffix into the
-	// settings label means one cheap recreate. Cache the suffix first so a
-	// failed persist still short-circuits here next time rather than
-	// recreating on every poll.
-	t.domainSuffix = suffix
-	settings.DomainSuffix = suffix
-	_ = t.persistSettings(ctx, settings)
-	return suffix, nil
+// WaitForDomainSuffix is DomainSuffix for the write paths that need the suffix
+// to be *right* rather than merely prompt: it waits for the tailnet to report
+// the suffix instead of giving up on the first empty read. Under nodes the
+// suffix is only knowable once some node has joined, and the first app's own
+// node is often the first to join anywhere - so a route registered on the
+// first read would bake in a bare Host that never matches the FQDN TSDProxy
+// forwards, and nothing re-registers it afterwards. Still bounded and
+// non-fatal: a tailnet that never reports one yields "", exactly as
+// DomainSuffix does.
+func (t *Tailscale) WaitForDomainSuffix(ctx context.Context) (string, error) {
+	return t.resolveDomainSuffix(ctx, func(ctx context.Context, reader TailnetReader) (string, error) {
+		return waitForMagicDNSSuffix(ctx, reader, routeSuffixWaitTimeout, routeSuffixWaitPoll)
+	})
 }
 
 // WaitForFunnelActive polls the active topology's reader until it reports a
@@ -499,6 +503,38 @@ func (t *Tailscale) ValidateHost(ctx context.Context, name string) error {
 }
 
 // Private
+
+// resolveDomainSuffix is the one body behind DomainSuffix and
+// WaitForDomainSuffix: cache, then persisted settings, then read from the
+// active topology's reader - the callers differ only in whether that last
+// read gives up immediately or waits.
+func (t *Tailscale) resolveDomainSuffix(ctx context.Context, read func(context.Context, TailnetReader) (string, error)) (string, error) {
+	if t.domainSuffix != "" {
+		return t.domainSuffix, nil
+	}
+
+	settings, reader, err := t.session(ctx)
+	if err != nil {
+		return "", err
+	}
+	if settings.DomainSuffix != "" {
+		t.domainSuffix = settings.DomainSuffix
+		return settings.DomainSuffix, nil
+	}
+
+	suffix, err := read(ctx, reader)
+	if err != nil || suffix == "" {
+		return "", err
+	}
+	// ponytail: Docker labels are immutable, so baking the suffix into the
+	// settings label means one cheap recreate. Cache the suffix first so a
+	// failed persist still short-circuits here next time rather than
+	// recreating on every poll.
+	t.domainSuffix = suffix
+	settings.DomainSuffix = suffix
+	_ = t.persistSettings(ctx, settings)
+	return suffix, nil
+}
 
 // session binds every read path's stored settings to the reader the active
 // topology implies: the single door (ADR-0010) that replaces a hand-written

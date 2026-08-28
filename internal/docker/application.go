@@ -499,13 +499,50 @@ func (a *Application) registerRouting(ctx context.Context, containerID string, t
 		return nil
 	}
 
-	if err := a.namespace.Proxy().Deploy(ctx, DeployOptions{
+	return a.registerProxyRoute(ctx, containerID)
+}
+
+// reregisterRoute re-issues the app's Proxy route at its currently running
+// container, through the same registration a deploy uses. The caller has
+// already decided the app's route lives on the Proxy (reregisterTargets).
+func (a *Application) reregisterRoute(ctx context.Context) error {
+	name, err := a.ContainerName(ctx)
+	if err != nil {
+		return err
+	}
+	info, err := a.namespace.client.ContainerInspect(ctx, name)
+	if err != nil {
+		return fmt.Errorf("inspecting container: %w", err)
+	}
+
+	if a.Settings.Exposure == ExposureTailnet {
+		return a.registerNodesRoute(ctx, info.ID)
+	}
+	return a.registerProxyRoute(ctx, info.ID)
+}
+
+// registerProxyRoute registers the app's host route with the Proxy: the one
+// path shared by a deploy and a post-roll re-registration, so every route
+// option Once emits comes from here. A Local route answers only a Trusted
+// Source - the once network's subnets, read from Docker at registration time
+// (ADR-0016); a Public route answers any source.
+func (a *Application) registerProxyRoute(ctx context.Context, containerID string) error {
+	opts := DeployOptions{
 		AppName:         a.Settings.Name,
 		Target:          containerID[:12],
 		Host:            a.Settings.Host,
 		TLS:             a.Settings.TLSEnabled(),
 		HealthCheckPath: a.Settings.Profile.HealthCheckPath(),
-	}); err != nil {
+	}
+	if a.Settings.Exposure == ExposureLocal {
+		subnets, err := a.namespace.NetworkSubnets(ctx)
+		if err != nil {
+			return fmt.Errorf("resolving trusted sources: %w", err)
+		}
+		opts.AllowFrom = subnets
+	}
+
+	if err := a.namespace.Proxy().Deploy(ctx, opts); err != nil {
 		if strings.Contains(err.Error(), "target not healthy") || strings.Contains(err.Error(), "deploy timed out") {
 			slog.Error("Application failed to start", "app", a.Settings.Name, "error", err)
 			return ErrAppNotStarted

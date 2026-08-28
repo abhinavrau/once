@@ -22,7 +22,7 @@ The random 6-character hex suffix on an app container's name that lets a replace
 _Avoid_: short ID; container ID - the suffix is not a truncation of Docker's container ID (that truncation is a distinct value, `shortContainerID`, used as the proxy routing target).
 
 **Proxy**:
-The single kamal-proxy container (`{namespace}-proxy`) that terminates TLS and routes inbound traffic to app containers by host.
+The single kamal-proxy container (`{namespace}-proxy`) that terminates TLS and routes inbound traffic to app containers by host - and, for non-Public routes, only from a Trusted Source.
 _Avoid_: load balancer, gateway, router.
 
 **App Name**:
@@ -39,7 +39,11 @@ The single, explicitly chosen reachability level of an Application. Exactly one 
 _Avoid_: visibility, access mode.
 
 **Local (exposure)**:
-Reachable only from the machine Once runs on.
+Reachable only from the machine Once runs on: the Proxy answers its Host only to a Trusted Source. Not a LAN level - a LAN client wanting the app uses Tailnet.
+
+**Trusted Source**:
+Where a request may come from for the Proxy to answer a non-Public route: the machine Once runs on, or a container on Once's own network (a tailnet node under the Nodes Topology). Anything else gets the same not-found answer as an unknown Host. On Docker Desktop and rootless Docker the Proxy cannot see real source addresses, so Local/Tailnet enforcement degrades to Host routing there.
+_Avoid_: allow-list, whitelist, internal network.
 
 **Tailnet (exposure)**:
 Reachable only from the tailnet, at `https://{app name}.{tailnet suffix}`. How the app is advertised there is the Tailnet Topology's business, not the Exposure's.

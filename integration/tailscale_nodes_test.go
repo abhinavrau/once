@@ -42,7 +42,7 @@ func TestTailscaleEnableBootsNodesTopology(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, ns.EnsureNetwork(ctx))
 	proxyPorts := getProxyPorts(t)
-	require.NoError(t, ns.Proxy().Boot(ctx, proxyPorts))
+	bootProxy(t, ctx, ns, proxyPorts)
 	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -230,7 +230,7 @@ func TestTailscaleRoundTripsBetweenNodesAndServices(t *testing.T) {
 	ns, err := docker.NewNamespace(nsName)
 	require.NoError(t, err)
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -307,4 +307,41 @@ func TestTailscaleRoundTripsBetweenNodesAndServices(t *testing.T) {
 		assert.NotContains(t, labels, "docktail.service.enable", "the app must be rolled off services' labels")
 		hasNodesLabels(t, labels)
 	})
+}
+
+// A fresh install has never deployed an app, so no proxy exists yet. Under
+// nodes, TSDProxy forwards every tailnet Host to the Proxy, so the enable
+// lifecycle must boot it before once-admin registers its route - exactly what
+// a first-run TUI user hits.
+func TestTailscaleEnableNodesOnFreshInstallBootsProxy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-nodes-fresh-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cp := newControlPlane(t, ctx, ns)
+	useControlSeam(t, ctx, cp)
+	hideHostTailscaled(t)
+	startAdminServer(t, ctx)
+
+	_, err = ns.EnableTailscale(ctx, docker.TailscaleSettings{
+		ClientID:     "unused-with-control-seam",
+		ClientSecret: "unused-with-control-seam",
+		Topology:     docker.TailnetTopologyNodes,
+	}, nil)
+	require.NoError(t, err)
+
+	assertContainerRunning(t, ctx, ns.Name()+"-proxy", true)
+	assertContainerRunning(t, ctx, ns.Name()+"-admin", true)
+
+	// once-admin is the first node to join a fresh install, so its Proxy route
+	// is registered while the tailnet still reports no Magic DNS suffix. That
+	// race used to register a bare Host, which no request TSDProxy forwards
+	// ever matches - a healthy container answering 404 forever.
+	out, err := ns.Proxy().ExecOutput(ctx, []string{"kamal-proxy", "list"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "once-admin."+magicDNSBaseDom)
 }

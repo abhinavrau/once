@@ -197,7 +197,7 @@ func (n *nodesTopology) verify(ctx context.Context, settings TailscaleSettings, 
 	reader := n.reader(settings)
 
 	if settings.DomainSuffix == "" {
-		if suffix, _ := waitForMagicDNSSuffix(ctx, reader); suffix != "" {
+		if suffix, _ := waitForMagicDNSSuffix(ctx, reader, suffixWaitTimeout, suffixWaitPoll); suffix != "" {
 			settings.DomainSuffix = suffix
 			_ = n.namespace.tailscale.persistSettings(ctx, settings)
 		}
@@ -631,22 +631,44 @@ func deviceHasAnyTag(deviceTags, tags []string) bool {
 	return false
 }
 
+// nodesRouteHost joins a node's bare name to the tailnet's Magic DNS suffix.
+// An empty suffix is refused rather than registered bare: TSDProxy always
+// forwards the node's FQDN as the Host, so a bare route matches nothing it
+// ever sends and every tailnet request to the app answers 404 - and nothing
+// re-registers the route once the suffix is finally learned. Failing the
+// deploy surfaces that as the tailnet problem it is, instead of a healthy
+// container no one can reach.
+func nodesRouteHost(host, suffix string) (string, error) {
+	if suffix == "" {
+		return "", fmt.Errorf("the tailnet has not reported its domain yet, so %q has no tailnet host to answer on; check that the node joined (`once tailscale status`) and deploy again", host)
+	}
+	return host + "." + suffix, nil
+}
+
 // registerNodesProxyRoute registers the Proxy route a nodes-topology app (or
-// once-admin) answers on: its own tailnet Host, built from the app/node's
-// bare name plus the tailnet's Magic DNS suffix once known (an app deployed
-// before anything has ever joined the tailnet registers under its bare name
-// until a later roll or DomainSuffix persist corrects it - the suffix is an
-// install-wide fact learned once, not a per-app one). TLS is off: TSDProxy
+// once-admin) answers on: its own tailnet Host, the app/node's bare name plus
+// the tailnet's Magic DNS suffix. The suffix is waited for rather than read
+// once - under nodes it is only knowable after some node has joined, and the
+// first app's own node is routinely the first to join anywhere, so a single
+// read at deploy time races the join it depends on. TLS is off: TSDProxy
 // already terminated it with the tailnet's own certificate before forwarding
 // here. Shared by application.go and admin.go, the two callers that create a
-// container tailnet apps answer through under nodes.
+// container tailnet apps answer through under nodes. The route answers only a
+// Trusted Source (ADR-0016): tailnet traffic arrives from the TSDProxy node,
+// a container on the once network, so the network's subnets admit it while an
+// outsider spoofing the tailnet Host gets an unknown-Host 404.
 func registerNodesProxyRoute(ctx context.Context, ns *Namespace, appName, host, containerID, healthCheckPath string) error {
-	suffix, err := ns.Tailscale().DomainSuffix(ctx)
+	suffix, err := ns.Tailscale().WaitForDomainSuffix(ctx)
 	if err != nil {
 		return fmt.Errorf("resolving tailnet domain suffix: %w", err)
 	}
-	if suffix != "" {
-		host = host + "." + suffix
+	host, err = nodesRouteHost(host, suffix)
+	if err != nil {
+		return err
+	}
+	subnets, err := ns.NetworkSubnets(ctx)
+	if err != nil {
+		return fmt.Errorf("resolving trusted sources: %w", err)
 	}
 	if err := ns.Proxy().Deploy(ctx, DeployOptions{
 		AppName:         appName,
@@ -654,6 +676,7 @@ func registerNodesProxyRoute(ctx context.Context, ns *Namespace, appName, host, 
 		Host:            host,
 		TLS:             false,
 		HealthCheckPath: healthCheckPath,
+		AllowFrom:       subnets,
 	}); err != nil {
 		return fmt.Errorf("registering with proxy: %w", err)
 	}

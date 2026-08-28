@@ -45,7 +45,7 @@ func TestDeployVaultwardenFromCatalog(t *testing.T) {
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
 	proxyPorts := getProxyPorts(t)
-	require.NoError(t, ns.Proxy().Boot(ctx, proxyPorts))
+	bootProxy(t, ctx, ns, proxyPorts)
 
 	entry := catalog.Resolve("vaultwarden")
 	settings := docker.DefaultApplicationSettings()
@@ -99,7 +99,7 @@ func TestDeployZeroProfileKeepsRailsShape(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "railsapp",
@@ -143,7 +143,7 @@ func TestBackupRunSnapshotsIntoOneRetentionGroup(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:   "backupapp",
@@ -216,7 +216,7 @@ func TestBackupRunOffsiteLeg(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:   "offsiteapp",
@@ -364,7 +364,7 @@ func TestBackupEnableDisableCLIPersistsSettings(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	dirs := t.TempDir()
 	t.Cleanup(func() { chownToTestUser(t, dirs) })
@@ -427,7 +427,7 @@ func TestBackupEnableProbeFailureWithholdsEnabled(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	foreignRepo := filepath.Join(t.TempDir(), "foreign")
 	require.NoError(t, os.MkdirAll(foreignRepo, 0o755))
@@ -489,7 +489,7 @@ func TestManualExportRefusedWhileBackupLockHeld(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "lockapp",

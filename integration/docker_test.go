@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -43,7 +44,7 @@ func TestDockerDeployment(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "campfire",
@@ -58,6 +59,151 @@ func TestDockerDeployment(t *testing.T) {
 	assert.True(t, ns.HostInUse("campfire.localhost"))
 }
 
+// TestProxyRollsOnImagePinChange covers the image-pin roll and the source
+// restriction it delivers (ADR-0016): a proxy running an image other than the
+// pinned one is replaced on Setup, keeping its settings label and named
+// volume, and every non-public route is re-issued at its app's running
+// container - now with the once network's subnets as its Trusted Source. A
+// proxy already on the pin is left alone. A request from the host's LAN
+// address arrives from outside the once subnet, exactly like a LAN client
+// spoofing the Host header: a Local route answers it 404, a Public route 200,
+// and an install still on once-01 answers it 200 until the roll closes the
+// hole.
+func TestProxyRollsOnImagePinChange(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-proxyroll-test")
+	require.NoError(t, err)
+	defer ns.Teardown(ctx, true)
+
+	require.NoError(t, ns.EnsureNetwork(ctx))
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	defer cli.Close()
+
+	ports := getProxyPorts(t)
+	rolled, err := ns.Proxy().Boot(ctx, ports)
+	require.NoError(t, err)
+	require.False(t, rolled)
+
+	proxyName := ns.Name() + "-proxy"
+	pinnedInfo, err := cli.ContainerInspect(ctx, proxyName)
+	require.NoError(t, err)
+	require.Equal(t, ns.Proxy().PinnedImage(), pinnedInfo.Config.Image)
+
+	// A second boot under the same pin: no roll, no container churn.
+	rolled, err = ns.Proxy().Boot(ctx, ports)
+	require.NoError(t, err)
+	assert.False(t, rolled)
+	sameInfo, err := cli.ContainerInspect(ctx, proxyName)
+	require.NoError(t, err)
+	assert.Equal(t, pinnedInfo.ID, sameInfo.ID, "a proxy on the pinned image must not be replaced")
+
+	local := deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name:     "whoami",
+		Image:    whoamiImage,
+		Host:     "whoami.localhost",
+		Exposure: docker.ExposureLocal,
+	})
+	require.NotNil(t, local)
+	public := deployApp(t, ctx, ns, docker.ApplicationSettings{
+		Name:       "pub",
+		Image:      whoamiImage,
+		Host:       "pub.example.com",
+		Exposure:   docker.ExposurePublic,
+		DisableTLS: true,
+	})
+	require.NotNil(t, public)
+
+	lanAddress := hostLANAddress(t)
+	requestHost := func(address, host string) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/", address, ports.HTTPPort), nil)
+		if err != nil {
+			return 0, err
+		}
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	assertHostStatus := func(address, host string, want int, reason string) {
+		t.Helper()
+		status, err := requestHost(address, host)
+		require.NoError(t, err)
+		assert.Equal(t, want, status, reason)
+	}
+
+	// Under the pin, a Local route answers a Trusted Source and nobody else;
+	// a Public route answers anyone.
+	assertHostStatus("127.0.0.1", "whoami.localhost", http.StatusOK,
+		"loopback traffic arrives from the once gateway, a Trusted Source")
+	assertHostStatus(lanAddress, "whoami.localhost", http.StatusNotFound,
+		"a source outside the once subnet gets the same 404 an unknown Host gets")
+	assertHostStatus(lanAddress, "pub.example.com", http.StatusOK,
+		"a Public route answers any source")
+
+	// Downgrade to the previous pin the way an existing install looks before
+	// an upgrade: same settings label, same state volume, an image without
+	// source restriction - where the spoofed-Host hole is open.
+	const oldImage = "basecamp/kamal-proxy:once-01"
+	ns.Proxy().OverrideImageForTest(oldImage)
+	require.NoError(t, ns.Proxy().UpdateSettings(ctx, ports))
+	oldInfo, err := cli.ContainerInspect(ctx, proxyName)
+	require.NoError(t, err)
+	require.Equal(t, oldImage, oldInfo.Config.Image)
+
+	require.Eventually(t, func() bool {
+		status, err := requestHost(lanAddress, "whoami.localhost")
+		return err == nil && status == http.StatusOK
+	}, 30*time.Second, time.Second,
+		"on the old image the Local route answers a LAN source: the hole the roll closes")
+
+	// Drop the local app's route so its presence after the roll proves it was
+	// re-issued, not merely preserved by the state volume.
+	require.NoError(t, ns.Proxy().Remove(ctx, "whoami"))
+	assertHostStatus("127.0.0.1", "whoami.localhost", http.StatusNotFound, "the route is gone before the roll")
+
+	// Under the real pin, Setup rolls the proxy and re-registers the route.
+	ns.Proxy().OverrideImageForTest("")
+	require.NoError(t, ns.Setup(ctx))
+
+	newInfo, err := cli.ContainerInspect(ctx, proxyName)
+	require.NoError(t, err)
+	assert.NotEqual(t, oldInfo.ID, newInfo.ID, "a proxy on a drifted image must be replaced")
+	assert.Equal(t, ns.Proxy().PinnedImage(), newInfo.Config.Image)
+
+	settings, err := docker.UnmarshalProxySettings(newInfo.Config.Labels["once"])
+	require.NoError(t, err)
+	assert.Equal(t, ports.HTTPPort, settings.HTTPPort)
+	assert.Equal(t, ports.HTTPSPort, settings.HTTPSPort)
+	assert.Equal(t, ports.MetricsPort, settings.MetricsPort)
+
+	volumeKept := false
+	for _, m := range newInfo.Mounts {
+		if m.Name == proxyName {
+			volumeKept = true
+		}
+	}
+	assert.True(t, volumeKept, "the proxy's named volume must survive the roll")
+
+	// The local route came back through re-registration, source-restricted
+	// again; the public route was never touched and answers from the
+	// preserved state volume.
+	assertHostStatus("127.0.0.1", "whoami.localhost", http.StatusOK, "the roll re-issued the Local route")
+	assertHostStatus(lanAddress, "whoami.localhost", http.StatusNotFound, "the roll closed the spoofed-Host hole")
+	assertHostStatus(lanAddress, "pub.example.com", http.StatusOK, "a Public route still answers any source")
+
+	list, err := ns.Proxy().ExecOutput(ctx, []string{"kamal-proxy", "list"})
+	require.NoError(t, err)
+	assert.Contains(t, list, "whoami")
+	assert.Contains(t, list, "pub")
+}
+
 func TestRestoreState(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -69,7 +215,7 @@ func TestRestoreState(t *testing.T) {
 	require.NoError(t, ns1.EnsureNetwork(ctx))
 
 	proxySettings := getProxyPorts(t)
-	require.NoError(t, ns1.Proxy().Boot(ctx, proxySettings))
+	bootProxy(t, ctx, ns1, proxySettings)
 
 	app := deployApp(t, ctx, ns1, docker.ApplicationSettings{
 		Name:  "testapp",
@@ -116,7 +262,7 @@ func TestGaplessDeployment(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "gapless",
@@ -165,7 +311,7 @@ func TestUpdateDetectsLocalImageChange(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "updateapp",
@@ -200,7 +346,7 @@ func TestLargeLabelData(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "largelabel",
@@ -228,7 +374,7 @@ func TestStartStop(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "startstop",
@@ -261,7 +407,7 @@ func TestLongAppName(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  longName,
@@ -286,7 +432,7 @@ func TestContainerLogConfig(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "logtest",
@@ -310,7 +456,7 @@ func TestBackup(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	imageName := "ghcr.io/basecamp/once-campfire:main"
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
@@ -372,7 +518,7 @@ func TestRestore(t *testing.T) {
 	defer ns1.Teardown(ctx, true)
 
 	require.NoError(t, ns1.EnsureNetwork(ctx))
-	require.NoError(t, ns1.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns1, getProxyPorts(t))
 
 	imageName := "ghcr.io/basecamp/once-campfire:main"
 	app := deployApp(t, ctx, ns1, docker.ApplicationSettings{
@@ -401,7 +547,7 @@ func TestRestore(t *testing.T) {
 	defer ns2.Teardown(ctx, true)
 
 	require.NoError(t, ns2.EnsureNetwork(ctx))
-	require.NoError(t, ns2.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns2, getProxyPorts(t))
 
 	backupFile, err := os.Open(filepath.Join(backupDir, "backup.tar"))
 	require.NoError(t, err)
@@ -457,7 +603,7 @@ func TestRestoreHostnameConflictFails(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	imageName := "ghcr.io/basecamp/once-campfire:main"
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
@@ -487,7 +633,7 @@ func TestBackupHookBehavior(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "hooktest",
@@ -541,7 +687,7 @@ func TestBackupStoppedContainer(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "stoppedapp",
@@ -592,7 +738,7 @@ func TestRestoreWithPostRestoreHook(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	restoredApp, err := ns.Restore(ctx, bytes.NewReader(backup))
 	require.NoError(t, err)
@@ -617,7 +763,7 @@ func TestRestoreFailsWithFailedPostRestoreHook(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	_, err = ns.Restore(ctx, bytes.NewReader(backup))
 	require.Error(t, err)
@@ -633,7 +779,7 @@ func TestRemoveApplication(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "removeapp",
@@ -661,7 +807,7 @@ func TestVerifyHTTPOrRemoveAllowsRedeployWithSameHost(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "first",
@@ -691,7 +837,7 @@ func TestRemoveApplicationWithData(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "removeapp",
@@ -719,7 +865,7 @@ func TestDeployWithSettings(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	settings := docker.ApplicationSettings{
 		Name:       "settingsapp",
@@ -776,7 +922,7 @@ func TestUpdatePreservesSettings(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	// Deploy with full settings
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
@@ -836,7 +982,7 @@ func TestUpdateChangeHost(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "hostchangeapp",
@@ -862,7 +1008,7 @@ func TestUpdateHostCollision(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:  "app1",
@@ -891,7 +1037,7 @@ func TestContainerResources(t *testing.T) {
 	defer ns.Teardown(ctx, true)
 
 	require.NoError(t, ns.EnsureNetwork(ctx))
-	require.NoError(t, ns.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
 
 	app := deployApp(t, ctx, ns, docker.ApplicationSettings{
 		Name:      "campfire",
@@ -904,6 +1050,12 @@ func TestContainerResources(t *testing.T) {
 	require.NoError(t, err)
 
 	assertContainerResources(t, ctx, containerName, 1e9, 1024*1024*1024)
+}
+
+func bootProxy(t *testing.T, ctx context.Context, ns *docker.Namespace, settings docker.ProxySettings) {
+	t.Helper()
+	_, err := ns.Proxy().Boot(ctx, settings)
+	require.NoError(t, err)
 }
 
 func deployApp(t *testing.T, ctx context.Context, ns *docker.Namespace, settings docker.ApplicationSettings) *docker.Application {
@@ -935,6 +1087,42 @@ func getFreePort(t *testing.T) int {
 	}
 	require.FailNow(t, "no free port in the test port block")
 	return 0
+}
+
+// hostLANAddress finds a private IPv4 on a real (non-Docker, non-loopback)
+// interface. Connecting to it from the host reaches the proxy with that
+// address as the source - outside the once network's subnets - which is
+// exactly how a LAN client arrives. Loopback won't do: Docker hands loopback
+// connections to the proxy from the bridge gateway, a Trusted Source.
+func hostLANAddress(t *testing.T) string {
+	t.Helper()
+	virtualPrefixes := []string{"docker", "br-", "veth", "tailscale"}
+
+	interfaces, err := net.Interfaces()
+	require.NoError(t, err)
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if slices.ContainsFunc(virtualPrefixes, func(prefix string) bool { return strings.HasPrefix(iface.Name, prefix) }) {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ipNet, ok := address.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ip := ipNet.IP.To4(); ip != nil && ip.IsPrivate() {
+				return ip.String()
+			}
+		}
+	}
+	require.FailNow(t, "no LAN address found to stand in for an outside source")
+	return ""
 }
 
 func getProxyPorts(t *testing.T) docker.ProxySettings {

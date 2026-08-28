@@ -51,7 +51,7 @@ func TestRestoreVaultwardenFromRepo(t *testing.T) {
 	}()
 
 	require.NoError(t, source.EnsureNetwork(ctx))
-	require.NoError(t, source.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, source, getProxyPorts(t))
 
 	entry := catalog.Resolve("vaultwarden")
 	settings := docker.DefaultApplicationSettings()
@@ -122,7 +122,7 @@ func TestRestoreVaultwardenFromRepo(t *testing.T) {
 		}
 	})
 	require.NoError(t, dest.EnsureNetwork(ctx))
-	require.NoError(t, dest.Proxy().Boot(ctx, getProxyPorts(t)))
+	bootProxy(t, ctx, dest, getProxyPorts(t))
 	require.Empty(t, dest.Applications())
 	require.False(t, dest.BackupRepoSettings().Configured(), "a fresh install has no backup configuration at all")
 

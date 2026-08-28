@@ -174,7 +174,14 @@ func (n *Namespace) Setup(ctx context.Context) error {
 		return err
 	}
 
-	return n.proxy.Boot(ctx, ProxySettings{})
+	rolled, err := n.proxy.Boot(ctx, ProxySettings{})
+	if err != nil {
+		return err
+	}
+	if rolled {
+		n.reregisterNonPublicRoutes(ctx)
+	}
+	return nil
 }
 
 func (n *Namespace) EnsureNetwork(ctx context.Context) error {
@@ -193,6 +200,25 @@ func (n *Namespace) EnsureNetwork(ctx context.Context) error {
 		Driver: "bridge",
 	})
 	return err
+}
+
+// NetworkSubnets reports the IPAM subnets of the namespace's Docker network,
+// IPv4 and IPv6 alike. These are the Trusted Source CIDRs for non-public
+// routes (ADR-0016): the host's own traffic reaches the Proxy from the
+// network's gateway, and TSDProxy nodes live on the network as containers.
+func (n *Namespace) NetworkSubnets(ctx context.Context) ([]string, error) {
+	info, err := n.client.NetworkInspect(ctx, n.name, network.InspectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("inspecting network %q: %w", n.name, err)
+	}
+
+	var subnets []string
+	for _, config := range info.IPAM.Config {
+		if config.Subnet != "" {
+			subnets = append(subnets, config.Subnet)
+		}
+	}
+	return subnets, nil
 }
 
 // Deploy is the full deploy lifecycle shared by the CLI and TUI: validate the
@@ -292,7 +318,17 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 
-	if err := n.EnsureNetwork(ctx); err != nil {
+	// Under nodes, TSDProxy forwards every tailnet Host to the Proxy and
+	// once-admin registers its route below, so a fresh install that has never
+	// deployed an app needs the Proxy booted here first - Setup, not just
+	// EnsureNetwork. Under services nothing routes through the Proxy, so
+	// booting it would bind :80 and :443 for no one and turn a busy host port
+	// into a failed enable.
+	if topologyRoutesTailnetAppsViaProxy(settings.Topology) {
+		if err := n.Setup(ctx); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrSetupFailed, err)
+		}
+	} else if err := n.EnsureNetwork(ctx); err != nil {
 		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
 	if err := n.tailscale.Enable(ctx, settings); err != nil {
@@ -512,6 +548,49 @@ func (n *Namespace) containerAppName(containerName string) string {
 
 // Private
 
+// reregisterNonPublicRoutes re-issues the Proxy route of every running app
+// whose route lives on the Proxy and is not Public, immediately after an
+// image-pin roll, so the routes carry whatever options the current Once emits
+// (ADR-0016). Public routes and the Recovery Handoff route stay as the state
+// volume preserved them. One app's failure is reported and does not stop the
+// others - a broken route must not strand the rest.
+func (n *Namespace) reregisterNonPublicRoutes(ctx context.Context) {
+	if err := n.Refresh(ctx); err != nil {
+		slog.Error("Failed to load applications after proxy roll", "error", err)
+		return
+	}
+
+	tailnetViaProxy := false
+	if enabled, err := n.tailscale.Enabled(ctx); err != nil {
+		slog.Error("Failed to check Tailscale after proxy roll", "error", err)
+	} else if enabled {
+		tailnetViaProxy, err = n.tailscale.RoutesTailnetAppsViaProxy(ctx)
+		if err != nil {
+			slog.Error("Failed to resolve tailnet topology after proxy roll", "error", err)
+			tailnetViaProxy = false
+		}
+	}
+
+	// Resolve the install-wide suffix once. Every tailnet route needs it, and
+	// registerNodesProxyRoute waits for it - so without this, an install whose
+	// tailnet has not reported a domain pays that whole wait again per app,
+	// serially, inside a Setup that every deploy runs. One failure here means
+	// every tailnet route would fail: skip them and leave the routes the
+	// proxy's volume preserved for the next deploy to re-issue.
+	if tailnetViaProxy {
+		if suffix, err := n.tailscale.WaitForDomainSuffix(ctx); err != nil || suffix == "" {
+			slog.Error("Tailnet domain unknown after proxy roll; leaving tailnet routes as they are", "error", err)
+			tailnetViaProxy = false
+		}
+	}
+
+	for _, app := range reregisterTargets(n.applications, tailnetViaProxy) {
+		if err := app.reregisterRoute(ctx); err != nil {
+			slog.Error("Failed to re-register route after proxy roll", "app", app.Settings.Name, "error", err)
+		}
+	}
+}
+
 // deployWarnings collects the warn-only pre-deploy checks: a tailnet service
 // name shadowed by an existing tailnet machine, and the public DNS preflight.
 func (n *Namespace) deployWarnings(ctx context.Context, settings ApplicationSettings) []string {
@@ -727,6 +806,28 @@ func (n *Namespace) parseBackup(r io.Reader) (ApplicationSettings, ApplicationVo
 }
 
 // Helpers
+
+// reregisterTargets selects the running applications whose Proxy route is
+// re-issued after a proxy roll: Local always; Tailnet only when the enabled
+// topology routes tailnet apps via the Proxy (ADR-0015). Public apps keep
+// the route the proxy's volume preserved.
+func reregisterTargets(apps []*Application, tailnetViaProxy bool) []*Application {
+	var targets []*Application
+	for _, app := range apps {
+		if !app.Running {
+			continue
+		}
+		switch app.Settings.Exposure {
+		case ExposureLocal:
+			targets = append(targets, app)
+		case ExposureTailnet:
+			if tailnetViaProxy {
+				targets = append(targets, app)
+			}
+		}
+	}
+	return targets
+}
 
 var validNamespace = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 

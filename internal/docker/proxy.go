@@ -18,7 +18,7 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
-const proxyImage = "basecamp/kamal-proxy:once-01"
+const proxyImage = "abhinavrau/kamal-proxy:once-02"
 
 const (
 	stateFileDir  = "/home/kamal-proxy/.config/kamal-proxy"
@@ -65,18 +65,44 @@ type DeployOptions struct {
 	// serve on a LAN IP, which no public CA will ever issue for.
 	TLSCertificatePath string
 	TLSPrivateKeyPath  string
+	// AllowFrom restricts the route to requests whose source address falls
+	// within one of these CIDRs; any other source gets the same 404 an
+	// unknown Host gets (ADR-0016). Empty means the route answers any source,
+	// as Public and Recovery Handoff routes must.
+	AllowFrom []string
 }
 
 type Proxy struct {
 	namespace *Namespace
 	Settings  *ProxySettings
+	image     string
 }
 
 func NewProxy(ns *Namespace) *Proxy {
 	return &Proxy{namespace: ns}
 }
 
-func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) error {
+// OverrideImageForTest points this Proxy at a different image pin, so the
+// integration suite can stand in an install running an older image. An empty
+// image restores the real pin.
+func (p *Proxy) OverrideImageForTest(image string) {
+	p.image = image
+}
+
+// PinnedImage is the image the proxy must run: the compiled-in pin, unless
+// the integration seam overrode it.
+func (p *Proxy) PinnedImage() string {
+	if p.image != "" {
+		return p.image
+	}
+	return proxyImage
+}
+
+// Boot brings the proxy up idempotently, reporting whether an existing proxy
+// was rolled because it ran an image other than the pinned one. The roll keeps
+// the container's settings label and its named volume - the same replacement
+// UpdateSettings performs - so routes, certs and Once's state file survive.
+func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) (bool, error) {
 	if settings.HTTPPort == 0 {
 		settings.HTTPPort = DefaultHTTPPort
 	}
@@ -89,25 +115,25 @@ func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) error {
 
 	info, err := p.namespace.client.ContainerInspect(ctx, p.containerName())
 	if err == nil {
-		return p.ensureRunning(ctx, info)
+		if info.Config.Image == p.PinnedImage() {
+			return false, p.ensureRunning(ctx, info)
+		}
+		return true, p.roll(ctx, info, settings)
 	}
 	if !errdefs.IsNotFound(err) {
-		return fmt.Errorf("inspecting proxy container: %w", err)
+		return false, fmt.Errorf("inspecting proxy container: %w", err)
 	}
 
-	reader, err := p.namespace.client.ImagePull(ctx, proxyImage, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("pulling proxy image: %w", err)
+	if err := p.ensurePinnedImage(ctx); err != nil {
+		return false, err
 	}
-	defer reader.Close()
-	_, _ = io.Copy(io.Discard, reader)
 
 	name := p.containerName()
 	metricsPortTCP := nat.Port(fmt.Sprintf("%d/tcp", settings.MetricsPort))
 
 	resp, err := p.namespace.client.ContainerCreate(ctx,
 		&container.Config{
-			Image: proxyImage,
+			Image: p.PinnedImage(),
 			Cmd:   []string{"kamal-proxy", "run", "--metrics-port", fmt.Sprintf("%d", settings.MetricsPort)},
 			Labels: map[string]string{
 				labelKey: settings.Marshal(),
@@ -143,19 +169,19 @@ func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) error {
 		name,
 	)
 	if err != nil {
-		return fmt.Errorf("creating proxy container: %w", err)
+		return false, fmt.Errorf("creating proxy container: %w", err)
 	}
 
 	if err := p.namespace.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		if isPortConflict(err) {
 			slog.Error("Port conflict starting proxy", "error", err)
-			return ErrProxyPortInUse
+			return false, ErrProxyPortInUse
 		}
-		return fmt.Errorf("starting proxy container: %w", err)
+		return false, fmt.Errorf("starting proxy container: %w", err)
 	}
 
 	p.Settings = &settings
-	return nil
+	return false, nil
 }
 
 // UpdateSettings rewrites the proxy's settings label. Docker labels are
@@ -167,7 +193,8 @@ func (p *Proxy) UpdateSettings(ctx context.Context, settings ProxySettings) erro
 		return fmt.Errorf("removing proxy container: %w", err)
 	}
 	p.Settings = nil
-	return p.Boot(ctx, settings)
+	_, err := p.Boot(ctx, settings)
+	return err
 }
 
 func (p *Proxy) Destroy(ctx context.Context) error {
@@ -218,6 +245,16 @@ func (p *Proxy) containerName() string {
 
 // Private
 
+// roll replaces a proxy whose image drifted from the pin, booting it again
+// with the settings the container already carries.
+func (p *Proxy) roll(ctx context.Context, info container.InspectResponse, fallback ProxySettings) error {
+	settings, err := rollSettings(info, fallback)
+	if err != nil {
+		return err
+	}
+	return p.UpdateSettings(ctx, settings)
+}
+
 func (p *Proxy) ensureRunning(ctx context.Context, info container.InspectResponse) error {
 	if !info.State.Running {
 		if err := p.namespace.client.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
@@ -241,6 +278,22 @@ func (p *Proxy) ensureRunning(ctx context.Context, info container.InspectRespons
 	return nil
 }
 
+// ensurePinnedImage acquires the pinned image with pull-policy "missing":
+// inspect locally first, pull only when absent. Pins are immutable tags, so a
+// re-pull gains nothing - and the pin may exist only in the local daemon.
+func (p *Proxy) ensurePinnedImage(ctx context.Context) error {
+	if _, err := p.namespace.client.ImageInspect(ctx, p.PinnedImage()); err == nil {
+		return nil
+	}
+	reader, err := p.namespace.client.ImagePull(ctx, p.PinnedImage(), image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("pulling proxy image: %w", err)
+	}
+	defer reader.Close()
+	_, _ = io.Copy(io.Discard, reader)
+	return nil
+}
+
 func (p *Proxy) deployArgs(opts DeployOptions) []string {
 	args := []string{"kamal-proxy", "deploy", opts.AppName, "--target", opts.Target, "--deploy-timeout", deployTimeout}
 
@@ -260,6 +313,10 @@ func (p *Proxy) deployArgs(opts DeployOptions) []string {
 
 	if opts.HealthCheckPath != "" {
 		args = append(args, "--health-check-path", opts.HealthCheckPath)
+	}
+
+	for _, cidr := range opts.AllowFrom {
+		args = append(args, "--allow-from", cidr)
 	}
 
 	return args
@@ -366,4 +423,21 @@ func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]by
 	}
 
 	return p.namespace.client.CopyToContainer(ctx, p.containerName(), dir, &buf, container.CopyToContainerOptions{})
+}
+
+// Helpers
+
+// rollSettings picks what a rolled proxy boots with: the settings label the
+// existing container carries - an image roll must not change configuration -
+// falling back to the settings Boot was called with when there is no label.
+func rollSettings(info container.InspectResponse, fallback ProxySettings) (ProxySettings, error) {
+	label := info.Config.Labels[labelKey]
+	if label == "" {
+		return fallback, nil
+	}
+	settings, err := UnmarshalProxySettings(label)
+	if err != nil {
+		return ProxySettings{}, fmt.Errorf("unmarshalling proxy settings: %w", err)
+	}
+	return settings, nil
 }
