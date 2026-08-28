@@ -318,12 +318,18 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 
-	// Setup, not just EnsureNetwork: under nodes TSDProxy forwards every
-	// tailnet Host to the Proxy, and once-admin registers its route below, so
-	// a fresh install that has never deployed an app needs the Proxy booted
-	// here first.
-	if err := n.Setup(ctx); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrSetupFailed, err)
+	// Under nodes, TSDProxy forwards every tailnet Host to the Proxy and
+	// once-admin registers its route below, so a fresh install that has never
+	// deployed an app needs the Proxy booted here first - Setup, not just
+	// EnsureNetwork. Under services nothing routes through the Proxy, so
+	// booting it would bind :80 and :443 for no one and turn a busy host port
+	// into a failed enable.
+	if topologyRoutesTailnetAppsViaProxy(settings.Topology) {
+		if err := n.Setup(ctx); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrSetupFailed, err)
+		}
+	} else if err := n.EnsureNetwork(ctx); err != nil {
+		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
 	if err := n.tailscale.Enable(ctx, settings); err != nil {
 		return nil, fmt.Errorf("enabling Tailscale: %w", err)
@@ -561,6 +567,19 @@ func (n *Namespace) reregisterNonPublicRoutes(ctx context.Context) {
 		tailnetViaProxy, err = n.tailscale.RoutesTailnetAppsViaProxy(ctx)
 		if err != nil {
 			slog.Error("Failed to resolve tailnet topology after proxy roll", "error", err)
+			tailnetViaProxy = false
+		}
+	}
+
+	// Resolve the install-wide suffix once. Every tailnet route needs it, and
+	// registerNodesProxyRoute waits for it - so without this, an install whose
+	// tailnet has not reported a domain pays that whole wait again per app,
+	// serially, inside a Setup that every deploy runs. One failure here means
+	// every tailnet route would fail: skip them and leave the routes the
+	// proxy's volume preserved for the next deploy to re-issue.
+	if tailnetViaProxy {
+		if suffix, err := n.tailscale.WaitForDomainSuffix(ctx); err != nil || suffix == "" {
+			slog.Error("Tailnet domain unknown after proxy roll; leaving tailnet routes as they are", "error", err)
 			tailnetViaProxy = false
 		}
 	}
