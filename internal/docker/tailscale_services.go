@@ -158,7 +158,7 @@ func (s *servicesTopology) boot(ctx context.Context, settings TailscaleSettings)
 	// Bake the suffix into the settings label now so the container is
 	// created once, not created and immediately recreated by a persist.
 	if settings.DomainSuffix == "" {
-		settings.DomainSuffix, _ = waitForMagicDNSSuffix(ctx, s.reader(settings))
+		settings.DomainSuffix, _ = waitForMagicDNSSuffix(ctx, s.reader(settings), suffixWaitTimeout, suffixWaitPoll)
 	}
 
 	if err := s.pullImage(ctx, docktailImage); err != nil {
@@ -1016,8 +1016,8 @@ func waitForSidecarLogin(ctx context.Context, reader TailnetReader, crashed func
 // Magic DNS suffix. Bounded and non-fatal: returns "" on timeout, so a slow
 // control-plane join never fails enable - DomainSuffix() lazily persists the
 // suffix once the daemon reports it.
-func waitForMagicDNSSuffix(ctx context.Context, reader TailnetReader) (string, error) {
-	deadline := time.Now().Add(suffixWaitTimeout)
+func waitForMagicDNSSuffix(ctx context.Context, reader TailnetReader, timeout, poll time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
 	for {
 		suffix, err := reader.MagicDNSSuffix(ctx)
 		if err == nil && suffix != "" {
@@ -1029,7 +1029,7 @@ func waitForMagicDNSSuffix(ctx context.Context, reader TailnetReader) (string, e
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(suffixWaitPoll):
+		case <-time.After(poll):
 		}
 	}
 }

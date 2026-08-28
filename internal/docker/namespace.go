@@ -318,8 +318,12 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 
-	if err := n.EnsureNetwork(ctx); err != nil {
-		return nil, fmt.Errorf("ensuring network: %w", err)
+	// Setup, not just EnsureNetwork: under nodes TSDProxy forwards every
+	// tailnet Host to the Proxy, and once-admin registers its route below, so
+	// a fresh install that has never deployed an app needs the Proxy booted
+	// here first.
+	if err := n.Setup(ctx); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrSetupFailed, err)
 	}
 	if err := n.tailscale.Enable(ctx, settings); err != nil {
 		return nil, fmt.Errorf("enabling Tailscale: %w", err)

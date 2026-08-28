@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -443,4 +444,67 @@ func TestTSDProxyReaderSurfacesHTTPErrors(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
+}
+
+// nodesRouteHost
+
+// TestNodesRouteHostRefusesUnknownSuffix pins the fix for the silent-404 bug:
+// a nodes route registered on a bare Host matches nothing TSDProxy ever
+// forwards (it always sends the node's FQDN), and nothing re-registers it
+// later, so the app is unreachable forever. Refusing beats registering it.
+func TestNodesRouteHostRefusesUnknownSuffix(t *testing.T) {
+	_, err := nodesRouteHost("vaultwarden", "")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vaultwarden")
+}
+
+func TestNodesRouteHostJoinsNameToSuffix(t *testing.T) {
+	host, err := nodesRouteHost("vaultwarden", "tail1234.ts.net")
+
+	require.NoError(t, err)
+	assert.Equal(t, "vaultwarden.tail1234.ts.net", host)
+}
+
+// joinLateReader reports no Magic DNS suffix until the node it is waiting on
+// has joined, the way TSDProxy's API reads while a fresh node is still
+// walking Initializing -> Starting -> Authenticating -> Running.
+type joinLateReader struct {
+	FakeTailnetReader
+	readsBeforeJoin int
+	reads           int
+}
+
+func (r *joinLateReader) MagicDNSSuffix(ctx context.Context) (string, error) {
+	r.reads++
+	if r.reads <= r.readsBeforeJoin {
+		return "", nil
+	}
+	return "tail1234.ts.net", nil
+}
+
+// TestWaitForMagicDNSSuffixOutlastsANodeStillJoining is the other half of the
+// fix: the first tailnet app under nodes is routinely the first node to join
+// anywhere, so the suffix read at deploy time races the join it depends on.
+// A single read returns "" and loses that race; the wait does not.
+func TestWaitForMagicDNSSuffixOutlastsANodeStillJoining(t *testing.T) {
+	reader := &joinLateReader{readsBeforeJoin: 2}
+
+	immediate, err := reader.MagicDNSSuffix(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, immediate, "a node still joining reports no suffix - what the bug registered a bare route from")
+
+	suffix, err := waitForMagicDNSSuffix(t.Context(), reader, time.Second, time.Millisecond)
+
+	require.NoError(t, err)
+	assert.Equal(t, "tail1234.ts.net", suffix)
+}
+
+func TestWaitForMagicDNSSuffixGivesUpWhenNothingEverJoins(t *testing.T) {
+	reader := &FakeTailnetReader{StatusJSON: `{}`}
+
+	suffix, err := waitForMagicDNSSuffix(t.Context(), reader, 10*time.Millisecond, time.Millisecond)
+
+	require.NoError(t, err)
+	assert.Empty(t, suffix)
 }
