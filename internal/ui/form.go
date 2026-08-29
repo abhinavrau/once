@@ -369,7 +369,7 @@ func (f Form) View() string {
 				optionStyle = optionStyle.Foreground(Colors.Focused)
 			}
 			row := labelStyle.Render(item.Label) + "  " + optionStyle.Render(item.Field.View())
-			parts = append(parts, mouse.Mark(fieldTarget(item.Key), row))
+			parts = append(parts, mouse.Mark(fieldTarget(item.Key), row), "")
 			continue
 		}
 
@@ -383,9 +383,7 @@ func (f Form) View() string {
 		if hasError {
 			parts = append(parts, errorStyle.Render(f.error))
 		}
-		if !f.compact {
-			parts = append(parts, "")
-		}
+		parts = append(parts, "")
 	}
 
 	submitButton := mouse.Mark("submit", Styles.Focus(Styles.ButtonPrimary, f.focused == f.submitIndex()).
@@ -444,9 +442,11 @@ func (f *Form) AlignButtonsRight() {
 }
 
 // SetCompact tightens the layout for short terminals: radio fields render
-// their label and options on one row instead of a bordered box, and the
-// blank separator rows between fields go away. Focus shows as color instead
-// of a border on the inlined radios; every field keeps its click target.
+// their label and options on one row instead of a bordered box. Focus shows
+// as color instead of a border on the inlined radios; every field keeps its
+// click target. The blank separator rows between fields stay - they are what
+// keeps a form of text inputs readable, and dropping them buys one row per
+// field at the cost of the layout the user actually reads.
 func (f *Form) SetCompact(compact bool) {
 	f.compact = compact
 }

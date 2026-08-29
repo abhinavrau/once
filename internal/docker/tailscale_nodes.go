@@ -53,7 +53,7 @@ const nodesFunnelPort = 443
 // via TopologyFacts.SetupIntro (ticket 05).
 const nodesSetupIntro = `Setup, once per tailnet:
  1. Run 'once tailscale policy --topology nodes' and merge the printed
-    snippet into your tailnet policy file (https://login.tailscale.com/admin/acls).
+    snippet into your tailnet policy file (https://login.tailscale.com/admin/acls/file).
  2. In the admin console (Settings -> Trust credentials), create an OAuth
     client with write access to Auth Keys and Devices Core, tagged with
     your tag (default tag:once).`

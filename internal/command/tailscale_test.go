@@ -128,7 +128,7 @@ func TestEnableRefusalPrintsTheMergedPolicyToApply(t *testing.T) {
 	assert.Contains(t, output, review.Merged)
 	assert.Contains(t, output, "grants, autoApprovers.services")
 	assert.Contains(t, output, "re-run `once tailscale enable`")
-	assert.Contains(t, output, "https://login.tailscale.com/admin/acls")
+	assert.Contains(t, output, "https://login.tailscale.com/admin/acls/file")
 }
 
 // policy is step one of the enable flow, so its caller is by definition not

@@ -104,7 +104,7 @@ const (
 // enable via TopologyFacts.SetupIntro (ticket 05).
 const servicesSetupIntro = `Setup, once per tailnet:
  1. Run 'once tailscale policy' and merge the printed snippet into your
-    tailnet policy file (https://login.tailscale.com/admin/acls).
+    tailnet policy file (https://login.tailscale.com/admin/acls/file).
  2. In the admin console (Settings -> Trust credentials), create an OAuth
     client with write access to Auth Keys, Devices Core, and Services,
     tagged with your tag (default tag:once).`

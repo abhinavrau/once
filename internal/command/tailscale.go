@@ -413,7 +413,7 @@ func printWarnings(warnings []string) {
 // interaction: nothing prompts, so a script and a terminal behave the same.
 func printMergedPolicy(review docker.PolicyReview) {
 	fmt.Println()
-	fmt.Printf("Apply this Merged Policy - your tailnet policy plus the missing %s - at https://login.tailscale.com/admin/acls, then re-run `once tailscale enable`:\n",
+	fmt.Printf("Apply this Merged Policy - your tailnet policy plus the missing %s - at https://login.tailscale.com/admin/acls/file, then re-run `once tailscale enable`:\n",
 		strings.Join(review.Added, ", "))
 	fmt.Println()
 	fmt.Println(review.Merged)
@@ -422,7 +422,7 @@ func printMergedPolicy(review docker.PolicyReview) {
 
 func printPolicySnippet(facts docker.TopologyFacts, tag string) {
 	fmt.Println()
-	fmt.Println("Merge this snippet into your tailnet policy file (https://login.tailscale.com/admin/acls), then run `once tailscale enable`:")
+	fmt.Println("Merge this snippet into your tailnet policy file (https://login.tailscale.com/admin/acls/file), then run `once tailscale enable`:")
 	fmt.Println()
 	fmt.Println(facts.PolicySnippet(tag))
 	fmt.Println()

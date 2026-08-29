@@ -28,7 +28,7 @@ const (
 	tagOwnersLine  = `"tag:once": ["autogroup:admin"],`
 	tagOwnersBlock = "\"tagOwners\": {\n\t" + tagOwnersLine + "\n},"
 
-	policyEditorURL = "https://login.tailscale.com/admin/acls"
+	policyEditorURL = "https://login.tailscale.com/admin/acls/file"
 	oauthClientsURL = "https://login.tailscale.com/admin/settings/oauth"
 	copyTarget      = "copy:tagowners"
 	continueTarget  = "continue"

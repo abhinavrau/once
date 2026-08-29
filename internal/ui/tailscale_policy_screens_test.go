@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,7 +21,7 @@ func TestPolicyDiffScreenFitsSmallTerminals(t *testing.T) {
 		assert.Equal(t, rows, lipgloss.Height(view), "the diff screen must use exactly the %d rows it is given", rows)
 		assert.LessOrEqual(t, lipgloss.Width(view), 80, "at %d rows", rows)
 		assert.Contains(t, view, "Copy Policy File", "the copy control must stay reachable at %d rows", rows)
-		assert.Contains(t, view, "scroll", "off-screen diff content must be scrollable at %d rows", rows)
+		assert.Greater(t, s.vp.TotalLineCount(), s.vp.Height(), "off-screen diff content must be scrollable at %d rows", rows)
 	}
 }
 
@@ -74,6 +75,66 @@ func TestPolicyDiffCopyTogglesTheCopiedState(t *testing.T) {
 	require.NotNil(t, cmd)
 	assert.Equal(t, s.review.Merged, fmt.Sprint(cmd()), "the copy carries the whole merged document, never the diff rendering")
 	assert.Contains(t, s.View(), "Copied ✓")
+}
+
+func TestTagOwnersScreen_DefaultsToTheGivenTag(t *testing.T) {
+	s := newTagOwnersScreen("once")
+
+	assert.Equal(t, "once", s.field.Value())
+	view := ansi.Strip(s.View())
+	assert.Contains(t, view, "Tag:")
+	assert.Contains(t, view, "comma-separated for multiple")
+}
+
+func TestTagOwnersScreen_TagFieldLooksEditableAndOpensFocused(t *testing.T) {
+	s := newTagOwnersScreen("once")
+
+	assert.Contains(t, ansi.Strip(s.View()), "▏once"+strings.Repeat(" ", tagFieldWidth-len("once"))+"▕",
+		"the tag renders in a fixed-width cell with visible edges, the only affordance left once the input box was dropped")
+	assert.True(t, s.fieldFocused, "the screen opens with the cursor in the tag field")
+	assert.Contains(t, s.View(), ansi.Style{}.ForegroundColor(Colors.Focused).String()+"▏",
+		"focus colors the cell edges")
+
+	s, _ = s.Update(keyPressMsg("tab"))
+	assert.NotContains(t, s.View(), ansi.Style{}.ForegroundColor(Colors.Focused).String()+"▏",
+		"leaving the field returns the edges to the border color")
+}
+
+func TestTagOwnersScreen_SnippetsReadAsAlternatives(t *testing.T) {
+	view := ansi.Strip(newTagOwnersScreen("once").View())
+
+	assert.Contains(t, view, "OR", "the two snippets are alternatives, not consecutive steps")
+}
+
+func TestTagOwnersScreen_ExplainsWhyTheTagIsNeeded(t *testing.T) {
+	s := newTagOwnersScreen("once")
+
+	assert.Contains(t, s.View(), "tagOwners before it can issue a tagged credential")
+}
+
+func TestTagOwnersScreen_TypingTheTagUpdatesTheSnippetsLive(t *testing.T) {
+	s := newTagOwnersScreen("once")
+	s, _ = s.Update(MouseEvent{IsClick: true, Target: fieldTarget("tag")})
+	for _, r := range "-app" {
+		s, _ = s.Update(keyPressMsg(string(r)))
+	}
+
+	assert.Equal(t, "once-app", s.field.Value())
+	view := normalizeWhitespace(ansi.Strip(s.View()))
+	assert.Contains(t, view, normalizeWhitespace(docker.TagOwnersPolicyLines("once-app")),
+		"the snippets must follow the field live, normalized the same way enable would")
+	assert.NotContains(t, view, `"tag:once":`, "the stale tag must not linger once the field has changed")
+}
+
+func TestTagOwnersScreen_BlankTagBlocksContinue(t *testing.T) {
+	s := newTagOwnersScreen("once")
+	s, _ = s.Update(MouseEvent{IsClick: true, Target: fieldTarget("tag")})
+	s.field.SetValue("")
+	s, _ = s.Update(keyPressMsg("tab")) // blur the field, focus the first control
+
+	s, cmd := s.Update(keyPressMsg("s"))
+	assert.Nil(t, cmd, "the skip key must not proceed with a blank tag")
+	assert.Contains(t, s.View(), "Tag is required")
 }
 
 // Helpers

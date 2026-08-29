@@ -26,6 +26,7 @@ const tailscaleFormTextWidth = 68
 var (
 	tailscaleFormCloseKey = WithHelp(NewKeyBinding("esc"), "esc", "close")
 	tailscaleCopyKey      = WithHelp(NewKeyBinding("ctrl+p"), "ctrl+p", "copy policy snippet")
+	tailscaleHelpKey      = WithHelp(NewKeyBinding("f1"), "F1", "help")
 )
 
 type TailscaleFormCloseMsg struct{}
@@ -44,9 +45,12 @@ type tailscaleFormFinishedMsg struct {
 type tailscaleStatusMsg string
 
 // tailscaleScreen names which screen of the enable flow the overlay shows.
-// A fresh enable opens on the tagOwners screen (phase one of ADR-0017), the
-// credential form follows, and a refused enable lands on the Merged Policy
-// diff. An enabled install goes straight to the credential form.
+// Both a fresh enable and a normal re-enable open on the tagOwners screen
+// (phase one of ADR-0017, extended to re-enable so the tag stays editable in
+// one place): the credential form follows, and a refused enable lands on the
+// Merged Policy diff. An install whose stored settings failed to load
+// (hasTagOwnersScreen false) skips straight to the credential form, which
+// shows the load error instead.
 type tailscaleScreen int
 
 const (
@@ -63,14 +67,23 @@ const (
 // whichever topology is currently selected, or the Merged Policy after a
 // refused enable.
 type TailscaleForm struct {
-	namespace     *docker.Namespace
-	enabled       bool
-	screen        tailscaleScreen
+	namespace *docker.Namespace
+	enabled   bool
+	screen    tailscaleScreen
+	// hasTagOwnersScreen is false only when stored settings failed to load;
+	// otherwise both a fresh enable and a re-enable start on the tagOwners
+	// screen, so escape() and the initial screen choice share one flag.
+	hasTagOwnersScreen bool
+	// tag is the tagOwners screen's current value, carried here once the
+	// user leaves it (Continue or skip) so the credential form - which no
+	// longer has a tag field of its own - and the enable submission both
+	// read the same value.
+	tag           string
 	tagOwners     tagOwnersScreen
 	diff          policyDiffScreen
+	popupHelp     *PopupHelp
 	lastEnable    tailscaleEnableSubmitMsg
 	form          Form
-	help          Help
 	width, height int
 	running       bool
 	progress      Progress
@@ -91,21 +104,42 @@ func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 }
 
 func (m TailscaleForm) Init() tea.Cmd {
+	if m.screen == tailscaleScreenTagOwners {
+		return m.tagOwners.Init()
+	}
 	return m.form.Init()
 }
 
 func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
+	if m.popupHelp != nil {
+		switch msg.(type) {
+		case PopupHelpCloseMsg:
+			m.popupHelp = nil
+			return m, nil
+		case tea.KeyPressMsg, MouseEvent, tea.MouseWheelMsg:
+			ph, cmd := m.popupHelp.Update(msg)
+			m.popupHelp = &ph
+			return m, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.help.SetWidth(m.width)
 		m.progress = m.progress.SetWidth(m.width)
 		m.form, _ = m.form.Update(msg)
 		m.diff, _ = m.diff.Update(msg)
+		m.tagOwners, _ = m.tagOwners.Update(msg)
 		return m, nil
 
 	case tea.KeyPressMsg:
 		if m.running {
+			return m, nil
+		}
+		if key.Matches(msg, tailscaleHelpKey) {
+			title, content := m.helpContent()
+			ph := NewPopupHelp(title, content, m.width, m.height)
+			m.popupHelp = &ph
 			return m, nil
 		}
 		if key.Matches(msg, tailscaleFormCloseKey) {
@@ -132,6 +166,7 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m.updateScreen(msg)
 
 	case tagOwnersContinueMsg:
+		m.tag = msg.tag
 		m.screen = tailscaleScreenCredential
 		return m, m.form.Init()
 
@@ -141,6 +176,10 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m.Update(m.lastEnable)
 
 	case tailscaleEnableSubmitMsg:
+		// The tag field lives on the tagOwners screen now, not this form, so
+		// the submit callback never sets it; the current value is attached
+		// here instead.
+		msg.tag = m.tag
 		m.lastEnable = msg
 		m.statusChan = make(chan string, 4)
 		c, cmd := m.startRunning(m.runEnable(msg))
@@ -206,6 +245,14 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 }
 
 func (m TailscaleForm) View() string {
+	view := m.view()
+	if m.popupHelp != nil {
+		return OverlayCenter(view, m.popupHelp.View(), m.width, m.height)
+	}
+	return view
+}
+
+func (m TailscaleForm) view() string {
 	if m.running {
 		body := m.progress.View()
 		if m.status != "" {
@@ -230,13 +277,15 @@ func (m TailscaleForm) View() string {
 	// alone and a topology click changes the form's content, never its
 	// layout. TestTailscaleForm_CredentialScreenFitsThe24RowFloor and
 	// TestTailscaleForm_TopologySwitchNeverChangesTheLayoutTier pin it.
-	switch {
-	case m.height == 0 || m.fits(true, false):
-		return m.frame(m.setupView(true, false), false)
-	case m.fits(true, true):
-		return m.frame(m.setupView(true, true), true)
-	case m.fits(false, false):
-		return m.frame(m.setupView(false, false), false)
+	// The frame's own padding is the last thing to go: every tier is measured
+	// in the roomy frame, and only a terminal too short for even the tightest
+	// tier gets the margin-free one.
+	for _, tier := range []struct{ guidance, compact bool }{
+		{true, false}, {true, true}, {false, false}, {false, true},
+	} {
+		if m.height == 0 || m.fits(tier.guidance, tier.compact, false) {
+			return m.frame(m.setupView(tier.guidance, tier.compact), false)
+		}
 	}
 	return m.frame(m.setupView(false, true), true)
 }
@@ -252,8 +301,29 @@ func (m TailscaleForm) copyPayload() string {
 		return refused.Review.Merged
 	}
 	facts := tailscaleFactsFor(selectedTailscaleTopology(m.form))
-	return facts.PolicySnippet(m.form.TextField("tag").Value())
+	return facts.PolicySnippet(m.tag)
 }
+
+// helpContent returns the F1 popup's title and body for whichever screen of
+// the flow is currently active.
+func (m TailscaleForm) helpContent() (string, string) {
+	switch m.screen {
+	case tailscaleScreenTagOwners:
+		return "Need tagOwners in Policy File", tagOwnersHelpText
+	case tailscaleScreenDiff:
+		return "Review the Merged Policy", policyDiffHelpText
+	default:
+		return "Tailscale setup: Credentials", credentialHelpText
+	}
+}
+
+// credentialHelpText is the credential screen's F1 popup body.
+const credentialHelpText = `This screen collects the Tailscale OAuth client Once uses to manage this tailnet.
+
+Topology chooses how Once exposes this server: Nodes joins it to the tailnet directly; Services publishes it through tailscaled's Services feature.
+
+Client ID and Client Secret come from an OAuth client you create in the Tailscale admin console (Settings -> OAuth clients), scoped to the tag declared on the previous screen.
+`
 
 // startRunning switches to the progress view and runs cmd in the background.
 func (m TailscaleForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
@@ -293,8 +363,8 @@ func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 // tier. setupView pads the form to its tallest field set, so the measured
 // height is a function of the terminal size alone and the tier cannot change
 // when a topology click reveals or removes the Mode field.
-func (m TailscaleForm) fits(guidance, compact bool) bool {
-	return lipgloss.Height(m.frame(m.setupView(guidance, compact), compact)) <= m.height
+func (m TailscaleForm) fits(guidance, compact, tight bool) bool {
+	return lipgloss.Height(m.frame(m.setupView(guidance, compact), tight)) <= m.height
 }
 
 // setupView is the credential screen's body. guidance carries the setup
@@ -342,7 +412,7 @@ func (m TailscaleForm) setupView(guidance, compact bool) string {
 // re-enable explainer (enabled install).
 func (m TailscaleForm) guidance() string {
 	if m.enabled {
-		return policyMuted("Tailscale is enabled. Enable re-applies the settings below\n(changing the topology, mode, credentials, or tag rebuilds it).")
+		return policyMuted("Tailscale is enabled. Enable re-applies the settings below\n(changing the topology, mode, or credentials rebuilds it; so does\nediting the tag on the previous screen).")
 	}
 
 	facts := tailscaleFactsFor(selectedTailscaleTopology(m.form))
@@ -362,37 +432,41 @@ func (m TailscaleForm) guidance() string {
 	)
 }
 
-// frame wraps a credential-screen body in the overlay's box, title and help
-// line; tight sheds the vertical padding and margins for the 24-row floor.
+// frame wraps a credential-screen body in the overlay's box and title; tight
+// sheds the vertical padding and margins for the 24-row floor. No screen of
+// this flow carries a help line of its own - the screen behind the overlay
+// already renders one.
 func (m TailscaleForm) frame(body string, tight bool) string {
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(Colors.Border).
 		Padding(1, 4)
 	title := lipgloss.NewStyle().Bold(true).Foreground(Colors.Primary).MarginBottom(1)
-	helpLine := lipgloss.NewStyle().MarginTop(1).Align(lipgloss.Center)
 	if tight {
 		boxStyle = boxStyle.Padding(0, 4)
 		title = title.MarginBottom(0)
-		helpLine = helpLine.MarginTop(0)
 	}
 	return boxStyle.Render(lipgloss.JoinVertical(lipgloss.Center,
-		title.Render("Tailscale setup: Credentials"), body, helpLine.Render(m.help.View())))
+		title.Render("Tailscale setup: Credentials"), body))
 }
 
 // escape is the overlay-wide esc gesture, screen by screen: the diff returns
-// to the credential form (the refusal message waits there), a fresh enable's
-// credential form returns to the tagOwners screen, and everything else
-// closes the overlay.
+// to the credential form (the refusal message waits there), the credential
+// form returns to the tagOwners screen (when there is one to return to), and
+// everything else closes the overlay.
 func (m TailscaleForm) escape() (Component, tea.Cmd) {
 	switch m.screen {
 	case tailscaleScreenDiff:
 		m.screen = tailscaleScreenCredential
 		return m, m.form.Init()
 	case tailscaleScreenCredential:
-		if !m.enabled {
+		if m.hasTagOwnersScreen {
 			m.screen = tailscaleScreenTagOwners
-			return m, nil
+			// Back on the screen the tag is edited on, the cursor belongs in
+			// the field again, exactly as it does when it first opens.
+			var cmd tea.Cmd
+			m.tagOwners, cmd = m.tagOwners.focusField()
+			return m, cmd
 		}
 	}
 	return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
@@ -425,11 +499,8 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 		namespace: ns,
 		enabled:   enabled,
 		err:       loadErr,
-		help:      NewHelp(),
 		progress:  NewProgress(0, Colors.Border),
 	}
-	m.help.SetBindings([]key.Binding{tailscaleCopyKey, tailscaleFormCloseKey})
-
 	topology := settings.Topology
 	if topology == "" {
 		topology = docker.TailnetTopologyNodes
@@ -442,13 +513,17 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 	clientSecretField.SetEchoPassword()
 	clientSecretField.SetValue(settings.ClientSecret)
 
-	defaultTag := tailscaleFactsFor(topology).DefaultSettings.Tag
-	tagField := NewTextField(defaultTag)
-	if enabled {
-		tagField.SetValue(settings.Tag)
-	} else {
-		tagField.SetValue(defaultTag)
+	// The tag is entered on the tagOwners screen, not here (moved so the
+	// tagOwners entry the user pastes and the tag the credential is scoped
+	// to can never drift apart). defaultTag is bare (no "tag:" prefix): the
+	// field edits and displays the bare name(s); normalizeTag re-adds the
+	// prefix wherever the value is actually consumed.
+	defaultTag := stripTagPrefix(tailscaleFactsFor(topology).DefaultSettings.Tag)
+	tag := defaultTag
+	if enabled && settings.Tag != "" {
+		tag = stripTagPrefix(settings.Tag)
 	}
+	m.tag = tag
 
 	topologyField := NewRadioField(tailscaleTopologyLabels()...)
 	topologyField.SetSelected(max(slices.Index(tailscaleTopologyChoices, topology), 0))
@@ -459,7 +534,6 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 		{Key: "topology", Label: "Topology", Field: topologyField},
 		{Key: "client-id", Label: "Client ID", Field: clientIDField, Required: !enabled},
 		{Key: "client-secret", Label: "Client Secret", Field: clientSecretField, Required: !enabled},
-		{Key: "tag", Label: "Tag", Field: tagField, Required: !enabled},
 	}
 	if choices := tailscaleFactsFor(topology).ModeChoices; choices != nil {
 		items = append(items, newTailscaleModeItem(choices, settings.Mode))
@@ -499,7 +573,6 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 			return tailscaleEnableSubmitMsg{
 				id:       f.TextField("client-id").Value(),
 				secret:   f.TextField("client-secret").Value(),
-				tag:      f.TextField("tag").Value(),
 				mode:     mode,
 				topology: topology,
 			}
@@ -509,12 +582,16 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 		m.form.SetActionButton("Disable", func() tea.Msg { return tailscaleDisableSubmitMsg{} })
 	}
 
-	// A fresh enable opens on the tagOwners screen: the console will not
-	// issue a tagged credential until the tag is in tagOwners, so no
-	// credential-driven step can come first (ADR-0017).
-	if !enabled {
+	// Both a fresh enable and a normal re-enable open on the tagOwners
+	// screen: the console will not issue a tagged credential until the tag
+	// is in tagOwners, so no credential-driven step can come first
+	// (ADR-0017). An install whose stored settings failed to load has
+	// nothing to tag-check, so it skips straight to the credential form,
+	// which shows the load error instead.
+	m.tagOwners = newTagOwnersScreen(tag)
+	m.hasTagOwnersScreen = loadErr == nil
+	if m.hasTagOwnersScreen {
 		m.screen = tailscaleScreenTagOwners
-		m.tagOwners = newTagOwnersScreen(defaultTag)
 	}
 
 	return m

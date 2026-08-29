@@ -195,16 +195,16 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	require.Contains(t, d.viewContent(), "(•) Sidecar", "selecting Services should reveal the Mode field")
 	d.fillField("client-id", "unused-with-control-seam")
 	d.fillField("client-secret", "unused-with-control-seam")
-	require.Contains(t, d.viewContent(), "close", "the form's help must be visible: an overlay taller than the window is clipped")
+	require.Contains(t, d.viewContent(), "Continue", "the submit button must be visible: an overlay taller than the window is clipped")
 	d.click("submit")
 
 	// The form runs the real EnableTailscale and stays open (showing progress,
 	// which replaces the field labels) until the lifecycle finishes, then closes.
-	// Wait on the overlay's "esc close" help, which is present in both the form
-	// and progress states but gone once closed. Pump the UI while it runs; on a
+	// Wait on the overlay's title, which is present in both the form and
+	// progress states but gone once closed. Pump the UI while it runs; on a
 	// failure the form stays open with an error and this times out.
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "close")
+		return !strings.Contains(d.viewContent(), "Tailscale setup")
 	}, 3*time.Minute)
 
 	// The Docktail topology booted, the sidecar joined the control plane, and
@@ -234,9 +234,12 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	_, err = cli.ContainerInspect(ctx, ns.Name()+"-admin")
 	require.NoError(t, err, "once-admin should be running after enabling via the form")
 
-	// -- re-opening the form shows the stored settings, editable, with Disable
-	// as the secondary action --
+	// -- re-opening the form shows the tagOwners screen first (the tag is
+	// edited there regardless of enabled state), then the stored settings,
+	// editable, with Disable as the secondary action --
 	d.send(keyMsg("t"))
+	d.waitForView("Need tagOwners in Policy File", 5*time.Second)
+	d.click("continue")
 	d.waitForView("Tailscale is enabled", 5*time.Second)
 	overlay := d.viewContent()
 	assert.Contains(t, overlay, "Disable", "disable should stay reachable on the enabled overlay")
@@ -254,7 +257,7 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	d.selectRadioOption("mode", "Sidecar")
 	d.click("submit")
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "close")
+		return !strings.Contains(d.viewContent(), "Tailscale setup")
 	}, 3*time.Minute)
 
 	docktailAfter, err := cli.ContainerInspect(ctx, ns.Name()+"-docktail")
