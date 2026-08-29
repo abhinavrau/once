@@ -31,12 +31,22 @@ block. Lift it rather than invent a new shape.
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] The prototype runs from a single command, and needs neither Docker nor a Tailscale credential.
-- [ ] Phase one shows both shapes of the `tagOwners` entry, labelled so it is obvious which one to use.
-- [ ] A visible copy control and ctrl+p both copy the `tagOwners` text, through one shared code path.
-- [ ] The screen links to the tailnet policy editor and names the success signal: the tag appears in the credential form's tag picker.
-- [ ] A skip path exists for a user whose tag already exists, with no verification step, since a working tagged credential is itself the proof.
-- [ ] A scenario switcher selects between canned Tailnet Policy fixtures, and later phases read the selected one.
-- [ ] The prototype sits outside production code paths and can be deleted in a single commit.
+- [x] The prototype runs from a single command, and needs neither Docker nor a Tailscale credential.
+- [x] Phase one shows both shapes of the `tagOwners` entry, labelled so it is obvious which one to use.
+- [x] A visible copy control and ctrl+p both copy the `tagOwners` text, through one shared code path.
+- [x] The screen links to the tailnet policy editor and names the success signal: the tag appears in the credential form's tag picker.
+- [x] A skip path exists for a user whose tag already exists, with no verification step, since a working tagged credential is itself the proof.
+- [x] A scenario switcher selects between canned Tailnet Policy fixtures, and later phases read the selected one.
+- [x] The prototype sits outside production code paths and can be deleted in a single commit.
+
+## Comments
+
+Built on branch `prototype/tailnet-policy` (cmd/prototype-tailnet-policy/).
+Run: `go run ./cmd/prototype-tailnet-policy`. Keyboard and mouse both work;
+the copy control and ctrl+p share one path (`copyTagOwners`), payload is the
+whole block. Five fixtures cover the states tickets 02-03 need; the 200-line
+fixture for ticket 04 is deferred to that ticket. All three screens fit the
+80x24 floor (phase one is exactly 24 rows). Status ready-for-human = react
+to layout and words; tickets 02-04 continue on the same branch.
