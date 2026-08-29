@@ -185,9 +185,9 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	// has no Mode field at all.
 	d.send(keyMsg("t"))
 	d.waitForView("tagOwners", 5*time.Second)
-	// The copy control is a named click target; clicking it flips the
+	// The copy controls are named click targets; clicking one flips its
 	// Copied state and Continue advances to the credential form.
-	d.click("copy-policy")
+	d.click("copy-block")
 	require.Contains(t, d.viewContent(), "Copied", "the copy control must confirm the copy")
 	d.click("continue")
 	d.waitForView("Client ID", 5*time.Second)
