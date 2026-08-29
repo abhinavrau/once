@@ -339,7 +339,7 @@ func (m model) scrollbar() string {
 
 func (m *model) sizeViewport() {
 	m.vp.SetWidth(72)
-	m.vp.SetHeight(max(3, m.height-12))
+	m.vp.SetHeight(max(3, m.height-13))
 }
 
 func (m model) scenarioView() string {
@@ -423,12 +423,21 @@ func (m model) diffView() string {
 			Render("Nothing to add") + muted(" - every section is already in your policy")
 	}
 
+	num := lipgloss.NewStyle().Bold(true).Foreground(ui.Colors.Primary)
+	editorLink := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Underline(true).
+		Hyperlink(policyEditorURL).Render(policyEditorURL)
+	steps := lipgloss.JoinVertical(lipgloss.Left,
+		num.Render("1. Copy the merged file")+muted(" - your whole policy, additions included"),
+		num.Render("2. Open the editor")+muted(": ")+editorLink+muted(" - select all"),
+		num.Render("3. Paste over it")+muted(", save, then Continue"),
+	)
+
 	scroll := fmt.Sprintf("↑/↓ scroll %.0f%%", m.vp.ScrollPercent()*100)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, m.vp.View(), " ", m.scrollbar())
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Review the Merged Policy"),
 		lipgloss.JoinVertical(lipgloss.Left,
-			summary, "", body, "", m.actionButtons(),
+			summary, body, steps, m.actionButtons(),
 			helpLine(scroll, "tab focus", "enter press", "ctrl+p copy", "esc back"))))
 }
 
