@@ -60,17 +60,21 @@ func TestTailscaleForm_FreshEnableOpensOnTheTagOwnersScreen(t *testing.T) {
 	assert.Contains(t, ansi.Strip(c.(TailscaleForm).View()), "Need tagOwners in Policy File")
 }
 
-func TestTailscaleForm_TagOwnersCopyControlSharesOnePayloadWithCtrlP(t *testing.T) {
+func TestTailscaleForm_TagOwnersSnippetsEachCarryTheirOwnCopyControl(t *testing.T) {
 	m := NewTailscaleForm(newTestNamespace())
 
-	c, cmd := m.Update(MouseEvent{IsClick: true, Target: policyCopyTarget})
+	c, cmd := m.Update(MouseEvent{IsClick: true, Target: policyCopyBlockTarget})
 	require.NotNil(t, cmd)
 	assert.Equal(t, docker.TagOwnersPolicyBlock("tag:once"), fmt.Sprint(cmd()))
 	assert.Contains(t, c.(TailscaleForm).View(), "Copied ✓")
 
+	_, cmd = m.Update(MouseEvent{IsClick: true, Target: policyCopyLineTarget})
+	require.NotNil(t, cmd)
+	assert.Equal(t, docker.TagOwnersPolicyLines("tag:once"), fmt.Sprint(cmd()), "the line snippet's control copies just the line")
+
 	_, cmd = m.Update(keyPressMsg("ctrl+p"))
 	require.NotNil(t, cmd)
-	assert.Equal(t, docker.TagOwnersPolicyBlock("tag:once"), fmt.Sprint(cmd()), "ctrl+p and the visible control share one copy path")
+	assert.Equal(t, docker.TagOwnersPolicyBlock("tag:once"), fmt.Sprint(cmd()), "ctrl+p copies the block, the fresh-policy default")
 }
 
 func TestTailscaleForm_SelectingServicesRevealsTheModeField(t *testing.T) {
@@ -461,4 +465,34 @@ func TestTailscaleForm_TopologyClickKeepsTheGuidanceVisible(t *testing.T) {
 	view := services.View()
 	assert.Contains(t, ansi.Strip(view), "Create a new OAuth client", "selecting a topology must not hide the steps that explain it")
 	assert.LessOrEqual(t, lipgloss.Height(view), 45)
+}
+
+func TestTailscaleForm_TopologySwitchNeverChangesTheLayoutTier(t *testing.T) {
+	// The tier signature: whether the guidance shows, and whether the form is
+	// compact (a compact form inlines the Topology label with its options).
+	signature := func(view string) (guidance, compact bool) {
+		plain := ansi.Strip(view)
+		for line := range strings.SplitSeq(plain, "\n") {
+			if strings.Contains(line, "Topology") && strings.Contains(line, "Nodes") {
+				compact = true
+			}
+		}
+		return strings.Contains(plain, "Create a new OAuth client"), compact
+	}
+
+	for _, rows := range []int{24, 30, 35, 40, 42, 44, 46, 47, 50, 60} {
+		m := advanceToCredential(t, NewTailscaleForm(newTestNamespace()))
+		c, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: rows})
+		nodes := c.(TailscaleForm)
+		nodesGuidance, nodesCompact := signature(nodes.View())
+
+		services := clickField(nodes, "topology")
+		view := services.View()
+		servicesGuidance, servicesCompact := signature(view)
+
+		assert.Equal(t, nodesGuidance, servicesGuidance, "guidance visibility must not change with the selection at %d rows", rows)
+		assert.Equal(t, nodesCompact, servicesCompact, "form compactness must not change with the selection at %d rows", rows)
+		assert.Equal(t, lipgloss.Height(nodes.View()), lipgloss.Height(view), "the screen height must not change with the selection at %d rows", rows)
+		assert.LessOrEqual(t, lipgloss.Height(view), rows, "at %d rows", rows)
+	}
 }

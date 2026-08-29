@@ -731,3 +731,16 @@ func TestFormSetCompactInlinesRadiosAndKeepsThemClickable(t *testing.T) {
 	form, _ = form.Update(MouseEvent{IsClick: true, Target: "field:choice"})
 	assert.Equal(t, 1, form.RadioField("choice").Selected(), "the inlined radio keeps its click target")
 }
+
+func TestFormSetMinHeightPadsBetweenFieldsAndButtons(t *testing.T) {
+	form := NewForm("Save", FormItem{Key: "name", Label: "Name", Field: NewTextField("")})
+	bare := lipgloss.Height(form.View())
+
+	form.SetMinHeight(bare + 3)
+	view := form.View()
+	assert.Equal(t, bare+3, lipgloss.Height(view))
+
+	lines := strings.Split(view, "\n")
+	bottom := strings.Join(lines[len(lines)-3:], "\n")
+	assert.Contains(t, bottom, "Save", "the button row stays last")
+}

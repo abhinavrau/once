@@ -279,6 +279,7 @@ type Form struct {
 	hideCancel   bool
 	buttonsRight bool
 	compact      bool
+	minHeight    int
 	focused      int
 	width        int
 	errorKey     string
@@ -410,6 +411,12 @@ func (f Form) View() string {
 		// the edge; there is no button after it to separate from.
 		buttons = lipgloss.PlaceHorizontal(contentWidth(parts), lipgloss.Right, trimLineEnds(buttons))
 	}
+	if f.minHeight > 0 {
+		have := lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, parts...)) + 1 + lipgloss.Height(buttons)
+		for range f.minHeight - have {
+			parts = append(parts, "")
+		}
+	}
 	parts = append(parts, "", buttons)
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -438,6 +445,15 @@ func (f *Form) AlignButtonsRight() {
 // of a border on the inlined radios; every field keeps its click target.
 func (f *Form) SetCompact(compact bool) {
 	f.compact = compact
+}
+
+// SetMinHeight pads the view to at least rows tall, the padding sitting
+// between the fields and the button row. Opt-in for a form whose field set
+// follows another field's value (TailscaleForm's Mode radio): sized to the
+// tallest field set, the buttons hold still while the conditional field swaps
+// with reserved space instead of shifting everything below it.
+func (f *Form) SetMinHeight(rows int) {
+	f.minHeight = rows
 }
 
 func (f *Form) OnSubmit(fn func(f *Form) tea.Cmd) {

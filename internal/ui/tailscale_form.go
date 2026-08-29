@@ -225,19 +225,18 @@ func (m TailscaleForm) View() string {
 	// The setup steps are the screen's point, so they are the last thing to
 	// go: when the full view overflows, the form tightens first - inline
 	// radios, no separator or padding rows - and only when even that cannot
-	// make room does the guidance collapse. The tightening also keeps the
-	// steps up when a topology click grows the form (Services reveals the
-	// Mode field), instead of popping them away mid-selection.
-	// TestTailscaleForm_CredentialScreenFitsThe24RowFloor and
-	// TestTailscaleForm_TopologyClickKeepsTheGuidanceVisible pin it.
-	if v := m.frame(m.setupView(true, false), false); m.height == 0 || lipgloss.Height(v) <= m.height {
-		return v
-	}
-	if v := m.frame(m.setupView(true, true), true); lipgloss.Height(v) <= m.height {
-		return v
-	}
-	if v := m.frame(m.setupView(false, false), false); lipgloss.Height(v) <= m.height {
-		return v
+	// make room does the guidance collapse. setupView pads the form to its
+	// tallest field set, so the chosen tier depends on the terminal size
+	// alone and a topology click changes the form's content, never its
+	// layout. TestTailscaleForm_CredentialScreenFitsThe24RowFloor and
+	// TestTailscaleForm_TopologySwitchNeverChangesTheLayoutTier pin it.
+	switch {
+	case m.height == 0 || m.fits(true, false):
+		return m.frame(m.setupView(true, false), false)
+	case m.fits(true, true):
+		return m.frame(m.setupView(true, true), true)
+	case m.fits(false, false):
+		return m.frame(m.setupView(false, false), false)
 	}
 	return m.frame(m.setupView(false, true), true)
 }
@@ -290,6 +289,14 @@ func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 	}
 }
 
+// fits reports whether the credential screen fits the terminal at the given
+// tier. setupView pads the form to its tallest field set, so the measured
+// height is a function of the terminal size alone and the tier cannot change
+// when a topology click reveals or removes the Mode field.
+func (m TailscaleForm) fits(guidance, compact bool) bool {
+	return lipgloss.Height(m.frame(m.setupView(guidance, compact), compact)) <= m.height
+}
+
 // setupView is the credential screen's body. guidance carries the setup
 // steps (or the enabled-state intro), dropped when the terminal is too short
 // for them; compact tightens the form itself for the 24-row floor.
@@ -313,8 +320,18 @@ func (m TailscaleForm) setupView(guidance, compact bool) string {
 		parts = append(parts, m.guidance(), "")
 	}
 
+	// The form pads to its tallest field set (Mode present, ADR-0007's
+	// Services selector), so a topology click swaps the Mode field with
+	// reserved space instead of moving the box or the buttons.
+	worst := m.form
+	if !formHasItem(worst, "mode") {
+		worst.AppendItems(newTailscaleModeItem(tailscaleFactsFor(docker.TailnetTopologyServices).ModeChoices, ""))
+	}
+	worst.SetCompact(compact)
+
 	form := m.form
 	form.SetCompact(compact)
+	form.SetMinHeight(lipgloss.Height(worst.View()))
 	parts = append(parts, form.View())
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
