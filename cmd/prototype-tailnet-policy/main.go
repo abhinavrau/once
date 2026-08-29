@@ -355,7 +355,7 @@ func (m model) scrollbar() string {
 
 func (m *model) sizeViewport() {
 	m.vp.SetWidth(72)
-	m.vp.SetHeight(max(3, m.height-13))
+	m.vp.SetHeight(max(3, m.height-15))
 }
 
 func (m model) scenarioView() string {
@@ -408,9 +408,13 @@ func (m model) tagOwnersView() string {
 // share, with the focused one highlighted.
 func (m model) actionButtons() string {
 	return lipgloss.JoinHorizontal(lipgloss.Center,
-		m.copyControl(),
-		mouse.Mark(continueTarget,
-			ui.Styles.Focus(ui.Styles.Button, m.focused == 1).Render("Continue")))
+		m.copyControl("Copy to clipboard"),
+		m.continueButton())
+}
+
+func (m model) continueButton() string {
+	return mouse.Mark(continueTarget,
+		ui.Styles.Focus(ui.Styles.Button, m.focused == 1).Render("Continue"))
 }
 
 func (m model) credentialView() string {
@@ -443,9 +447,11 @@ func (m model) diffView() string {
 	editorLink := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Underline(true).
 		Hyperlink(policyEditorURL).Render(policyEditorURL)
 	steps := lipgloss.JoinVertical(lipgloss.Left,
-		num.Render("1. Copy the merged file")+muted(" - your whole policy, additions included"),
+		lipgloss.JoinHorizontal(lipgloss.Center,
+			num.Render("1. Copy the merged file"), "  ",
+			m.copyControl("Copy Policy File to Clipboard")),
 		num.Render("2. Open the editor")+muted(": ")+editorLink+muted(" - select all"),
-		num.Render("3. Paste over it")+muted(", save, then Continue"),
+		num.Render("3. Paste over the whole file")+muted(", save, then Continue"),
 	)
 
 	scroll := fmt.Sprintf("↑/↓ scroll %.0f%%", m.vp.ScrollPercent()*100)
@@ -453,12 +459,12 @@ func (m model) diffView() string {
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Review the Merged Policy"),
 		lipgloss.JoinVertical(lipgloss.Left,
-			summary, body, steps, m.actionButtons(),
+			summary, body, steps,
+			lipgloss.PlaceHorizontal(lipgloss.Width(body), lipgloss.Right, m.continueButton()),
 			helpLine(scroll, "tab focus", "enter press", "ctrl+p copy", "esc back"))))
 }
 
-func (m model) copyControl() string {
-	label := "Copy to clipboard"
+func (m model) copyControl(label string) string {
 	style := ui.Styles.Focus(ui.Styles.ButtonPrimary, m.focused == 0)
 	if m.copied {
 		style = style.Foreground(ui.Colors.Success)
