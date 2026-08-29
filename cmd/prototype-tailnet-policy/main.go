@@ -28,6 +28,7 @@ const (
 
 	policyEditorURL = "https://login.tailscale.com/admin/acls"
 	copyTarget      = "copy:tagowners"
+	continueTarget  = "continue"
 )
 
 func main() {
@@ -148,8 +149,14 @@ func (m model) handleClick(target string) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.screen == screenTagOwners && target == copyTarget {
-		return m.copyTagOwners()
+	if m.screen == screenTagOwners {
+		switch target {
+		case copyTarget:
+			return m.copyTagOwners()
+		case continueTarget:
+			m.screen = screenNext
+			return m, nil
+		}
 	}
 	return m, nil
 }
@@ -187,28 +194,28 @@ func (m model) scenarioView() string {
 }
 
 func (m model) tagOwnersView() string {
-	label := lipgloss.NewStyle().Bold(true)
-
-	intro := muted("Tailscale will not issue a tagged credential until tag:once is\n" +
-		"in tagOwners. Once cannot read your policy yet - pick your shape:")
-
-	shapes := lipgloss.JoinVertical(lipgloss.Left,
-		label.Render("No \"tagOwners\" section yet")+muted(" - paste this whole block:"),
-		policyBlock(tagOwnersBlock),
-		"",
-		label.Render("It already has one")+muted(" - add just this line inside it:"),
-		policyBlock(tagOwnersLine),
-	)
+	num := lipgloss.NewStyle().Bold(true).Foreground(ui.Colors.Primary)
 
 	editorLink := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Underline(true).
 		Hyperlink(policyEditorURL).Render(policyEditorURL)
-	after := muted("Paste it in the policy editor: ") + editorLink + "\n" +
-		muted("Done when tag:once appears in the credential form's tag picker.")
+
+	steps := lipgloss.JoinVertical(lipgloss.Left,
+		num.Render("1. Copy this entry"),
+		policyBlock(tagOwnersBlock),
+		muted(`   already have tagOwners? add just the "tag:once" line`),
+		"",
+		num.Render("2. Paste it")+muted(" in the policy editor: ")+editorLink,
+		"",
+		num.Render("3. Continue")+muted(" - done when tag:once is in the tag picker"),
+	)
+
+	buttons := lipgloss.JoinHorizontal(lipgloss.Center,
+		m.copyControl(),
+		mouse.Mark(continueTarget, ui.Styles.Button.Render("Continue")))
 
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
-		title("Declare the tag"),
-		lipgloss.JoinVertical(lipgloss.Left,
-			intro, shapes, m.copyControl(), after,
+		title("Need tagOwners in Policy File"),
+		lipgloss.JoinVertical(lipgloss.Left, steps, "", buttons,
 			helpLine("ctrl+p copy", "enter continue", "s tag already exists - skip", "esc fixtures"))))
 }
 
