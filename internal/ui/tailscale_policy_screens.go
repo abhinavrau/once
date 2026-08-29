@@ -429,7 +429,7 @@ func policyScreenBox() lipgloss.Style {
 }
 
 func policyScreenTitle(s string) string {
-	return lipgloss.NewStyle().Bold(true).Foreground(Colors.Primary).MarginBottom(1).Render(s)
+	return lipgloss.NewStyle().Bold(true).Foreground(Colors.Primary).MarginBottom(1).Render("Tailscale setup: " + s)
 }
 
 func policyStepStyle() lipgloss.Style {

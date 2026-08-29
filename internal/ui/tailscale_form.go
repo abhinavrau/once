@@ -377,7 +377,7 @@ func (m TailscaleForm) frame(body string, tight bool) string {
 		helpLine = helpLine.MarginTop(0)
 	}
 	return boxStyle.Render(lipgloss.JoinVertical(lipgloss.Center,
-		title.Render("Tailscale"), body, helpLine.Render(m.help.View())))
+		title.Render("Tailscale setup: Credentials"), body, helpLine.Render(m.help.View())))
 }
 
 // escape is the overlay-wide esc gesture, screen by screen: the diff returns
