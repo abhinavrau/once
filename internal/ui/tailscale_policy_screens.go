@@ -41,6 +41,80 @@ type policyDiffContinueMsg struct{}
 
 var tagOwnersSkipKey = WithHelp(NewKeyBinding("s"), "s", "skip - tag exists")
 
+// policyControl names which of a policy screen's two controls holds focus.
+type policyControl int
+
+const (
+	policyControlCopy policyControl = iota
+	policyControlContinue
+)
+
+// policyControls is the copy/continue pair every policy screen ends with:
+// one visible copy control (sharing its payload and Copied ✓ state with
+// ctrl+p) and a Continue button. Tab and the arrows flip focus, enter
+// presses the focused control, and clicks land on the named targets the
+// integration drivers assert.
+type policyControls struct {
+	focused policyControl
+	copied  bool
+}
+
+// Update handles the pair's gestures, with handled reporting whether msg was
+// one of them - the hosting screen routes anything else (the diff's viewport
+// keys, the tagOwners skip) itself.
+func (c policyControls) Update(msg tea.Msg, payload string, continueMsg tea.Msg) (_ policyControls, _ tea.Cmd, handled bool) {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		if key.Matches(msg, tailscaleCopyKey) {
+			return c.copy(payload)
+		}
+		switch msg.String() {
+		case "tab", "shift+tab", "left", "right":
+			if c.focused == policyControlCopy {
+				c.focused = policyControlContinue
+			} else {
+				c.focused = policyControlCopy
+			}
+			return c, nil, true
+		case "enter":
+			if c.focused == policyControlCopy {
+				return c.copy(payload)
+			}
+			return c, continueCmd(continueMsg), true
+		}
+
+	case MouseEvent:
+		if !msg.IsClick {
+			return c, nil, true
+		}
+		switch msg.Target {
+		case policyCopyTarget:
+			return c.copy(payload)
+		case policyContinueTarget:
+			return c, continueCmd(continueMsg), true
+		}
+		return c, nil, true
+	}
+	return c, nil, false
+}
+
+// copyButton and continueButton render the pair with the current focus and
+// copied state.
+func (c policyControls) copyButton(label string) string {
+	return policyCopyControl(label, c.focused == policyControlCopy, c.copied)
+}
+
+func (c policyControls) continueButton() string {
+	return policyContinueButton(c.focused == policyControlContinue)
+}
+
+// Private
+
+func (c policyControls) copy(payload string) (policyControls, tea.Cmd, bool) {
+	c.copied = true
+	return c, tea.SetClipboard(payload), true
+}
+
 // tagOwnersScreen is phase one of the enable flow: the user declares
 // tagOwners by hand, before the credential exists, because the admin console
 // will not issue a tagged credential until the tag is already in tagOwners.
@@ -48,9 +122,8 @@ var tagOwnersSkipKey = WithHelp(NewKeyBinding("s"), "s", "skip - tag exists")
 // that already has a tagOwners section - since Once cannot read the policy
 // yet to know which applies.
 type tagOwnersScreen struct {
-	tag     string
-	focused int // 0 = copy, 1 = continue
-	copied  bool
+	tag      string
+	controls policyControls
 }
 
 func newTagOwnersScreen(tag string) tagOwnersScreen {
@@ -58,36 +131,13 @@ func newTagOwnersScreen(tag string) tagOwnersScreen {
 }
 
 func (s tagOwnersScreen) Update(msg tea.Msg) (tagOwnersScreen, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		switch {
-		case key.Matches(msg, tailscaleCopyKey):
-			return s.copy()
-		case key.Matches(msg, tagOwnersSkipKey):
-			return s, continueCmd(tagOwnersContinueMsg{})
-		}
-		switch msg.String() {
-		case "tab", "shift+tab", "left", "right":
-			s.focused = 1 - s.focused
-		case "enter":
-			if s.focused == 0 {
-				return s.copy()
-			}
-			return s, continueCmd(tagOwnersContinueMsg{})
-		}
-
-	case MouseEvent:
-		if !msg.IsClick {
-			return s, nil
-		}
-		switch msg.Target {
-		case policyCopyTarget:
-			return s.copy()
-		case policyContinueTarget:
-			return s, continueCmd(tagOwnersContinueMsg{})
-		}
+	if msg, ok := msg.(tea.KeyPressMsg); ok && key.Matches(msg, tagOwnersSkipKey) {
+		return s, continueCmd(tagOwnersContinueMsg{})
 	}
-	return s, nil
+	// One payload - the whole block - since the line is the block's own entry.
+	var cmd tea.Cmd
+	s.controls, cmd, _ = s.controls.Update(msg, docker.TagOwnersPolicyBlock(s.tag), tagOwnersContinueMsg{})
+	return s, cmd
 }
 
 func (s tagOwnersScreen) View() string {
@@ -105,25 +155,15 @@ func (s tagOwnersScreen) View() string {
 		policyStepStyle().Render("3. Continue")+policyMuted(" - done when "+firstPolicyTag(s.tag)+" is in the tag picker"),
 	)
 
-	copyButton := policyCopyControl("Copy to clipboard", s.focused == 0, s.copied)
+	copyButton := s.controls.copyButton("Copy to clipboard")
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top, copyButton,
 		lipgloss.PlaceHorizontal(lipgloss.Width(steps)-lipgloss.Width(copyButton),
-			lipgloss.Right, policyContinueButton(s.focused == 1)))
+			lipgloss.Right, s.controls.continueButton()))
 
 	return policyScreenBox().Render(lipgloss.JoinVertical(lipgloss.Center,
 		policyScreenTitle("Need tagOwners in Policy File"),
 		lipgloss.JoinVertical(lipgloss.Left, steps, "", buttons,
 			policyHelpLine("tab focus", "enter press", "ctrl+p copy", "s skip - tag exists", "esc close"))))
-}
-
-// Private
-
-// copy is the single copy path: the visible control and ctrl+p both land
-// here. One payload - the whole block - since the line is the block's own
-// entry.
-func (s tagOwnersScreen) copy() (tagOwnersScreen, tea.Cmd) {
-	s.copied = true
-	return s, tea.SetClipboard(docker.TagOwnersPolicyBlock(s.tag))
 }
 
 // policyDiffChrome is every row of the diff screen that is not the viewport:
@@ -146,8 +186,7 @@ type policyDiffScreen struct {
 	vp         viewport.Model
 	addedLines int
 	addedAt    []int // rendered line indices of the additions, for the scrollbar markers
-	focused    int   // 0 = copy, 1 = continue
-	copied     bool
+	controls   policyControls
 	height     int
 }
 
@@ -198,35 +237,17 @@ func (s policyDiffScreen) Update(msg tea.Msg) (policyDiffScreen, tea.Cmd) {
 	case tea.MouseWheelMsg:
 		s.vp, _ = s.vp.Update(msg)
 		return s, nil
+	}
 
-	case tea.KeyPressMsg:
-		switch {
-		case key.Matches(msg, tailscaleCopyKey):
-			return s.copy()
-		}
-		switch msg.String() {
-		case "tab", "shift+tab", "left", "right":
-			s.focused = 1 - s.focused
-		case "enter":
-			if s.focused == 0 {
-				return s.copy()
-			}
-			return s, continueCmd(policyDiffContinueMsg{})
-		default:
-			s.vp, _ = s.vp.Update(msg)
-		}
-		return s, nil
-
-	case MouseEvent:
-		if !msg.IsClick {
-			return s, nil
-		}
-		switch msg.Target {
-		case policyCopyTarget:
-			return s.copy()
-		case policyContinueTarget:
-			return s, continueCmd(policyDiffContinueMsg{})
-		}
+	// The copy carries the whole merged document, never the diff rendering,
+	// because the paste is the critical path.
+	controls, cmd, handled := s.controls.Update(msg, s.review.Merged, policyDiffContinueMsg{})
+	s.controls = controls
+	if handled {
+		return s, cmd
+	}
+	if _, ok := msg.(tea.KeyPressMsg); ok {
+		s.vp, _ = s.vp.Update(msg)
 	}
 	return s, nil
 }
@@ -239,7 +260,7 @@ func (s policyDiffScreen) View() string {
 	steps := lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Center,
 			policyStepStyle().Render("1. Copy the merged file"), "  ",
-			policyCopyControl("Copy Policy File to Clipboard", s.focused == 0, s.copied)),
+			s.controls.copyButton("Copy Policy File to Clipboard")),
 		policyStepStyle().Render("2. Open the editor")+policyMuted(": ")+policyLink(tailscalePolicyEditorURL)+policyMuted(" - select all"),
 		policyStepStyle().Render("3. Paste over the whole file")+policyMuted(", save, then Continue"),
 	)
@@ -250,18 +271,11 @@ func (s policyDiffScreen) View() string {
 		policyScreenTitle("Review the Merged Policy"),
 		lipgloss.JoinVertical(lipgloss.Left,
 			summary, body, steps,
-			lipgloss.PlaceHorizontal(lipgloss.Width(body), lipgloss.Right, policyContinueButton(s.focused == 1)),
+			lipgloss.PlaceHorizontal(lipgloss.Width(body), lipgloss.Right, s.controls.continueButton()),
 			policyHelpLine(scroll, "tab focus", "enter press", "ctrl+p copy", "esc back"))))
 }
 
 // Private
-
-// copy is the single copy path: the visible control and ctrl+p both land
-// here, carrying the whole Merged Policy document.
-func (s policyDiffScreen) copy() (policyDiffScreen, tea.Cmd) {
-	s.copied = true
-	return s, tea.SetClipboard(s.review.Merged)
-}
 
 func (s *policyDiffScreen) setHeight(height int) {
 	s.height = height
