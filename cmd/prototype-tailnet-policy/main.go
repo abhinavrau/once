@@ -12,6 +12,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -58,6 +59,8 @@ type (
 var (
 	copyKey = ui.WithHelp(ui.NewKeyBinding("ctrl+p"), "ctrl+p", "copy")
 	quitKey = ui.NewKeyBinding("ctrl+c", "q")
+
+	markerPattern = regexp.MustCompile(`\x1b\[[0-9]+z`)
 )
 
 type model struct {
@@ -183,10 +186,6 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.skipped = false
 			m.focused = 0
 			return m, nil
-		case "ctrl+t":
-			// ctrl, not bare t: the text fields below need the letter.
-			m.topology.Cycle()
-			return m, nil
 		}
 		var cmd tea.Cmd
 		m.form, cmd = m.form.Update(msg)
@@ -247,10 +246,6 @@ func (m model) handleClick(target string) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.screen == screenCredential {
-		if target == "topology" {
-			m.topology.Cycle()
-			return m, nil
-		}
 		var cmd tea.Cmd
 		m.form, cmd = m.form.Update(ui.MouseEvent{Target: target, IsClick: true})
 		return m, cmd
@@ -454,15 +449,14 @@ func (m model) credentialView() string {
 	}
 
 	steps := lipgloss.JoinVertical(lipgloss.Left,
-		num.Render("1. Select your topology")+muted(" - ctrl+t or click to switch:"),
-		"   "+mouse.Mark("topology", m.topology.View()),
+		num.Render("1. Select your topology")+muted(" - the first field below"),
 		"",
 		num.Render("2. Navigate to")+muted(": ")+oauthLink,
 		"",
 		num.Render("3. Create a new OAuth client")+muted(" with these scopes:"),
 		"   "+lipgloss.NewStyle().Foreground(ui.Colors.Primary).Render(scopes),
 		"",
-		num.Render("4. Enter its values below")+muted(":"),
+		num.Render("4. Enter its values")+muted(" and Continue:"),
 	)
 
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
@@ -564,8 +558,9 @@ func (m model) nextView() string {
 
 // newCredentialForm mirrors the real enable form's credential fields
 // (tailscale_form.go). Values are stand-ins - nothing probes Tailscale here.
-// The topology radio lives outside the form, as step 1 above it, so it comes
-// back separately.
+// The topology radio is the form's first field, so it tabs and styles like
+// the rest; it comes back separately so the scope list in the view can follow
+// its live selection.
 func newCredentialForm() (ui.Form, *ui.RadioField) {
 	secretField := ui.NewTextField("tskey-client-...")
 	secretField.SetEchoPassword()
@@ -574,6 +569,7 @@ func newCredentialForm() (ui.Form, *ui.RadioField) {
 	topologyField := ui.NewRadioField("Nodes", "Services")
 
 	form := ui.NewForm("Continue",
+		ui.FormItem{Key: "topology", Label: "Topology", Field: topologyField},
 		ui.FormItem{Key: "client-id", Label: "Client ID", Field: ui.NewTextField("K123456CNTRL"), Required: true},
 		ui.FormItem{Key: "client-secret", Label: "Client Secret", Field: secretField, Required: true},
 		ui.FormItem{Key: "tag", Label: "Tag", Field: tagField, Required: true},
@@ -595,11 +591,27 @@ func formSize(msg tea.WindowSizeMsg) tea.WindowSizeMsg {
 }
 
 // rightAlignButtons pushes a form's trailing button block to its right edge,
-// so Continue sits in the bottom-right corner on every screen.
+// so Continue sits in the bottom-right corner on every screen. The Cancel
+// button is cut out first: esc already cancels, and a second control for the
+// same exit is noise. Its click markers go with it, so the dead area is not
+// clickable; the form's focus cycle still contains the invisible cancel stop,
+// which the real implementation would remove properly.
 func rightAlignButtons(view string) string {
 	lines := strings.Split(view, "\n")
-	w := lipgloss.Width(view)
 	start := max(0, len(lines)-3)
+	if len(lines) >= 3 {
+		// Cancel is the right-most piece of each button row: its opening
+		// marker on the top border row, its bare glyphs on the middle row,
+		// its box bottom (and closing marker after it) on the last.
+		lines[start] = cutAt(lines[start], lastMarkerIndex(lines[start]))
+		if c := strings.Index(lines[start+1], "Cancel"); c >= 0 {
+			// Style escapes sit between the box border and the label, so find
+			// the label first, then the border glyph before it.
+			lines[start+1] = cutAt(lines[start+1], strings.LastIndex(lines[start+1][:c], "│"))
+		}
+		lines[start+2] = cutAt(lines[start+2], nthIndex(lines[start+2], "╰", 2))
+	}
+	w := lipgloss.Width(view)
 
 	// The form pads every line to its width; strip that, then shift the whole
 	// block by one shared amount so the rows stay aligned with each other.
@@ -613,6 +625,33 @@ func rightAlignButtons(view string) string {
 		lines[i] = pad + lines[i]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func cutAt(line string, idx int) string {
+	if idx < 0 {
+		return line
+	}
+	return strings.TrimRight(line[:idx], " ")
+}
+
+func lastMarkerIndex(line string) int {
+	matches := markerPattern.FindAllStringIndex(line, -1)
+	if len(matches) == 0 {
+		return -1
+	}
+	return matches[len(matches)-1][0]
+}
+
+func nthIndex(line, substr string, n int) int {
+	idx := -1
+	for range n {
+		next := strings.Index(line[idx+1:], substr)
+		if next < 0 {
+			return -1
+		}
+		idx += 1 + next
+	}
+	return idx
 }
 
 func scenarioTarget(i int) string {
