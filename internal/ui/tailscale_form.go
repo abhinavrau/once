@@ -161,6 +161,13 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case tailscaleFormFinishedMsg:
 		m.running = false
 		m.statusChan = nil
+		// Every outcome lands on a screen that can show it: only a refusal
+		// belongs on the diff, so any other finish - a stale stop, a
+		// credential error, warn-and-proceed - returns to the credential
+		// form, where m.err and m.warnings render. Without the reset, an
+		// enable re-run from the diff's Continue would leave the stale diff
+		// on screen, hiding the outcome.
+		m.screen = tailscaleScreenCredential
 		if msg.err != nil {
 			m.err = msg.err
 			// A refusal carries the review, so the fix is shown as the
@@ -170,13 +177,14 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 			if errors.As(msg.err, &refused) {
 				m.screen = tailscaleScreenDiff
 				m.diff = newPolicyDiffScreen(refused.Review, m.height)
+				return m, nil
 			}
-			return m, nil
+			return m, m.form.Init()
 		}
 		// Shadowing warnings keep the form open so the user actually sees them.
 		if len(msg.warnings) > 0 {
 			m.warnings = msg.warnings
-			return m, nil
+			return m, m.form.Init()
 		}
 		return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
 

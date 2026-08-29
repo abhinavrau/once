@@ -162,6 +162,30 @@ func TestTailscaleForm_DiffContinueRerunsTheEnable(t *testing.T) {
 	assert.Equal(t, "id", got.lastEnable.id)
 }
 
+func TestTailscaleForm_StaleStopAfterDiffContinueShowsTheError(t *testing.T) {
+	m := rerunEnableFromDiff(t)
+
+	c, _ := m.Update(tailscaleFormFinishedMsg{err: docker.ErrPolicyChangedDuringEnable})
+
+	got := c.(TailscaleForm)
+	assert.Equal(t, tailscaleScreenCredential, got.screen, "a non-refusal outcome must leave the stale diff, or the user never sees it")
+	view := normalizeWhitespace(ansi.Strip(got.View()))
+	assert.Contains(t, view, "edited while enable was running")
+	assert.NotContains(t, view, "Review the Merged Policy")
+}
+
+func TestTailscaleForm_WarningsAfterDiffContinueShowOnTheForm(t *testing.T) {
+	m := rerunEnableFromDiff(t)
+
+	c, _ := m.Update(tailscaleFormFinishedMsg{warnings: []string{"only Tailscale Funnel breaks"}})
+
+	got := c.(TailscaleForm)
+	assert.Equal(t, tailscaleScreenCredential, got.screen)
+	view := normalizeWhitespace(ansi.Strip(got.View()))
+	assert.Contains(t, view, "only Tailscale Funnel breaks", "warn-and-proceed must be visible after the diff's Continue")
+	assert.NotContains(t, view, "Review the Merged Policy")
+}
+
 func TestTailscaleForm_EnabledFormShowsStoredSettingsWithBothActions(t *testing.T) {
 	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{
 		ClientID:     "K123456CNTRL",
@@ -338,6 +362,26 @@ func advanceToCredential(t *testing.T, m TailscaleForm) TailscaleForm {
 	t.Helper()
 	c, _ := m.Update(tagOwnersContinueMsg{})
 	return c.(TailscaleForm)
+}
+
+// rerunEnableFromDiff drives a form to the Merged Policy diff via a refused
+// enable and presses its Continue, leaving the re-run enable in flight -
+// the state every post-Continue outcome test starts from.
+func rerunEnableFromDiff(t *testing.T) TailscaleForm {
+	t.Helper()
+	m := advanceToCredential(t, NewTailscaleForm(newTestNamespace()))
+	c, _ := m.Update(tailscaleEnableSubmitMsg{id: "id", secret: "secret", tag: "tag:once", topology: docker.TailnetTopologyNodes})
+
+	review := docker.PolicyReview{Original: "{\n}", Merged: "{\n\t\"grants\": [],\n}", Added: []string{"grants"}}
+	c, _ = c.(TailscaleForm).Update(tailscaleFormFinishedMsg{err: &docker.PolicyRefusedError{Review: review}})
+
+	c, cmd := c.(TailscaleForm).Update(MouseEvent{IsClick: true, Target: policyContinueTarget})
+	require.NotNil(t, cmd)
+	c, _ = c.(TailscaleForm).Update(cmd())
+	m = c.(TailscaleForm)
+	require.True(t, m.running)
+	require.Equal(t, tailscaleScreenDiff, m.screen, "the diff stays up while the re-run enable is in flight")
+	return m
 }
 
 // normalizeWhitespace collapses runs of whitespace to a single space, so a
