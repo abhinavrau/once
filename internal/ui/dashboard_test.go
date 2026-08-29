@@ -238,13 +238,14 @@ func TestDashboard_VerboseHintInFooter(t *testing.T) {
 
 func TestDashboard_UnresolvableTailnetURLIsMarkedAndExplained(t *testing.T) {
 	stubLookupHost(t, nil, errors.New("server misbehaving"))
+	stubHostTailnetSuffix(t, "example.com.tailnet.ts.net", true)
 
 	d := tailnetDashboard(t)
 	view := ansi.Strip(d.View())
 
 	assert.Contains(t, view, "https://app-0.example.com.tailnet.ts.net ⚠")
 	assert.Contains(t, view, "app-0.example.com.tailnet.ts.net does not resolve from this machine")
-	assert.Contains(t, view, "try `tailscale set --accept-dns=false`")
+	assert.Contains(t, view, "MagicDNS may be broken")
 }
 
 func TestDashboard_ResolvableTailnetURLIsNotMarked(t *testing.T) {
@@ -276,6 +277,7 @@ func TestDashboard_UncheckedTailnetURLIsNotMarked(t *testing.T) {
 
 func TestDashboard_TailnetWarningNoteShrinksTheViewport(t *testing.T) {
 	stubLookupHost(t, nil, errors.New("server misbehaving"))
+	stubHostTailnetSuffix(t, "example.com.tailnet.ts.net", true)
 
 	plain := testDashboard(1)
 	plain, _ = updateDashboard(plain, tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -290,6 +292,7 @@ func TestDashboard_TailnetWarningNoteShrinksTheViewport(t *testing.T) {
 
 func TestDashboardTailnetDNSWarningsSkipsHostsThatResolve(t *testing.T) {
 	stubLookupHost(t, nil, errors.New("server misbehaving"))
+	stubHostTailnetSuffix(t, "tailnet.ts.net", true)
 
 	settings := docker.TailscaleSettings{DomainSuffix: "tailnet.ts.net"}
 	warnings := tailnetDNSWarnings(context.Background(), []string{"books", "chat"}, settings)

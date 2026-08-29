@@ -39,3 +39,15 @@ func swapLookupHost(t *testing.T, fn func(context.Context, string) ([]string, er
 	docker.LookupHost = fn
 	t.Cleanup(func() { docker.LookupHost = orig })
 }
+
+// stubHostTailnetSuffix pins the machine's own tailnet as seen by the DNS
+// warning, so a failed-lookup test never consults the real host tailscaled.
+func stubHostTailnetSuffix(t *testing.T, suffix string, onTailnet bool) {
+	t.Helper()
+
+	orig := docker.HostTailnetSuffix
+	docker.HostTailnetSuffix = func(context.Context) (string, bool) {
+		return suffix, onTailnet
+	}
+	t.Cleanup(func() { docker.HostTailnetSuffix = orig })
+}
