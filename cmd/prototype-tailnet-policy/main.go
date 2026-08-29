@@ -205,8 +205,17 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case screenNext:
-		if msg.String() == "esc" {
+		switch msg.String() {
+		case "esc":
+			// The nothing-to-add outcome never showed a diff, so esc returns
+			// to the credential form instead.
+			if len(m.addedSections) == 0 {
+				return m.enterCredential()
+			}
 			return m.enterDiff(), nil
+		case "enter":
+			m.screen = screenScenario
+			m.skipped = false
 		}
 		return m, nil
 	}
@@ -287,6 +296,13 @@ func (m model) enterDiff() model {
 	}
 	m.mergedDoc = merged
 	m.addedSections = added
+
+	// Nothing to add: no diff to review, so no diff screen - straight to the
+	// validate outcome (ticket 03).
+	if len(added) == 0 {
+		m.screen = screenNext
+		return m
+	}
 
 	addedStyle := lipgloss.NewStyle().Foreground(ui.Colors.Success)
 	lines := diffLines(original, merged)
@@ -473,29 +489,48 @@ func (m model) copyControl(label string) string {
 	return mouse.Mark(copyTarget, style.Render(label))
 }
 
+// nextView is the "Validate Policy & Install" outcome, canned per fixture.
+// Validation that cannot refuse is decoration (ADR-0017), so two of the four
+// end states stop the install.
 func (m model) nextView() string {
-	s := scenarios[m.choice]
+	success := lipgloss.NewStyle().Bold(true).Foreground(ui.Colors.Success)
+	warning := lipgloss.NewStyle().Bold(true).Foreground(ui.Colors.Warning)
+	failure := lipgloss.NewStyle().Bold(true).Foreground(ui.Colors.Error)
 
-	how := "declared the tag and continued"
-	if m.skipped {
-		how = "skipped - the tag already exists (no verification; a working\ntagged credential is itself the proof)"
+	var head, body string
+	switch scenarios[m.choice].outcome {
+	case outcomeWarn:
+		head = warning.Render("⚠ funnel nodeAttr missing - installing anyway")
+		body = "Only Tailscale Funnel is affected: it is opt-in and temporary.\n" +
+			"Add the nodeAttrs section before using `once funnel`.\n\n" +
+			"Installing - the proxy joins the tailnet as tag:once."
+	case outcomeRefuse:
+		head = failure.Render("✗ Install refused")
+		body = "The 443 grant and autoApprovers.services are missing.\n" +
+			"Without the grant, Hosts cannot reach Applications on port 443.\n" +
+			"Without autoApprovers.services, every Service waits for manual\n" +
+			"approval and Boot times out.\n\n" +
+			"Apply the Merged Policy, then re-run. Nothing was installed."
+	case outcomeStale:
+		head = failure.Render("✗ Tailnet Policy changed since the merge")
+		body = "Someone edited the policy after this Merged Policy was\n" +
+			"generated - it no longer matches what you reviewed.\n\n" +
+			"Nothing was installed. Review the diff again and re-run."
+	default:
+		head = success.Render("✓ Policy validated")
+		body = "Every section Once needs is in the Tailnet Policy.\n" +
+			"Installing - the proxy joins the tailnet as tag:once."
+		if len(m.addedSections) == 0 {
+			head = success.Render("✓ Nothing to add")
+			body = "Your policy already has every section - no diff to review.\n" +
+				"Installing - the proxy joins the tailnet as tag:once."
+		}
 	}
 
-	preview := s.policy
-	if lines := strings.Split(preview, "\n"); len(lines) > 6 {
-		preview = strings.Join(lines[:6], "\n") + "\n…"
-	}
-
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		muted("Phase three - Validate Policy & Install - is ticket 03 and not\nbuilt yet. It will read this state:"),
-		"",
-		lipgloss.NewStyle().Bold(true).Render("Fixture   ")+s.name+"  "+muted(fmt.Sprintf("(%d lines)", strings.Count(s.policy, "\n")+1)),
-		lipgloss.NewStyle().Bold(true).Render("Phase one ")+muted(how),
-		"",
-		policyBlock(preview),
-		helpLine("esc back", "q quit"))
-
-	return box().Render(lipgloss.JoinVertical(lipgloss.Center, title("End of the prototype (so far)"), body))
+	return box().Render(lipgloss.JoinVertical(lipgloss.Center,
+		title("Validate Policy & Install"),
+		lipgloss.JoinVertical(lipgloss.Left, head, "", muted(body),
+			helpLine("enter start over", "esc back", "q quit"))))
 }
 
 // Helpers

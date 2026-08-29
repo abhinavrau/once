@@ -70,3 +70,15 @@ func fixture(t *testing.T, name string) scenario {
 	t.Fatalf("no fixture named %q", name)
 	return scenario{}
 }
+
+func TestAllOutcomesReachable(t *testing.T) {
+	seen := map[outcome]bool{}
+	for _, s := range scenarios {
+		seen[s.outcome] = true
+	}
+	assert.Len(t, seen, 4, "the switcher must reach proceed, warn, refuse and stale")
+
+	_, _, added, err := mergePolicy(fixture(t, "Everything already present").policy)
+	require.NoError(t, err)
+	assert.Empty(t, added, "the nothing-to-add outcome needs a fixture with no additions")
+}

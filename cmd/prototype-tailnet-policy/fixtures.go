@@ -10,10 +10,25 @@ import (
 // reads the selected one, so the set covers the states those phases need:
 // merge, warn, refuse, and nothing-to-add.
 
+// outcome is the canned "Validate Policy & Install" end state a fixture
+// demonstrates (ticket 03). The prototype has no API to validate against, so
+// the switcher decides: proceed simulates a correct paste, warn and refuse
+// simulate applying the policy without the missing sections, stale simulates
+// an edit by someone else between merge and validate.
+type outcome int
+
+const (
+	outcomeProceed outcome = iota
+	outcomeWarn
+	outcomeRefuse
+	outcomeStale
+)
+
 type scenario struct {
-	name   string
-	note   string
-	policy string
+	name    string
+	note    string
+	policy  string
+	outcome outcome
 }
 
 var scenarios = []scenario{
@@ -69,8 +84,9 @@ var scenarios = []scenario{
 }`,
 	},
 	{
-		name: "Missing funnel nodeAttr",
-		note: "funnel attr missing - warn, proceed",
+		name:    "Missing funnel nodeAttr",
+		note:    "funnel attr missing - warn, proceed",
+		outcome: outcomeWarn,
 		policy: `{
 	"tagOwners": {
 		"tag:once": ["autogroup:admin"],
@@ -84,13 +100,15 @@ var scenarios = []scenario{
 }`,
 	},
 	{
-		name:   "Large GitOps policy",
-		note:   "200+ lines - the diff must scroll",
-		policy: largeGitOpsPolicy(),
+		name:    "Large GitOps policy",
+		note:    "200+ lines - scrolling diff, then stale",
+		policy:  largeGitOpsPolicy(),
+		outcome: outcomeStale,
 	},
 	{
-		name: "Missing 443 grant",
-		note: "no 443 grant - refuse",
+		name:    "Missing 443 grant",
+		note:    "no 443 grant - refuse",
+		outcome: outcomeRefuse,
 		policy: `{
 	"tagOwners": {
 		"tag:once": ["autogroup:admin"],

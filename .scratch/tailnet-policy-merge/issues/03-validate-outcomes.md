@@ -9,8 +9,17 @@ Validation that cannot refuse is decoration.
 
 **Status:** ready-for-agent
 
-- [ ] Nothing to add: the prototype says so and goes straight to install, showing no diff screen.
-- [ ] Missing `funnel` nodeAttr: warns, names that only Tailscale Funnel is affected, and proceeds.
-- [ ] Missing 443 grant or `autoApprovers.services`: refuses, naming the section and what it breaks.
-- [ ] Tailnet Policy changed since the Merged Policy was generated: reports the change instead of proceeding.
-- [ ] Every outcome is reachable from the scenario switcher without a rebuild.
+- [x] Nothing to add: the prototype says so and goes straight to install, showing no diff screen.
+- [x] Missing `funnel` nodeAttr: warns, names that only Tailscale Funnel is affected, and proceeds.
+- [x] Missing 443 grant or `autoApprovers.services`: refuses, naming the section and what it breaks.
+- [x] Tailnet Policy changed since the Merged Policy was generated: reports the change instead of proceeding.
+- [x] Every outcome is reachable from the scenario switcher without a rebuild.
+
+## Comments
+
+Built on branch `prototype/tailnet-policy`. Outcomes are canned per fixture
+via a scenario.outcome field (no API to validate against): Fresh/Existing
+proceed, Everything-present skips the diff entirely and installs, Missing
+funnel warns and proceeds, Missing 443 grant refuses naming both broken
+behaviours, Large GitOps reports stale. A test asserts all four outcomes
+stay reachable from the switcher.
