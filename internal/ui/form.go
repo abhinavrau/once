@@ -422,6 +422,10 @@ func (f Form) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
+func (f *Form) SetSubmitLabel(label string) {
+	f.submitLabel = label
+}
+
 func (f *Form) SetActionButton(label string, onPress func() tea.Msg) {
 	f.actionButton = &FormActionButton{Label: label, OnPress: onPress}
 }

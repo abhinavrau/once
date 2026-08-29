@@ -145,6 +145,18 @@ func TestInstall_ErrorClearsOnKeypress(t *testing.T) {
 	assert.Nil(t, m.err)
 }
 
+func TestInstallHostnameForm_TailnetWithoutTailscaleChangesSubmitLabel(t *testing.T) {
+	form := NewInstallHostnameForm(catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire:latest"}, "", false, false)
+	assert.Contains(t, form.View(), "Install")
+	assert.NotContains(t, form.View(), "Setup Tailscale...")
+
+	form.form.RadioField("exposure").SetSelected(exposureIndex(docker.ExposureTailnet))
+	assert.Contains(t, form.View(), "Setup Tailscale...")
+
+	form.SetTailscaleEnabled(true)
+	assert.NotContains(t, form.View(), "Setup Tailscale...")
+}
+
 func TestInstall_BackNavigation_AppListEscNavigatesToDashboard(t *testing.T) {
 	m := newTestInstall()
 
