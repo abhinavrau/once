@@ -461,7 +461,7 @@ func (m model) credentialView() string {
 
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Runtime Credential"),
-		lipgloss.JoinVertical(lipgloss.Left, steps, rightAlignButtons(m.form.View()))))
+		lipgloss.JoinVertical(lipgloss.Left, steps, "", rightAlignButtons(m.form.View()))))
 }
 
 func (m model) diffView() string {
