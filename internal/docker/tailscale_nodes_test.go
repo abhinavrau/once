@@ -259,17 +259,79 @@ func TestValidateNodesCredentialsMissingDevicesScope(t *testing.T) {
 
 // validateHost
 
-func TestValidateNodesHostAgainstTailnetRefusesExistingDevice(t *testing.T) {
+func TestValidateNodesHostAgainstTailnetRefusesForeignDevice(t *testing.T) {
 	reader := &FakeTailnetReader{ServeJSON: `{}`}
 	api := newFakeTailscaleAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
-		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
+		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:personal"]}]}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami")
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whoami")
 	assert.Contains(t, err.Error(), "n123")
+	assert.False(t, api.requested(http.MethodDelete, "/device/n123"), "a device without Once's tag must never be deleted")
+}
+
+// TestValidateNodesHostAgainstTailnetSweepsOwnLeftoverDevice pins the
+// leftover sweep: a colliding device carrying Once's own tag is a remnant of
+// a failed or removed deploy (TSDProxy's live state was checked first), so
+// it is deleted and the deploy proceeds instead of being blocked forever.
+func TestValidateNodesHostAgainstTailnetSweepsOwnLeftoverDevice(t *testing.T) {
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
+		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
+	api.reply(http.MethodDelete, "/device/n123", http.StatusOK, "")
+
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+
+	require.NoError(t, err)
+	assert.True(t, api.requested(http.MethodDelete, "/device/n123"))
+}
+
+func TestValidateNodesHostAgainstTailnetRefusesWhenLeftoverDeleteFails(t *testing.T) {
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
+		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
+	api.reply(http.MethodDelete, "/device/n123", http.StatusForbidden, `{"message":"not permitted"}`)
+
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sweeping it failed")
+	assert.Contains(t, err.Error(), "not permitted")
+}
+
+// TestValidateNodesHostAgainstTailnetSweepTreatsGoneDeviceAsSwept covers the
+// race where the device disappears between the list and the delete: absence
+// is what the sweep wants, so it must not refuse over it.
+func TestValidateNodesHostAgainstTailnetSweepTreatsGoneDeviceAsSwept(t *testing.T) {
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
+		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
+	api.reply(http.MethodDelete, "/device/n123", http.StatusNotFound, `{"message":"device not found"}`)
+
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+
+	assert.NoError(t, err)
+}
+
+// TestValidateNodesHostAgainstTailnetNeverSweepsWhenReaderIsSilent pins the
+// fail-safe: with TSDProxy unreadable the colliding device may be this app's
+// own live node, so the sweep must downgrade to the plain refusal.
+func TestValidateNodesHostAgainstTailnetNeverSweepsWhenReaderIsSilent(t *testing.T) {
+	reader := &FakeTailnetReader{ServeErr: assert.AnError}
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
+		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
+
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+
+	require.Error(t, err)
+	assert.False(t, api.requested(http.MethodDelete, "/device/n123"), "a device that may back a live node must never be deleted")
 }
 
 func TestValidateNodesHostAgainstTailnetAllowsFreeHost(t *testing.T) {
@@ -278,7 +340,7 @@ func TestValidateNodesHostAgainstTailnetAllowsFreeHost(t *testing.T) {
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"someone-elses-laptop","tags":[]}]}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami")
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	assert.NoError(t, err)
 }
@@ -291,7 +353,7 @@ func TestValidateNodesHostAgainstTailnetExemptsOwnNode(t *testing.T) {
 	reporter := &recordingReporter{}
 	api := newFakeTailscaleAPI(reporter)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami")
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.NoError(t, err)
 	assert.Empty(t, reporter.errors, "the devices list must never be called once the reader says this app already joined")
@@ -302,7 +364,7 @@ func TestValidateNodesHostAgainstTailnetIsBestEffortOnAPIFailure(t *testing.T) {
 	api := newFakeTailscaleAPI(t)
 	api.fail(http.MethodGet, nodesDevicePath, assert.AnError)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami")
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	assert.NoError(t, err, "an unreadable devices list must not block a deploy credentials already proved could work")
 }
@@ -319,18 +381,35 @@ func TestDeleteTaggedDevicesDeletesOnlyMatchingTags(t *testing.T) {
 	api.reply(http.MethodDelete, "/device/once-1", http.StatusOK, "")
 	api.reply(http.MethodDelete, "/device/once-2", http.StatusOK, "")
 
-	deleteTaggedDevices(context.Background(), api, "tag:once")
+	deleteTaggedDevices(context.Background(), api, "tag:once", "")
 
 	assert.True(t, api.requested(http.MethodDelete, "/device/once-1"))
 	assert.True(t, api.requested(http.MethodDelete, "/device/once-2"))
 	assert.False(t, api.requested(http.MethodDelete, "/device/laptop"), "a device without the tag must never be deleted")
 }
 
+// TestDeleteTaggedDevicesNarrowsToHostname pins the once-admin sweep's
+// scope: a hostname filter must leave every other tagged device alone, the
+// services sidecar identity a topology switch keeps included.
+func TestDeleteTaggedDevicesNarrowsToHostname(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK, `{"devices":[
+		{"nodeId":"admin-old","hostname":"once-admin","tags":["tag:once"]},
+		{"nodeId":"sidecar","hostname":"once-tailscale","tags":["tag:once"]}
+	]}`)
+	api.reply(http.MethodDelete, "/device/admin-old", http.StatusOK, "")
+
+	deleteTaggedDevices(context.Background(), api, "tag:once", "once-admin")
+
+	assert.True(t, api.requested(http.MethodDelete, "/device/admin-old"))
+	assert.False(t, api.requested(http.MethodDelete, "/device/sidecar"), "a hostname-narrowed sweep must not touch other tagged devices")
+}
+
 func TestDeleteTaggedDevicesIsBestEffortOnListFailure(t *testing.T) {
 	api := newFakeTailscaleAPI(t)
 	api.fail(http.MethodGet, nodesDevicePath, assert.AnError)
 
-	assert.NotPanics(t, func() { deleteTaggedDevices(context.Background(), api, "tag:once") })
+	assert.NotPanics(t, func() { deleteTaggedDevices(context.Background(), api, "tag:once", "") })
 }
 
 func TestBestEffortDeleteTaggedDevicesSkipsOnControlSeam(t *testing.T) {
@@ -343,13 +422,13 @@ func TestBestEffortDeleteTaggedDevicesSkipsOnControlSeam(t *testing.T) {
 	// before either is touched.
 	n.bestEffortDeleteTaggedDevices(context.Background(), TailscaleSettings{
 		ClientID: "id", ClientSecret: "secret", Tag: "tag:once",
-	})
+	}, "")
 }
 
 func TestBestEffortDeleteTaggedDevicesSkipsWithoutCredentials(t *testing.T) {
 	n := newNodesTopology(&Namespace{name: "once"})
 
-	n.bestEffortDeleteTaggedDevices(context.Background(), TailscaleSettings{Tag: "tag:once"})
+	n.bestEffortDeleteTaggedDevices(context.Background(), TailscaleSettings{Tag: "tag:once"}, "")
 }
 
 // reader

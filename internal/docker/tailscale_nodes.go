@@ -105,7 +105,7 @@ func (n *nodesTopology) remove(ctx context.Context, settings TailscaleSettings) 
 	if err := forceRemoveContainer(ctx, n.namespace.client, n.containerName()); err != nil {
 		return err
 	}
-	n.bestEffortDeleteTaggedDevices(ctx, settings)
+	n.bestEffortDeleteTaggedDevices(ctx, settings, "")
 	return nil
 }
 
@@ -247,7 +247,8 @@ func (n *nodesTopology) funnelPort(self *Application, apps []*Application) (int,
 // by an existing tailnet device, so TSDProxy never falls back to a "-1"
 // alias (ADR-0015). An app redeploying under a Host its own node already
 // holds is not a collision: it is exempted by checking TSDProxy's own live
-// state first.
+// state first. A device carrying Once's own tag with no node backing it is
+// a leftover of a failed or removed deploy and is swept rather than refused.
 func (n *nodesTopology) validateHost(ctx context.Context, settings TailscaleSettings, name string) error {
 	if err := ValidateTailscaleServiceName(name); err != nil {
 		return err
@@ -255,7 +256,7 @@ func (n *nodesTopology) validateHost(ctx context.Context, settings TailscaleSett
 	if controlSeamActive() {
 		return nil
 	}
-	return validateNodesHostAgainstTailnet(ctx, n.reader(settings), newTailscaleAPI(settings), name)
+	return validateNodesHostAgainstTailnet(ctx, n.reader(settings), newTailscaleAPI(settings), name, settings.Tag)
 }
 
 // logsHint names the container whose logs explain a tailnet read that came
@@ -296,6 +297,17 @@ func (n *nodesTopology) create(ctx context.Context, settings TailscaleSettings) 
 	config, err := n.buildConfig(settings)
 	if err != nil {
 		return fmt.Errorf("building tsdproxy config: %w", err)
+	}
+
+	// A data volume that does not exist yet means once-admin's tsnet state
+	// is about to start from scratch, so a tagged once-admin device is an
+	// orphan of a previous enable - and once-admin never passes
+	// validateHost's per-app sweep. Delete it before TSDProxy registers a
+	// fresh node alongside the stale row. Only once-admin: app leftovers
+	// are swept at their own deploys, and a tailnet-wide sweep here would
+	// also take the services sidecar identity a topology switch keeps.
+	if _, err := n.namespace.client.VolumeInspect(ctx, n.dataVolumeName()); errdefs.IsNotFound(err) {
+		n.bestEffortDeleteTaggedDevices(ctx, settings, "once-admin")
 	}
 
 	adminPort := nat.Port(fmt.Sprintf("%d/tcp", tsdproxyAdminContainerPort))
@@ -408,11 +420,13 @@ func (n *nodesTopology) buildConfig(settings TailscaleSettings) ([]byte, error) 
 // credentials, or an unset tag are not errors - this must never fail a
 // topology switch or a teardown that is otherwise done. Skipped entirely on
 // the Control Seam, which has no SaaS devices API.
-func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, settings TailscaleSettings) {
+// hostname narrows the sweep to devices bearing that one name; "" sweeps
+// every tagged device.
+func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, settings TailscaleSettings, hostname string) {
 	if controlSeamActive() || settings.Tag == "" || settings.ClientID == "" || settings.ClientSecret == "" {
 		return
 	}
-	deleteTaggedDevices(ctx, newTailscaleAPI(settings), settings.Tag)
+	deleteTaggedDevices(ctx, newTailscaleAPI(settings), settings.Tag, hostname)
 }
 
 // Helpers
@@ -420,11 +434,18 @@ func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, setti
 // validateNodesHostAgainstTailnet is validateHost's live check, factored out
 // so it is testable against a fake reader and a fake tailscaleAPI without a
 // real TSDProxy or Tailscale API to talk to.
-func validateNodesHostAgainstTailnet(ctx context.Context, reader TailnetReader, api tailscaleAPI, name string) error {
-	if status, err := reader.ServeStatus(ctx); err == nil && slices.Contains(status.Services, name) {
+func validateNodesHostAgainstTailnet(ctx context.Context, reader TailnetReader, api tailscaleAPI, name, tag string) error {
+	status, err := reader.ServeStatus(ctx)
+	if err == nil && slices.Contains(status.Services, name) {
 		return nil
 	}
-	return refuseIfDeviceExists(ctx, api, name)
+	if err != nil {
+		// With TSDProxy unreadable (restarting, relabeling) a colliding
+		// device may be this app's own live node - the sweep must not
+		// revoke it, so a silent reader downgrades to the plain refusal.
+		tag = ""
+	}
+	return refuseIfDeviceExists(ctx, api, name, tag)
 }
 
 // nodesProviderConfig builds the one Tailscale provider TSDProxy's config
@@ -588,18 +609,47 @@ func listTailscaleDevices(ctx context.Context, api tailscaleAPI) ([]tailscaleDev
 // refuseIfDeviceExists is nodes' deploy-time collision guard (ADR-0015): a
 // Host that already names a device in the tailnet is refused, naming the
 // device, rather than letting TSDProxy fall back to a "-1" alias Once's URL
-// model does not expect. Best effort in the other direction - an unreadable
-// devices list must not block a deploy that credentials already proved could
-// mint a key; only a definite collision refuses.
-func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name string) error {
+// model does not expect. A colliding device that carries Once's own tag is
+// the leftover of a failed or removed deploy - the caller already checked
+// TSDProxy's live state, so no running node backs it - and is deleted
+// instead, or the name would stay blocked forever. Best effort in the other
+// direction - an unreadable devices list must not block a deploy that
+// credentials already proved could mint a key; only a definite collision
+// refuses.
+func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name, tag string) error {
 	devices, err := listTailscaleDevices(ctx, api)
 	if err != nil {
 		return nil
 	}
+	var tags []string
+	if tag != "" {
+		tags = policyTags(tag)
+	}
 	for _, device := range devices {
-		if device.Hostname == name {
-			return fmt.Errorf("a tailnet device named %q already exists (node %s); rename this app or remove that device first - TSDProxy would otherwise register it as %q", name, device.NodeID, name+"-1")
+		if device.Hostname != name {
+			continue
 		}
+		if deviceHasAnyTag(device.Tags, tags) {
+			if err := deleteDevice(ctx, api, device.NodeID); err != nil {
+				return fmt.Errorf("a tailnet device named %q is a leftover of a previous %q deploy, but sweeping it failed: %w; remove the device by hand or rename this app", name, name, err)
+			}
+			continue
+		}
+		return fmt.Errorf("a tailnet device named %q already exists (node %s); rename this app or remove that device first - TSDProxy would otherwise register it as %q", name, device.NodeID, name+"-1")
+	}
+	return nil
+}
+
+// deleteDevice deletes one tailnet device row. A device that is already gone
+// counts as deleted - the sweeps this backs are reconciling toward absence,
+// and racing an admin-console removal must not turn success into an error.
+func deleteDevice(ctx context.Context, api tailscaleAPI, nodeID string) error {
+	status, body, err := api.Call(ctx, http.MethodDelete, "/device/"+url.PathEscape(nodeID), nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK && status != http.StatusNotFound {
+		return fmt.Errorf("deleting device %s (HTTP %d): %s", nodeID, status, errorMessage(body))
 	}
 	return nil
 }
@@ -608,17 +658,20 @@ func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name string) er
 // out so it is testable against a fake tailscaleAPI without a real Docker
 // daemon or Tailscale API - remove and destroy's only live behaviour that
 // does not touch the engine.
-func deleteTaggedDevices(ctx context.Context, api tailscaleAPI, tag string) {
+func deleteTaggedDevices(ctx context.Context, api tailscaleAPI, tag, hostname string) {
 	devices, err := listTailscaleDevices(ctx, api)
 	if err != nil {
 		return
 	}
-	tags := strings.Split(tag, ",")
+	tags := policyTags(tag)
 	for _, device := range devices {
+		if hostname != "" && device.Hostname != hostname {
+			continue
+		}
 		if !deviceHasAnyTag(device.Tags, tags) {
 			continue
 		}
-		_, _, _ = api.Call(ctx, http.MethodDelete, "/device/"+url.PathEscape(device.NodeID), nil)
+		_ = deleteDevice(ctx, api, device.NodeID)
 	}
 }
 
