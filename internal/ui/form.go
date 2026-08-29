@@ -18,10 +18,12 @@ var formKeys = struct {
 	Tab      key.Binding
 	ShiftTab key.Binding
 	Enter    key.Binding
+	Esc      key.Binding
 }{
 	Tab:      NewKeyBinding("tab"),
 	ShiftTab: NewKeyBinding("shift+tab"),
 	Enter:    NewKeyBinding("enter"),
+	Esc:      NewKeyBinding("esc"),
 }
 
 type FormField interface {
@@ -273,6 +275,8 @@ type Form struct {
 	items        []FormItem
 	submitLabel  string
 	actionButton *FormActionButton
+	hideCancel   bool
+	buttonsRight bool
 	focused      int
 	width        int
 	errorKey     string
@@ -326,6 +330,8 @@ func (f Form) Update(msg tea.Msg) (Form, tea.Cmd) {
 			return f.focusPrev()
 		case key.Matches(msg, formKeys.Enter):
 			return f.handleEnter()
+		case f.hideCancel && key.Matches(msg, formKeys.Esc):
+			return f.cancel()
 		}
 	}
 
@@ -376,11 +382,18 @@ func (f Form) View() string {
 		buttonParts = append(buttonParts, actionBtn)
 	}
 
-	cancelButton := mouse.Mark("cancel", Styles.Focus(Styles.Button, f.focused == f.cancelIndex()).
-		Render("Cancel"))
+	if !f.hideCancel {
+		cancelButton := mouse.Mark("cancel", Styles.Focus(Styles.Button, f.focused == f.cancelIndex()).
+			Render("Cancel"))
+		buttonParts = append(buttonParts, cancelButton)
+	}
 
-	buttonParts = append(buttonParts, cancelButton)
 	buttons := lipgloss.JoinHorizontal(lipgloss.Center, buttonParts...)
+	if f.buttonsRight {
+		// The last button's trailing margin would otherwise hold the row off
+		// the edge; there is no button after it to separate from.
+		buttons = lipgloss.PlaceHorizontal(contentWidth(parts), lipgloss.Right, trimLineEnds(buttons))
+	}
 	parts = append(parts, "", buttons)
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -388,6 +401,19 @@ func (f Form) View() string {
 
 func (f *Form) SetActionButton(label string, onPress func() tea.Msg) {
 	f.actionButton = &FormActionButton{Label: label, OnPress: onPress}
+}
+
+// HideCancelButton drops the Cancel button from the view, the click targets,
+// and the focus cycle. Esc becomes the cancel gesture instead, still routed
+// through OnCancel.
+func (f *Form) HideCancelButton() {
+	f.hideCancel = true
+}
+
+// AlignButtonsRight pushes the button row to the form's right edge, so the
+// primary button sits in the bottom-right corner.
+func (f *Form) AlignButtonsRight() {
+	f.buttonsRight = true
 }
 
 func (f *Form) OnSubmit(fn func(f *Form) tea.Cmd) {
@@ -503,11 +529,15 @@ func (f Form) handleEnter() (Form, tea.Cmd) {
 		return f, func() tea.Msg { return f.actionButton.OnPress() }
 	case f.focused == f.submitIndex():
 		return f.submitIfValid()
-	case f.focused == f.cancelIndex():
-		if f.onCancel != nil {
-			return f, f.onCancel(&f)
-		}
-		return f, nil
+	case !f.hideCancel && f.focused == f.cancelIndex():
+		return f.cancel()
+	}
+	return f, nil
+}
+
+func (f Form) cancel() (Form, tea.Cmd) {
+	if f.onCancel != nil {
+		return f, f.onCancel(&f)
 	}
 	return f, nil
 }
@@ -547,10 +577,10 @@ func (f Form) handleClick(target string) (Form, tea.Cmd) {
 			return f, func() tea.Msg { return f.actionButton.OnPress() }
 		}
 	case "cancel":
-		f.blurCurrent()
-		f.focused = f.cancelIndex()
-		if f.onCancel != nil {
-			return f, f.onCancel(&f)
+		if !f.hideCancel {
+			f.blurCurrent()
+			f.focused = f.cancelIndex()
+			return f.cancel()
 		}
 	}
 
@@ -629,6 +659,9 @@ func (f Form) cancelIndex() int {
 }
 
 func (f Form) totalCount() int {
+	if f.hideCancel {
+		return f.cancelIndex()
+	}
 	return f.cancelIndex() + 1
 }
 
@@ -662,6 +695,22 @@ func fieldAs[T FormField](f Form, key, typeName string) T {
 		panic(fmt.Sprintf("form field %q is not a %s", key, typeName))
 	}
 	return field
+}
+
+func contentWidth(parts []string) int {
+	w := 0
+	for _, part := range parts {
+		w = max(w, lipgloss.Width(part))
+	}
+	return w
+}
+
+func trimLineEnds(block string) string {
+	lines := strings.Split(block, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func fieldTarget(key string) string {
