@@ -64,6 +64,14 @@ type tailscaleAPI interface {
 	// sends no request body.
 	Call(ctx context.Context, method, path string, payload []byte) (int, []byte, error)
 
+	// CallWithHeaders is Call for the requests that shape more than a JSON
+	// body: header carries extra request headers (the policy read's Accept:
+	// application/hujson, the merged-policy validation's Content-Type), and
+	// the response headers come back so the policy flow can capture the ETag
+	// that guards the install (ADR-0017). A nil header sends exactly what
+	// Call sends.
+	CallWithHeaders(ctx context.Context, method, path string, header http.Header, payload []byte) (int, http.Header, []byte, error)
+
 	// Authenticate proves the credentials alone, via the OAuth token exchange,
 	// without issuing any request that touches tailnet data - so a credential
 	// check has nothing tailnet-shaped to fail on. A nil result means the
@@ -111,9 +119,14 @@ func newTailscaleAPIAt(baseURL string, settings TailscaleSettings) *httpTailscal
 }
 
 func (a *httpTailscaleAPI) Call(ctx context.Context, method, path string, payload []byte) (int, []byte, error) {
+	status, _, body, err := a.CallWithHeaders(ctx, method, path, nil, payload)
+	return status, body, err
+}
+
+func (a *httpTailscaleAPI) CallWithHeaders(ctx context.Context, method, path string, header http.Header, payload []byte) (int, http.Header, []byte, error) {
 	token, err := a.accessToken(ctx)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 
 	var reqBody io.Reader
@@ -122,24 +135,27 @@ func (a *httpTailscaleAPI) Call(ctx context.Context, method, path string, payloa
 	}
 	req, err := http.NewRequestWithContext(ctx, method, a.baseURL+path, reqBody)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
+	}
+	for name, values := range header {
+		req.Header[name] = values
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	if payload != nil {
+	if payload != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("contacting the Tailscale API: %w", err)
+		return 0, nil, nil, fmt.Errorf("contacting the Tailscale API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := readBoundedBody(resp.Body, method+" "+path)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
-	return resp.StatusCode, body, nil
+	return resp.StatusCode, resp.Header, body, nil
 }
 
 func (a *httpTailscaleAPI) Authenticate(ctx context.Context) error {

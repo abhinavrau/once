@@ -23,6 +23,7 @@ type recordedRequest struct {
 	auth        string
 	payload     string
 	contentType string
+	accept      string
 }
 
 // apiServer stands in for the Tailscale SaaS API in the adapter's own tests -
@@ -40,6 +41,7 @@ type apiServer struct {
 
 	callStatus int
 	callBody   string
+	callETag   string
 	calls      []recordedRequest
 }
 
@@ -73,7 +75,11 @@ func newAPIServer(t *testing.T) *apiServer {
 			auth:        r.Header.Get("Authorization"),
 			payload:     string(payload),
 			contentType: r.Header.Get("Content-Type"),
+			accept:      r.Header.Get("Accept"),
 		})
+		if s.callETag != "" {
+			w.Header().Set("ETag", s.callETag)
+		}
 		w.WriteHeader(s.callStatus)
 		_, _ = w.Write([]byte(s.callBody))
 	}))
@@ -129,6 +135,35 @@ func TestTailscaleAPIBodylessCallSendsNoContentType(t *testing.T) {
 	require.Len(t, s.calls, 1)
 	assert.Empty(t, s.calls[0].payload)
 	assert.Empty(t, s.calls[0].contentType)
+}
+
+func TestTailscaleAPICallWithHeadersSendsThemAndReturnsTheResponses(t *testing.T) {
+	s := newAPIServer(t)
+	s.callETag = `"policy-v42"`
+
+	header := http.Header{}
+	header.Set("Accept", "application/hujson")
+	status, respHeader, body, err := s.api().CallWithHeaders(context.Background(), http.MethodGet, "/tailnet/-/acl", header, nil)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, `{"devices":[]}`, string(body))
+	assert.Equal(t, `"policy-v42"`, respHeader.Get("ETag"))
+
+	require.Len(t, s.calls, 1)
+	assert.Equal(t, "application/hujson", s.calls[0].accept)
+	assert.Equal(t, "Bearer tskey-api-test", s.calls[0].auth)
+}
+
+func TestTailscaleAPICallWithHeadersLetsACallerContentTypeWin(t *testing.T) {
+	s := newAPIServer(t)
+
+	header := http.Header{}
+	header.Set("Content-Type", "application/hujson")
+	_, _, _, err := s.api().CallWithHeaders(context.Background(), http.MethodPost, "/tailnet/-/acl/validate", header, []byte(`{"grants":[]}`))
+	require.NoError(t, err)
+
+	require.Len(t, s.calls, 1)
+	assert.Equal(t, "application/hujson", s.calls[0].contentType, "an explicit Content-Type must not be clobbered by the JSON default")
 }
 
 func TestTailscaleAPIRejectedCredentials(t *testing.T) {
