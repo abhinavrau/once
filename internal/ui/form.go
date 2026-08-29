@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -277,6 +278,7 @@ type Form struct {
 	actionButton *FormActionButton
 	hideCancel   bool
 	buttonsRight bool
+	compact      bool
 	focused      int
 	width        int
 	errorKey     string
@@ -358,16 +360,30 @@ func (f Form) View() string {
 	errorStyle := lipgloss.NewStyle().Foreground(Colors.Error)
 
 	for i, item := range f.items {
+		if _, isRadio := item.Field.(*RadioField); f.compact && isRadio {
+			labelStyle := Styles.Label
+			optionStyle := lipgloss.NewStyle()
+			if f.focused == i {
+				labelStyle = labelStyle.Foreground(Colors.Focused)
+				optionStyle = optionStyle.Foreground(Colors.Focused)
+			}
+			row := labelStyle.Render(item.Label) + "  " + optionStyle.Render(item.Field.View())
+			parts = append(parts, mouse.Mark(fieldTarget(item.Key), row))
+			continue
+		}
+
 		label := Styles.Label.Render(item.Label)
 
 		hasError := f.error != "" && item.Key == f.errorKey
 		inputStyle := Styles.WithError(Styles.Focus(Styles.Input, f.focused == i), hasError)
 		field := mouse.Mark(fieldTarget(item.Key), inputStyle.Render(item.Field.View()))
 
+		parts = append(parts, label, field)
 		if hasError {
-			parts = append(parts, label, field, errorStyle.Render(f.error), "")
-		} else {
-			parts = append(parts, label, field, "")
+			parts = append(parts, errorStyle.Render(f.error))
+		}
+		if !f.compact {
+			parts = append(parts, "")
 		}
 	}
 
@@ -414,6 +430,14 @@ func (f *Form) HideCancelButton() {
 // primary button sits in the bottom-right corner.
 func (f *Form) AlignButtonsRight() {
 	f.buttonsRight = true
+}
+
+// SetCompact tightens the layout for short terminals: radio fields render
+// their label and options on one row instead of a bordered box, and the
+// blank separator rows between fields go away. Focus shows as color instead
+// of a border on the inlined radios; every field keeps its click target.
+func (f *Form) SetCompact(compact bool) {
+	f.compact = compact
 }
 
 func (f *Form) OnSubmit(fn func(f *Form) tea.Cmd) {
@@ -705,10 +729,17 @@ func contentWidth(parts []string) int {
 	return w
 }
 
+// trailingSpacesAndEscapes matches a line's tail of spaces interleaved with
+// zero-width escape sequences (styling resets, mouse markers): the spaces
+// there pad the visual width, but the escapes must survive a trim.
+var trailingSpacesAndEscapes = regexp.MustCompile("(?:\x1b\\[[0-9;]*[a-zA-Z]| )+$")
+
 func trimLineEnds(block string) string {
 	lines := strings.Split(block, "\n")
 	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " ")
+		lines[i] = trailingSpacesAndEscapes.ReplaceAllStringFunc(line, func(tail string) string {
+			return strings.ReplaceAll(tail, " ", "")
+		})
 	}
 	return strings.Join(lines, "\n")
 }

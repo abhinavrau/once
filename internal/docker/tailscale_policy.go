@@ -93,11 +93,37 @@ func NodesPolicySnippet(tag string) string {
 }`, owners.String(), mustJSON(requiredNodeAttr(tags)))
 }
 
+// TagOwnersPolicyLines returns the tagOwners entries for tag (one line per
+// tag), the shape to add inside an already-existing tagOwners section. Phase
+// one of ADR-0017: the user declares tagOwners by hand, before the credential
+// exists, so this is the one section a policy merge can never insert.
+func TagOwnersPolicyLines(tag string) string {
+	tags := policyTags(tag)
+	lines := make([]string, len(tags))
+	for i, t := range tags {
+		lines[i] = fmt.Sprintf("%s: %s,", mustJSON(t), mustJSON(tagOwnerValue))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// TagOwnersPolicyBlock returns the whole tagOwners section for tag, the shape
+// to paste into a policy that has none. Pasting a second tagOwners block into
+// a policy that already has one is the common failure (the console's
+// duplicate-key error does not name it), which is why frontends show both
+// shapes labelled.
+func TagOwnersPolicyBlock(tag string) string {
+	lines := strings.Split(TagOwnersPolicyLines(tag), "\n")
+	return "\"tagOwners\": {\n\t" + strings.Join(lines, "\n\t") + "\n},"
+}
+
 // PolicyReview is the outcome of reading the Tailnet Policy with the Runtime
 // Credential and computing the Merged Policy (ADR-0017): the user's own
 // document with Once's missing sections inserted, plus the names of what was
 // inserted and the policy version (ETag) the review was computed against.
 type PolicyReview struct {
+	// Original is the Tailnet Policy as it was read, so a frontend can show
+	// Merged as a diff against the user's own document.
+	Original string
 	// Merged is the full Merged Policy - the paste payload. Untouched lines
 	// are the user's own, byte for byte; only Once's additions are new.
 	Merged string
@@ -170,7 +196,7 @@ func reviewTailnetPolicy(ctx context.Context, api tailscaleAPI, tag string, serv
 			return PolicyReview{}, err
 		}
 	}
-	return PolicyReview{Merged: merged, Added: added, ETag: etag}, nil
+	return PolicyReview{Original: policy, Merged: merged, Added: added, ETag: etag}, nil
 }
 
 // Private

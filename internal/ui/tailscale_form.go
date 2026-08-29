@@ -18,7 +18,10 @@ import (
 // default.
 var tailscaleTopologyChoices = []string{docker.TailnetTopologyNodes, docker.TailnetTopologyServices}
 
-const tailscaleFormTextWidth = 72
+// tailscaleFormTextWidth keeps wrapped prose inside the credential
+// screen's box at the 80-column floor: 68 content columns plus the box's
+// borders and padding measure 78.
+const tailscaleFormTextWidth = 68
 
 var (
 	tailscaleFormCloseKey = WithHelp(NewKeyBinding("esc"), "esc", "close")
@@ -40,14 +43,32 @@ type tailscaleFormFinishedMsg struct {
 
 type tailscaleStatusMsg string
 
+// tailscaleScreen names which screen of the enable flow the overlay shows.
+// A fresh enable opens on the tagOwners screen (phase one of ADR-0017), the
+// credential form follows, and a refused enable lands on the Merged Policy
+// diff. An enabled install goes straight to the credential form.
+type tailscaleScreen int
+
+const (
+	tailscaleScreenCredential tailscaleScreen = iota
+	tailscaleScreenTagOwners
+	tailscaleScreenDiff
+)
+
 // TailscaleForm is the dashboard-global overlay for enabling/disabling
 // Tailscale. Enabling runs the same flow as the CLI: probe the pasted OAuth
-// credential and boot the requested tailnet topology. The credential's tag
-// must be defined in the tailnet policy first; ctrl+p copies the required
-// snippet for whichever topology is currently selected.
+// credential, review the Tailnet Policy, and boot the requested tailnet
+// topology. The credential's tag must be defined in the tailnet policy
+// first (the tagOwners screen); ctrl+p copies the required snippet for
+// whichever topology is currently selected, or the Merged Policy after a
+// refused enable.
 type TailscaleForm struct {
 	namespace     *docker.Namespace
 	enabled       bool
+	screen        tailscaleScreen
+	tagOwners     tagOwnersScreen
+	diff          policyDiffScreen
+	lastEnable    tailscaleEnableSubmitMsg
 	form          Form
 	help          Help
 	width, height int
@@ -80,6 +101,7 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		m.help.SetWidth(m.width)
 		m.progress = m.progress.SetWidth(m.width)
 		m.form, _ = m.form.Update(msg)
+		m.diff, _ = m.diff.Update(msg)
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -87,7 +109,10 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, nil
 		}
 		if key.Matches(msg, tailscaleFormCloseKey) {
-			return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
+			return m.escape()
+		}
+		if m.screen != tailscaleScreenCredential {
+			return m.updateScreen(msg)
 		}
 		if key.Matches(msg, tailscaleCopyKey) {
 			return m, tea.SetClipboard(m.copyPayload())
@@ -99,8 +124,24 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		if m.running {
 			return m, nil
 		}
+		if m.screen != tailscaleScreenCredential {
+			return m.updateScreen(msg)
+		}
+
+	case tea.MouseWheelMsg:
+		return m.updateScreen(msg)
+
+	case tagOwnersContinueMsg:
+		m.screen = tailscaleScreenCredential
+		return m, m.form.Init()
+
+	case policyDiffContinueMsg:
+		// The diff's step 3 is "save, then Continue": the Merged Policy has
+		// been applied, so the same enable runs again.
+		return m.Update(m.lastEnable)
 
 	case tailscaleEnableSubmitMsg:
+		m.lastEnable = msg
 		m.statusChan = make(chan string, 4)
 		c, cmd := m.startRunning(m.runEnable(msg))
 		return c, tea.Batch(cmd, listenTailscaleStatus(m.statusChan))
@@ -122,6 +163,14 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		m.statusChan = nil
 		if msg.err != nil {
 			m.err = msg.err
+			// A refusal carries the review, so the fix is shown as the
+			// Merged Policy diff rather than an error paragraph; esc from
+			// there returns to the form, where the refusal message waits.
+			var refused *docker.PolicyRefusedError
+			if errors.As(msg.err, &refused) {
+				m.screen = tailscaleScreenDiff
+				m.diff = newPolicyDiffScreen(refused.Review, m.height)
+			}
 			return m, nil
 		}
 		// Shadowing warnings keep the form open so the user actually sees them.
@@ -140,31 +189,44 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.screen != tailscaleScreenCredential {
+		return m, nil
+	}
 	var cmd tea.Cmd
 	m.form, cmd = m.form.Update(msg)
 	return m, cmd
 }
 
 func (m TailscaleForm) View() string {
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Colors.Border).
-		Padding(1, 4)
-
-	title := lipgloss.NewStyle().Bold(true).Foreground(Colors.Primary).MarginBottom(1).Render("Tailscale")
-
-	body := m.setupView()
 	if m.running {
-		body = m.progress.View()
+		body := m.progress.View()
 		if m.status != "" {
 			status := lipgloss.NewStyle().Foreground(Colors.Muted).Width(tailscaleFormTextWidth).Render(m.status)
 			body = lipgloss.JoinVertical(lipgloss.Center, status, "", body)
 		}
+		return m.frame(body, false)
 	}
 
-	helpLine := lipgloss.NewStyle().MarginTop(1).Align(lipgloss.Center).Render(m.help.View())
+	switch m.screen {
+	case tailscaleScreenTagOwners:
+		return m.tagOwners.View()
+	case tailscaleScreenDiff:
+		return m.diff.View()
+	}
 
-	return boxStyle.Render(lipgloss.JoinVertical(lipgloss.Center, title, body, helpLine))
+	// The full guidance runs well past the 24-row floor (the ADR-0017
+	// amendment measured 38 rows), so it collapses before anything else.
+	// Below that, the form itself tightens - inline radios, no separator or
+	// padding rows - so the fields, buttons and help stay reachable at every
+	// size the guard admits. TestTailscaleForm_CredentialScreenFitsThe24RowFloor
+	// pins it.
+	if v := m.frame(m.setupView(true, false), false); m.height == 0 || lipgloss.Height(v) <= m.height {
+		return v
+	}
+	if v := m.frame(m.setupView(false, false), false); lipgloss.Height(v) <= m.height {
+		return v
+	}
+	return m.frame(m.setupView(false, true), true)
 }
 
 // Private
@@ -215,7 +277,10 @@ func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 	}
 }
 
-func (m TailscaleForm) setupView() string {
+// setupView is the credential screen's body. guidance carries the setup
+// steps (or the enabled-state intro), dropped when the terminal is too short
+// for them; compact tightens the form itself for the 24-row floor.
+func (m TailscaleForm) setupView(guidance, compact bool) string {
 	var parts []string
 	if m.err != nil {
 		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Error).Width(tailscaleFormTextWidth).Render(docker.ErrorMessage(m.err)))
@@ -231,13 +296,88 @@ func (m TailscaleForm) setupView() string {
 		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Warning).Width(tailscaleFormTextWidth).Render(strings.Join(m.warnings, "\n")), "")
 	}
 
-	intro := "Tailscale is enabled. Enable re-applies the settings below\n(changing the topology, mode, credentials, or tag rebuilds it)."
-	if !m.enabled {
-		intro = tailscaleFactsFor(selectedTailscaleTopology(m.form)).SetupIntro
+	if guidance {
+		parts = append(parts, m.guidance(), "")
 	}
-	parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Muted).Render(intro), "", m.form.View())
+
+	form := m.form
+	form.SetCompact(compact)
+	parts = append(parts, form.View())
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// guidance is the credential screen's intro: numbered setup steps with a
+// scope list that follows the topology selection live (fresh enable), or the
+// re-enable explainer (enabled install).
+func (m TailscaleForm) guidance() string {
+	if m.enabled {
+		return policyMuted("Tailscale is enabled. Enable re-applies the settings below\n(changing the topology, mode, credentials, or tag rebuilds it).")
+	}
+
+	facts := tailscaleFactsFor(selectedTailscaleTopology(m.form))
+	num := policyStepStyle()
+	scopes := lipgloss.NewStyle().Foreground(Colors.Primary).PaddingLeft(3).Width(tailscaleFormTextWidth).
+		Render(strings.Join(facts.OAuthScopes, ", "))
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		num.Render("1. Select your topology")+policyMuted(" - the first field below"),
+		"",
+		num.Render("2. Navigate to")+policyMuted(": ")+policyLink(tailscaleOAuthClientsURL),
+		"",
+		num.Render("3. Create a new OAuth client")+policyMuted(" with these scopes:"),
+		scopes,
+		"",
+		num.Render("4. Enter its values")+policyMuted(" and Continue:"),
+	)
+}
+
+// frame wraps a credential-screen body in the overlay's box, title and help
+// line; tight sheds the vertical padding and margins for the 24-row floor.
+func (m TailscaleForm) frame(body string, tight bool) string {
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(Colors.Border).
+		Padding(1, 4)
+	title := lipgloss.NewStyle().Bold(true).Foreground(Colors.Primary).MarginBottom(1)
+	helpLine := lipgloss.NewStyle().MarginTop(1).Align(lipgloss.Center)
+	if tight {
+		boxStyle = boxStyle.Padding(0, 4)
+		title = title.MarginBottom(0)
+		helpLine = helpLine.MarginTop(0)
+	}
+	return boxStyle.Render(lipgloss.JoinVertical(lipgloss.Center,
+		title.Render("Tailscale"), body, helpLine.Render(m.help.View())))
+}
+
+// escape is the overlay-wide esc gesture, screen by screen: the diff returns
+// to the credential form (the refusal message waits there), a fresh enable's
+// credential form returns to the tagOwners screen, and everything else
+// closes the overlay.
+func (m TailscaleForm) escape() (Component, tea.Cmd) {
+	switch m.screen {
+	case tailscaleScreenDiff:
+		m.screen = tailscaleScreenCredential
+		return m, m.form.Init()
+	case tailscaleScreenCredential:
+		if !m.enabled {
+			m.screen = tailscaleScreenTagOwners
+			return m, nil
+		}
+	}
+	return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
+}
+
+// updateScreen forwards msg to whichever policy screen is active.
+func (m TailscaleForm) updateScreen(msg tea.Msg) (Component, tea.Cmd) {
+	var cmd tea.Cmd
+	switch m.screen {
+	case tailscaleScreenTagOwners:
+		m.tagOwners, cmd = m.tagOwners.Update(msg)
+	case tailscaleScreenDiff:
+		m.diff, cmd = m.diff.Update(msg)
+	}
+	return m, cmd
 }
 
 // Helpers
@@ -283,17 +423,28 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 	topologyField := NewRadioField(tailscaleTopologyLabels()...)
 	topologyField.SetSelected(max(slices.Index(tailscaleTopologyChoices, topology), 0))
 
+	// Topology leads: the guidance's step 1 selects it, and the scope list
+	// in step 3 follows the selection live (ADR-0017 amendment).
 	items := []FormItem{
+		{Key: "topology", Label: "Topology", Field: topologyField},
 		{Key: "client-id", Label: "Client ID", Field: clientIDField, Required: !enabled},
 		{Key: "client-secret", Label: "Client Secret", Field: clientSecretField, Required: !enabled},
 		{Key: "tag", Label: "Tag", Field: tagField, Required: !enabled},
-		{Key: "topology", Label: "Topology", Field: topologyField},
 	}
 	if choices := tailscaleFactsFor(topology).ModeChoices; choices != nil {
 		items = append(items, newTailscaleModeItem(choices, settings.Mode))
 	}
 
-	m.form = NewForm("Enable", items...)
+	submitLabel := "Continue"
+	if enabled {
+		submitLabel = "Enable"
+	}
+	m.form = NewForm(submitLabel, items...)
+	// Esc covers cancelling (the overlay routes it screen by screen), so a
+	// Cancel button would be a second control for the same exit; the primary
+	// action sits bottom-right on every screen of the flow.
+	m.form.HideCancelButton()
+	m.form.AlignButtonsRight()
 	// The Mode radio only exists for a topology whose facts offer mode
 	// choices (Services, ADR-0015): every rebuild - a keypress or a click on
 	// the topology radio - reconciles its presence with whatever is
@@ -327,13 +478,16 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 	if enabled {
 		m.form.SetActionButton("Disable", func() tea.Msg { return tailscaleDisableSubmitMsg{} })
 	}
-	m.form.OnCancel(requestTailscaleFormClose)
+
+	// A fresh enable opens on the tagOwners screen: the console will not
+	// issue a tagged credential until the tag is in tagOwners, so no
+	// credential-driven step can come first (ADR-0017).
+	if !enabled {
+		m.screen = tailscaleScreenTagOwners
+		m.tagOwners = newTagOwnersScreen(defaultTag)
+	}
 
 	return m
-}
-
-func requestTailscaleFormClose(f *Form) tea.Cmd {
-	return func() tea.Msg { return TailscaleFormCloseMsg{} }
 }
 
 // listenTailscaleStatus relays one waiting status from the enable task; the

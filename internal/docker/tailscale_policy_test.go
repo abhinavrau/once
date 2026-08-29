@@ -299,3 +299,23 @@ func TestPolicySnippetIsValidHuJSON(t *testing.T) {
 	_, err := hujson.Parse([]byte(PolicySnippet("tag:once")))
 	require.NoError(t, err)
 }
+
+func TestReviewCarriesTheOriginalPolicyForDiffing(t *testing.T) {
+	api := reviewPolicyFixture(t, freshTailnetPolicy, false)
+
+	review, err := reviewTailnetPolicy(context.Background(), api, "tag:once", true)
+	require.NoError(t, err)
+
+	assert.Equal(t, freshTailnetPolicy, review.Original, "the review must carry the policy as read, so frontends can diff Merged against it")
+}
+
+func TestTagOwnersPolicyShapesAgree(t *testing.T) {
+	block := TagOwnersPolicyBlock("tag:once")
+	assert.Contains(t, block, TagOwnersPolicyLines("tag:once"), "the line shape must be the block's own entry")
+
+	_, err := hujson.Parse([]byte("{" + block + "}"))
+	require.NoError(t, err, "the paste payload must be valid HuJSON in context")
+
+	assert.Equal(t, "\"tag:once\": [\"autogroup:admin\"],\n\"tag:extra\": [\"autogroup:admin\"],",
+		TagOwnersPolicyLines("tag:once,tag:extra"), "one line per tag")
+}

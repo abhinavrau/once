@@ -358,7 +358,8 @@ func TestInstall_TailnetWithoutTailscaleOffersEnableOverlay(t *testing.T) {
 	m, _ = updateInstall(m, InstallFormSubmitMsg{App: catalog.App{ImageRef: "ghcr.io/basecamp/once-campfire"}, Hostname: "chat", Exposure: docker.ExposureTailnet})
 	assert.Equal(t, installStateHostname, m.state)
 	require.NotNil(t, m.overlay)
-	assert.Contains(t, m.overlay.View(), "Client ID")
+	assert.Contains(t, ansi.Strip(m.overlay.View()), "Need tagOwners in Policy File",
+		"a fresh enable opens on the tagOwners screen (ADR-0017 phase one)")
 
 	// Closing the overlay returns to the filled-in hostname form.
 	m, _ = updateInstall(m, TailscaleFormCloseMsg{})

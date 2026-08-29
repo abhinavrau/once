@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -713,4 +714,20 @@ func findFormRejection(cmd tea.Cmd) (FormSubmitRejectedMsg, bool) {
 	}
 
 	return FormSubmitRejectedMsg{}, false
+}
+
+func TestFormSetCompactInlinesRadiosAndKeepsThemClickable(t *testing.T) {
+	form := NewForm("Save",
+		FormItem{Key: "name", Label: "Name", Field: NewTextField("")},
+		FormItem{Key: "choice", Label: "Choice", Field: NewRadioField("A", "B")},
+	)
+	tall := lipgloss.Height(form.View())
+
+	form.SetCompact(true)
+	view := form.View()
+	assert.Less(t, lipgloss.Height(view), tall)
+	assert.Contains(t, ansi.Strip(view), "Choice  (•) A   ( ) B", "a compact radio renders label and options on one row")
+
+	form, _ = form.Update(MouseEvent{IsClick: true, Target: "field:choice"})
+	assert.Equal(t, 1, form.RadioField("choice").Selected(), "the inlined radio keeps its click target")
 }

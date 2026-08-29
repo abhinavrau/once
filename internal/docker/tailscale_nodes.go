@@ -268,7 +268,7 @@ func (n *nodesTopology) logsHint() string {
 func (n *nodesTopology) facts() TopologyFacts {
 	return TopologyFacts{
 		DefaultSettings: TailscaleSettings{Tag: "tag:once", Topology: TailnetTopologyNodes},
-		OAuthScopes:     []string{"auth_keys", "devices:core"},
+		OAuthScopes:     []string{"auth_keys:write", "devices:core:write", "policy_file:read", "devices:posture_attributes:read"},
 		PolicySnippet:   NodesPolicySnippet,
 		ModeChoices:     nil,
 		SetupIntro:      nodesSetupIntro,

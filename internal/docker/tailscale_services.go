@@ -335,7 +335,7 @@ func (s *servicesTopology) logsHint() string {
 func (s *servicesTopology) facts() TopologyFacts {
 	return TopologyFacts{
 		DefaultSettings: TailscaleSettings{Tag: "tag:once", Mode: TailscaleModeSidecar, Topology: TailnetTopologyServices},
-		OAuthScopes:     []string{"auth_keys", "devices:core", "services"},
+		OAuthScopes:     []string{"auth_keys:write", "devices:core:write", "services:write", "policy_file:read", "devices:posture_attributes:read"},
 		PolicySnippet:   PolicySnippet,
 		ModeChoices:     []string{TailscaleModeSidecar, TailscaleModeHost},
 		SetupIntro:      servicesSetupIntro,

@@ -66,10 +66,10 @@ func TestUIInstallAndManageApp(t *testing.T) {
 	// enable overlay inline; dismissing it returns to the filled-in form. --
 	d.selectRadioOption("exposure", "Tailnet")
 	d.click("submit")
-	d.waitForView("Client ID", 5*time.Second)
+	d.waitForView("tagOwners", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "Client ID")
+		return !strings.Contains(d.viewContent(), "tagOwners")
 	}, 5*time.Second)
 
 	// Back on the filled-in form: return to local (which restores the local
@@ -167,12 +167,13 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	// what does not fit, so give it room and assert the whole form rendered.
 	d.send(tea.WindowSizeMsg{Width: 120, Height: 50})
 
-	// -- esc dismisses the overlay --
+	// -- esc dismisses the overlay (a fresh enable opens on the tagOwners
+	// screen, ADR-0017 phase one) --
 	d.send(keyMsg("t"))
-	d.waitForView("Client ID", 5*time.Second)
+	d.waitForView("tagOwners", 5*time.Second)
 	d.send(keyMsg("esc"))
 	d.waitUntil(func() bool {
-		return !strings.Contains(d.viewContent(), "Client ID")
+		return !strings.Contains(d.viewContent(), "tagOwners")
 	}, 5*time.Second)
 
 	// -- open the form and enable Tailscale --
@@ -183,6 +184,12 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	// so it selects Services explicitly - nodes is the fresh-enable default and
 	// has no Mode field at all.
 	d.send(keyMsg("t"))
+	d.waitForView("tagOwners", 5*time.Second)
+	// The copy control is a named click target; clicking it flips the
+	// Copied state and Continue advances to the credential form.
+	d.click("copy-policy")
+	require.Contains(t, d.viewContent(), "Copied", "the copy control must confirm the copy")
+	d.click("continue")
 	d.waitForView("Client ID", 5*time.Second)
 	d.selectRadioOption("topology", "Services")
 	require.Contains(t, d.viewContent(), "(•) Sidecar", "selecting Services should reveal the Mode field")
