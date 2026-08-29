@@ -89,6 +89,11 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		// PROTO_SIZE=80x24 pins the layout for VHS recordings, whatever the
+		// real terminal measures.
+		if w, h, ok := sizeOverride(); ok {
+			msg.Width, msg.Height = w, h
+		}
 		m.width, m.height = msg.Width, msg.Height
 		m.sizeViewport()
 		if m.screen == screenCredential {
@@ -294,7 +299,7 @@ func (m model) enterDiff() model {
 	m.focused = 0
 	m.copied = false
 
-	original, merged, added, err := mergePolicy(scenarios[m.choice].policy)
+	original, merged, added, err := mergePolicy(scenarios[m.choice].policy, m.servicesTopology())
 	m.diffErr = err
 	if err != nil {
 		return m
@@ -313,15 +318,26 @@ func (m model) enterDiff() model {
 	lines := diffLines(original, merged)
 	m.addedLines = 0
 	m.addedAt = nil
-	rendered := make([]string, len(lines))
-	for i, line := range lines {
+	var rendered []string
+	for _, line := range lines {
 		text := strings.ReplaceAll(line.text, "\t", "    ")
+		// Soft-wrap instead of letting the viewport truncate: a policy line
+		// longer than the viewport (hujson formats a whole grant onto one
+		// line) must stay readable, especially when it is an addition.
+		for row, chunk := range wrapLine(text, diffWidth-2) {
+			prefix := "  "
+			if line.added && row == 0 {
+				prefix = "+ "
+			}
+			if line.added {
+				m.addedAt = append(m.addedAt, len(rendered))
+				rendered = append(rendered, addedStyle.Render(prefix+chunk))
+			} else {
+				rendered = append(rendered, muted(prefix+chunk))
+			}
+		}
 		if line.added {
-			m.addedAt = append(m.addedAt, i)
 			m.addedLines++
-			rendered[i] = addedStyle.Render("+ " + text)
-		} else {
-			rendered[i] = muted("  " + text)
 		}
 	}
 
@@ -374,9 +390,21 @@ func (m model) scrollbar() string {
 	return strings.Join(cells, "\n")
 }
 
+func (m model) servicesTopology() bool {
+	return m.topology != nil && m.topology.Selected() == 1
+}
+
+// diffChrome is every row of the diff screen that is not the viewport: box
+// borders (2), title with margin (2), summary (1), the steps block whose first
+// row holds the 3-row copy button (5), the 3-row Continue button, and the help
+// line with margin (2). TestDiffScreenFitsSmallTerminals pins the count.
+const diffChrome = 15
+
+const diffWidth = 72
+
 func (m *model) sizeViewport() {
-	m.vp.SetWidth(72)
-	m.vp.SetHeight(max(3, m.height-15))
+	m.vp.SetWidth(diffWidth)
+	m.vp.SetHeight(max(3, m.height-diffChrome))
 }
 
 func (m model) scenarioView() string {
@@ -444,7 +472,7 @@ func (m model) credentialView() string {
 	// extra `services` scope (ADR-0015), and both topologies carry the
 	// policy-read pair from ADR-0017.
 	scopes := "auth_keys:write, devices:core:write, policy_file:read,\n   devices:posture_attributes:read"
-	if m.topology != nil && m.topology.Selected() == 1 {
+	if m.servicesTopology() {
 		scopes = "auth_keys:write, devices:core:write, services:write,\n   policy_file:read, devices:posture_attributes:read"
 	}
 
@@ -652,6 +680,30 @@ func nthIndex(line, substr string, n int) int {
 		idx += 1 + next
 	}
 	return idx
+}
+
+// wrapLine chunks a line to at most width cells; continuation rows carry a
+// two-cell hanging indent so wrapped rows read as one line. Policy text is
+// ASCII, so runes measure as cells.
+func wrapLine(text string, width int) []string {
+	runes := []rune(text)
+	if len(runes) <= width {
+		return []string{text}
+	}
+	rows := []string{string(runes[:width])}
+	for rest := runes[width:]; len(rest) > 0; {
+		n := min(len(rest), width-2)
+		rows = append(rows, "  "+string(rest[:n]))
+		rest = rest[n:]
+	}
+	return rows
+}
+
+func sizeOverride() (w, h int, ok bool) {
+	if _, err := fmt.Sscanf(os.Getenv("PROTO_SIZE"), "%dx%d", &w, &h); err != nil {
+		return 0, 0, false
+	}
+	return w, h, true
 }
 
 func scenarioTarget(i int) string {

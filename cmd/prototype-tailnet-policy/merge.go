@@ -20,9 +20,11 @@ var (
 // document with Once's missing sections added, comments intact), and the names
 // of the sections that were added. Both documents come back hujson-formatted
 // so the diff between them shows only the additions.
+// autoApprovers.services exists only under the Services topology (ADR-0015):
+// Nodes has no Tailscale Services to approve, so it merges fewer sections.
 // ponytail: presence checks are structural equality on the parsed doc, not the
 // ACL-test equivalence ADR-0017 specifies; the real flow validates via the API.
-func mergePolicy(policy string) (original, merged string, added []string, err error) {
+func mergePolicy(policy string, services bool) (original, merged string, added []string, err error) {
 	v, err := hujson.Parse([]byte(policy))
 	if err != nil {
 		return "", "", nil, err
@@ -50,7 +52,7 @@ func mergePolicy(policy string) (original, merged string, added []string, err er
 		added = append(added, "grants")
 	}
 
-	if !hasApprovers(doc) {
+	if services && !hasApprovers(doc) {
 		switch approvers := doc["autoApprovers"].(type) {
 		case map[string]any:
 			if _, ok := approvers["services"]; ok {

@@ -98,3 +98,47 @@ the proof, because the console could not have issued one otherwise.
   `--client-id` flag help, and the per-scope error strings, while
   `TopologyFacts.OAuthScopes` has no production consumer. They all change
   together, or that field becomes the single source.
+
+## Amendment: what the TUI prototype settled (2026-08-29)
+
+A throwaway TUI prototype (`cmd/prototype-tailnet-policy` on branch
+`prototype/tailnet-policy`, tickets in `.scratch/tailnet-policy-merge/`)
+exercised the enable flow end to end against canned policies. Findings that
+bind the real implementation:
+
+Settled:
+
+- The Merged Policy diff is usable at the 80x24 floor, verified at 24, 46 and
+  60 rows (recordings in `.scratch/tailnet-policy-merge/recordings/`). What
+  makes it work: a summary line ("+N lines · adds <sections>"), the viewport
+  opening auto-scrolled to the first addition, added lines projected onto the
+  scrollbar as overview-ruler markers, and the copy control living outside the
+  scrolling region so it is reachable at every size.
+- Added lines must soft-wrap, not truncate: hujson's formatter emits a whole
+  grant as one ~90-column line, wider than any viewport at 80 columns.
+- The merge is topology-aware. `autoApprovers.services` exists only under the
+  Services topology (ADR-0015); Nodes merges `grants` and `nodeAttrs` only.
+  The credential screen's scope list follows the topology selection live, and
+  topology is the form's first field.
+- Nothing-to-add skips the diff screen entirely and says so; the four
+  validate outcomes (proceed, warn on funnel, refuse on 443
+  grant/autoApprovers, stale ETag) all render distinctly and two of them stop
+  the install, as this ADR requires.
+- Chrome that survived iteration: numbered steps with the copy button inline
+  in step 1, Continue bottom-right on every screen, no Cancel button (esc
+  covers it), a `Copied ✓` state on the copy control, and a keyboard skip for
+  the tagOwners step when the tag already exists.
+
+Contradicted:
+
+- "The Merged Policy is the user's document plus additions, not a reformatted
+  replacement" is not what `hujson.Patch` + `Format` produce. To keep the
+  diff add-only the prototype had to `Format` both documents, so the paste
+  payload is the user's policy in hujson's house style - comments survive,
+  byte-level formatting does not. The real implementation must either insert
+  without reformatting the untouched lines, or present the reformatting
+  honestly in the diff. Silently claiming "your document plus additions" is
+  the one option the prototype ruled out.
+- The credential screen cannot carry four guidance steps plus the form at the
+  24-row floor: the prototype's version is 38 rows tall. The real form needs
+  to scroll, or collapse its guidance at small heights.

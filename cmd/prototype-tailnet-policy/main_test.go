@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tailscale/hujson"
@@ -24,7 +25,7 @@ func TestTagOwnersShapesAgree(t *testing.T) {
 }
 
 func TestMergeAddsMissingSections(t *testing.T) {
-	original, merged, added, err := mergePolicy(fixture(t, "Fresh tailnet").policy)
+	original, merged, added, err := mergePolicy(fixture(t, "Fresh tailnet").policy, true)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"grants", "autoApprovers.services", "nodeAttrs"}, added)
 
@@ -43,14 +44,14 @@ func TestMergeAddsMissingSections(t *testing.T) {
 }
 
 func TestMergeNothingToAdd(t *testing.T) {
-	original, merged, added, err := mergePolicy(fixture(t, "Everything already present").policy)
+	original, merged, added, err := mergePolicy(fixture(t, "Everything already present").policy, true)
 	require.NoError(t, err)
 	assert.Empty(t, added)
 	assert.Equal(t, original, merged, "present sections are never duplicated")
 }
 
 func TestMergePartial(t *testing.T) {
-	_, merged, added, err := mergePolicy(fixture(t, "Missing funnel nodeAttr").policy)
+	_, merged, added, err := mergePolicy(fixture(t, "Missing funnel nodeAttr").policy, true)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"nodeAttrs"}, added)
 	assert.Equal(t, 1, strings.Count(merged, `"funnel"`))
@@ -59,6 +60,35 @@ func TestMergePartial(t *testing.T) {
 func TestLargeFixtureScrolls(t *testing.T) {
 	policy := fixture(t, "Large GitOps policy").policy
 	assert.GreaterOrEqual(t, strings.Count(policy, "\n"), 200)
+}
+
+func TestNodesTopologyAddsFewerSections(t *testing.T) {
+	policy := fixture(t, "Fresh tailnet").policy
+	_, _, nodes, err := mergePolicy(policy, false)
+	require.NoError(t, err)
+	_, _, services, err := mergePolicy(policy, true)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"grants", "nodeAttrs"}, nodes, "Nodes has no Tailscale Services to approve")
+	assert.Equal(t, []string{"grants", "autoApprovers.services", "nodeAttrs"}, services)
+}
+
+func TestDiffScreenFitsSmallTerminals(t *testing.T) {
+	choice := 0
+	for i, s := range scenarios {
+		if s.name == "Large GitOps policy" {
+			choice = i
+		}
+	}
+	for _, rows := range []int{24, 46, 60} {
+		m := model{choice: choice, width: 80, height: rows}
+		m = m.enterDiff()
+		view := m.diffView()
+		assert.Equal(t, rows, lipgloss.Height(view), "the diff screen must use exactly the %d rows it is given", rows)
+		assert.LessOrEqual(t, lipgloss.Width(view), 80, "at %d rows", rows)
+		assert.Contains(t, view, "Copy Policy File", "the copy control must stay reachable at %d rows", rows)
+		assert.Contains(t, view, "scroll", "off-screen diff content must be scrollable at %d rows", rows)
+	}
 }
 
 func fixture(t *testing.T, name string) scenario {
@@ -78,7 +108,7 @@ func TestAllOutcomesReachable(t *testing.T) {
 	}
 	assert.Len(t, seen, 4, "the switcher must reach proceed, warn, refuse and stale")
 
-	_, _, added, err := mergePolicy(fixture(t, "Everything already present").policy)
+	_, _, added, err := mergePolicy(fixture(t, "Everything already present").policy, true)
 	require.NoError(t, err)
 	assert.Empty(t, added, "the nothing-to-add outcome needs a fixture with no additions")
 }
