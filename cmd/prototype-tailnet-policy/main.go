@@ -68,6 +68,7 @@ type model struct {
 	skipped       bool
 	width, height int
 	form          ui.Form
+	topology      *ui.RadioField
 
 	// Diff screen state, built on entry by enterDiff.
 	vp            viewport.Model
@@ -277,7 +278,7 @@ func (m model) copyMerged() (tea.Model, tea.Cmd) {
 // field is focused and empty on every visit.
 func (m model) enterCredential() (tea.Model, tea.Cmd) {
 	m.screen = screenCredential
-	m.form = newCredentialForm()
+	m.form, m.topology = newCredentialForm()
 	m.form, _ = m.form.Update(formSize(tea.WindowSizeMsg{Width: m.width, Height: m.height}))
 	return m, m.form.Init()
 }
@@ -434,13 +435,28 @@ func (m model) continueButton() string {
 }
 
 func (m model) credentialView() string {
+	num := lipgloss.NewStyle().Bold(true).Foreground(ui.Colors.Primary)
 	oauthLink := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Underline(true).
 		Hyperlink(oauthClientsURL).Render(oauthClientsURL)
-	intro := muted("Create the client: ") + oauthLink
+
+	// The scope list follows the Topology field below, live: Services needs
+	// the extra `services` scope (ADR-0015), and both topologies carry the
+	// policy-read pair from ADR-0017.
+	scopes := "auth_keys, devices:core, policy_file:read,\n   devices:posture_attributes:read"
+	if m.topology != nil && m.topology.Selected() == 1 {
+		scopes = "auth_keys, devices:core, services, policy_file:read,\n   devices:posture_attributes:read"
+	}
+
+	steps := lipgloss.JoinVertical(lipgloss.Left,
+		num.Render("1. Navigate to")+muted(": ")+oauthLink,
+		num.Render("2. Create a new OAuth client")+muted(" with these scopes:"),
+		"   "+lipgloss.NewStyle().Foreground(ui.Colors.Primary).Render(scopes),
+		num.Render("3. Enter its values below")+muted(":"),
+	)
 
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Runtime Credential"),
-		lipgloss.JoinVertical(lipgloss.Left, intro, m.form.View())))
+		lipgloss.JoinVertical(lipgloss.Left, steps, m.form.View())))
 }
 
 func (m model) diffView() string {
@@ -537,16 +553,20 @@ func (m model) nextView() string {
 
 // newCredentialForm mirrors the real enable form's credential fields
 // (tailscale_form.go). Values are stand-ins - nothing probes Tailscale here.
-func newCredentialForm() ui.Form {
+// The topology field comes back separately so the scope list in the view can
+// follow its live selection.
+func newCredentialForm() (ui.Form, *ui.RadioField) {
 	secretField := ui.NewTextField("tskey-client-...")
 	secretField.SetEchoPassword()
 	tagField := ui.NewTextField("tag:once")
 	tagField.SetValue("tag:once")
+	topologyField := ui.NewRadioField("Nodes", "Services")
 
 	form := ui.NewForm("Continue",
 		ui.FormItem{Key: "client-id", Label: "Client ID", Field: ui.NewTextField("K123456CNTRL"), Required: true},
 		ui.FormItem{Key: "client-secret", Label: "Client Secret", Field: secretField, Required: true},
 		ui.FormItem{Key: "tag", Label: "Tag", Field: tagField, Required: true},
+		ui.FormItem{Key: "topology", Label: "Topology", Field: topologyField},
 	)
 	form.OnSubmit(func(f *ui.Form) tea.Cmd {
 		return func() tea.Msg { return credSubmittedMsg{} }
@@ -554,7 +574,7 @@ func newCredentialForm() ui.Form {
 	form.OnCancel(func(f *ui.Form) tea.Cmd {
 		return func() tea.Msg { return credCancelMsg{} }
 	})
-	return form
+	return form, topologyField
 }
 
 // formSize shrinks the terminal size by the surrounding box chrome, so the
