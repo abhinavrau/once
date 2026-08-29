@@ -112,6 +112,38 @@ func TestPolicyPrintsTheRequestedTopologysSnippet(t *testing.T) {
 	assert.Contains(t, output, docker.NodesPolicySnippet("tag:once"))
 }
 
+// A refused enable's fix is the Merged Policy itself: printing it (plus the
+// apply-and-re-run instruction) is the whole interaction, since the CLI never
+// prompts (ADR-0004/0017).
+func TestEnableRefusalPrintsTheMergedPolicyToApply(t *testing.T) {
+	review := docker.PolicyReview{
+		Merged: "{\n\t\"grants\": [],\n}",
+		Added:  []string{"grants", "autoApprovers.services"},
+	}
+
+	output := captureStdout(t, func() {
+		printMergedPolicy(review)
+	})
+
+	assert.Contains(t, output, review.Merged)
+	assert.Contains(t, output, "grants, autoApprovers.services")
+	assert.Contains(t, output, "re-run `once tailscale enable`")
+	assert.Contains(t, output, "https://login.tailscale.com/admin/acls/file")
+}
+
+// policy is step one of the enable flow, so its caller is by definition not
+// enabled yet - the snippet it prints unasked must be the one a fresh enable
+// will need.
+func TestPolicyDefaultsToWhatAFreshEnableResolvesTo(t *testing.T) {
+	ts, _ := tailscaleSubcommand(t, "policy")
+
+	output := captureStdout(t, func() {
+		require.NoError(t, ts.policy())
+	})
+
+	assert.Contains(t, output, docker.NodesPolicySnippet("tag:once"))
+}
+
 func TestPolicyRejectsAnInvalidTopology(t *testing.T) {
 	ts, policy := tailscaleSubcommand(t, "policy")
 	require.NoError(t, policy.Flags().Set("topology", "both"))

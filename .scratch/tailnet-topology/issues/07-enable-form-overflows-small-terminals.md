@@ -20,3 +20,14 @@ past 24 rows again.
 **Blocked by:** Nothing; separate follow-up.
 
 **Status:** needs-triage
+
+## Comments
+
+Partially landed via tailnet-policy-merge ticket 08: ui.Form gained opt-in
+SetCompact (radios inline on one row, separator blanks dropped) and
+TailscaleForm now collapses by measurement - guidance first, then compact
+form + tight chrome - so the enable form fits 80x24 even with the Mode
+radio; TestTailscaleForm_CredentialScreenFitsThe24RowFloor is the form-height
+assertion at the guard's minimum. Still open here: adopting SetCompact (or
+making compact radios the default) for the other RadioField forms
+(remove.go, exposure), which keep the tall bordered radios.

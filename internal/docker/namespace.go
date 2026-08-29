@@ -269,7 +269,9 @@ func (n *Namespace) Deploy(ctx context.Context, settings ApplicationSettings, pr
 // from (the tag, and dropping OAuth credentials the control seam makes unused
 // so they are never stored), resolve the mode once and stamp it in, run the
 // host-mode pre-flight (when the resolved mode is host) and the credential
-// probe, bring up the network, boot the Docktail topology from those settings,
+// probe, review the Tailnet Policy and act on its outcome (ADR-0017: proceed,
+// warn, refuse with the Merged Policy, or stop on a policy edited mid-flight),
+// bring up the network, boot the Docktail topology from those settings,
 // boot once-admin so it is exposed as a Service too, then verify
 // every expected service is advertised and approved before reporting success.
 // The returned warnings name any tailnet machines whose Magic DNS entries
@@ -318,6 +320,26 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 		return nil, err
 	}
 
+	// The policy review and its outcomes (ADR-0017), before anything boots:
+	// refuse when a missing section means the install does not work, warn and
+	// proceed when only Funnel is affected, degrade to the static snippet
+	// path when the policy cannot be read, and otherwise proceed. Nothing
+	// prompts, so a script and a terminal behave the same (ADR-0004). The
+	// control seam has no SaaS policy to read, so the review is skipped there
+	// exactly like the probes it extends.
+	var review PolicyReview
+	var policyAPI tailscaleAPI
+	if !controlSeamActive() {
+		policyAPI = newTailscaleAPI(settings)
+		review, err = reviewTailnetPolicy(ctx, policyAPI, settings.Tag, settings.Topology == TailnetTopologyServices)
+		if err != nil {
+			return nil, err
+		}
+		if review.blocksInstall() {
+			return nil, &PolicyRefusedError{Review: review}
+		}
+	}
+
 	// Under nodes, TSDProxy forwards every tailnet Host to the Proxy and
 	// once-admin registers its route below, so a fresh install that has never
 	// deployed an app needs the Proxy booted here first - Setup, not just
@@ -331,6 +353,14 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	} else if err := n.EnsureNetwork(ctx); err != nil {
 		return nil, fmt.Errorf("ensuring network: %w", err)
 	}
+
+	// Immediately before install, prove the policy still is the one the merge
+	// was reviewed against - an edit in between is reported, not ignored.
+	if review.ETag != "" {
+		if err := requireUnchangedPolicy(ctx, policyAPI, review.ETag); err != nil {
+			return nil, err
+		}
+	}
 	if err := n.tailscale.Enable(ctx, settings); err != nil {
 		return nil, fmt.Errorf("enabling Tailscale: %w", err)
 	}
@@ -340,6 +370,9 @@ func (n *Namespace) EnableTailscale(ctx context.Context, settings TailscaleSetti
 	var warnings []string
 	if notice != "" {
 		warnings = append(warnings, notice)
+	}
+	if w := review.warning(); w != "" {
+		warnings = append(warnings, w)
 	}
 	warnings = append(warnings, n.tailscale.ShadowWarnings(ctx, exposed)...)
 	return warnings, n.tailscale.Verify(ctx, n.expectedTailscaleServices(), progress)

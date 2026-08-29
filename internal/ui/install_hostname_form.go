@@ -18,10 +18,11 @@ type InstallHostnameBackMsg struct{}
 type InstallBackupToggledMsg struct{}
 
 type InstallHostnameForm struct {
-	form        Form
-	app         catalog.App
-	title       string
-	customImage bool
+	form             Form
+	app              catalog.App
+	title            string
+	customImage      bool
+	tailscaleEnabled bool
 }
 
 // NewInstallHostnameForm builds the install form: exposure and host for every
@@ -66,10 +67,11 @@ func NewInstallHostnameForm(app catalog.App, title string, tailscaleEnabled, cus
 	items = append(items, FormItem{Key: "auto-backup", Label: "Backups", Field: autoBackupField})
 
 	m := InstallHostnameForm{
-		form:        NewForm("Install", items...),
-		app:         app,
-		title:       title,
-		customImage: customImage,
+		form:             NewForm("Install", items...),
+		app:              app,
+		title:            title,
+		customImage:      customImage,
+		tailscaleEnabled: tailscaleEnabled,
 	}
 
 	m.form.OnSubmit(func(f *Form) tea.Cmd {
@@ -111,7 +113,18 @@ func (m InstallHostnameForm) Update(msg tea.Msg) (InstallHostnameForm, tea.Cmd) 
 	return m, cmd
 }
 
+// SetTailscaleEnabled refreshes the flag after the inline Tailscale overlay
+// closes, so the submit label reflects the current state.
+func (m *InstallHostnameForm) SetTailscaleEnabled(enabled bool) {
+	m.tailscaleEnabled = enabled
+}
+
 func (m InstallHostnameForm) View() string {
+	if m.Exposure() == docker.ExposureTailnet && !m.tailscaleEnabled {
+		m.form.SetSubmitLabel("Setup Tailscale...")
+	} else {
+		m.form.SetSubmitLabel("Install")
+	}
 	if m.title != "" {
 		titleLine := Styles.Title.Render("Installing " + m.title)
 		return lipgloss.JoinVertical(lipgloss.Center, titleLine, "", m.form.View())

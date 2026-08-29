@@ -1,7 +1,11 @@
 /bin
 /dist
+/backups
+/backups.staging
 coverage.out
 /.agents/skills/
 /.claude/skills/
 /.claude/worktrees/
+/.claude/settings.local.json
 /.lavish
+/graphify-out/

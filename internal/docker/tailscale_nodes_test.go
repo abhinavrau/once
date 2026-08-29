@@ -101,7 +101,7 @@ func TestNodesFacts(t *testing.T) {
 
 	assert.Equal(t, TailnetTopologyNodes, facts.DefaultSettings.Topology)
 	assert.Equal(t, "tag:once", facts.DefaultSettings.Tag)
-	assert.ElementsMatch(t, []string{"auth_keys", "devices:core"}, facts.OAuthScopes)
+	assert.ElementsMatch(t, []string{"auth_keys:write", "devices:core:write", "policy_file:read", "devices:posture_attributes:read"}, facts.OAuthScopes)
 	assert.Nil(t, facts.ModeChoices, "nodes has no Mode - there is nothing to choose")
 	assert.NotEmpty(t, facts.SetupIntro)
 }

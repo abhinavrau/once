@@ -156,8 +156,19 @@ A single container (`once-tsdproxy`) that watches Docker labels and joins one em
 _Avoid_: Tailscale Docker Proxy.
 
 **Runtime Credential**:
-The single minimal-scope, tagged OAuth client the user creates directly in the Tailscale admin console and supplies when enabling Tailscale - the only Tailscale credential that ever exists. Stored and used for ongoing Tailscale operations. Its secret reaches Once only through the environment, never on the command line (ADR-0013); Once does not protect it at rest.
+The single tagged OAuth client the user creates directly in the Tailscale admin console and supplies when enabling Tailscale - still the only Tailscale credential that ever exists. Stored and used for ongoing Tailscale operations, including reading the Tailnet Policy (ADR-0017). Its secret reaches Once only through the environment, never on the command line (ADR-0013); Once does not protect it at rest.
 _Avoid_: bootstrap credential, policy credential - the minting hierarchy they named was removed by ADR-0006.
+
+**Tailnet Policy**:
+The tailnet-wide HuJSON document Tailscale holds, defining tags, groups, grants, node attributes, and auto-approvers. Once reads it and never writes it (ADR-0017): the user is always the one who applies a change.
+_Avoid_: ACL, ACL file - the document carries far more than access rules.
+
+**Policy Snippet**:
+The static per-topology HuJSON Once prints for the user to merge by hand. The only form available before the Runtime Credential exists, and the fallback whenever Once cannot read the Tailnet Policy.
+
+**Merged Policy**:
+The user's own Tailnet Policy with Once's missing sections added, generated at enable, validated through the Tailscale API before it is shown, and applied by the user. Distinct from the Policy Snippet, which is a fragment Once writes blind.
+_Avoid_: policy patch, generated policy - the artifact is the user's whole document, not a fragment of ours.
 
 **Tailscale Funnel**:
 A Tailscale feature that routes public internet traffic to a specific port on a tailnet node, enabling temporary public access.

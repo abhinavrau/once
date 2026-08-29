@@ -137,6 +137,9 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 		switch msg.(type) {
 		case TailscaleFormCloseMsg, BackupsFormCloseMsg:
 			m.overlay = nil
+			if m.state == installStateHostname {
+				m.hostnameForm.SetTailscaleEnabled(m.tailscaleEnabled())
+			}
 			return m, nil
 		}
 		var overlayCmd tea.Cmd

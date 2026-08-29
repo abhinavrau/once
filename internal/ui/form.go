@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -18,10 +19,12 @@ var formKeys = struct {
 	Tab      key.Binding
 	ShiftTab key.Binding
 	Enter    key.Binding
+	Esc      key.Binding
 }{
 	Tab:      NewKeyBinding("tab"),
 	ShiftTab: NewKeyBinding("shift+tab"),
 	Enter:    NewKeyBinding("enter"),
+	Esc:      NewKeyBinding("esc"),
 }
 
 type FormField interface {
@@ -273,6 +276,10 @@ type Form struct {
 	items        []FormItem
 	submitLabel  string
 	actionButton *FormActionButton
+	hideCancel   bool
+	buttonsRight bool
+	compact      bool
+	minHeight    int
 	focused      int
 	width        int
 	errorKey     string
@@ -326,6 +333,8 @@ func (f Form) Update(msg tea.Msg) (Form, tea.Cmd) {
 			return f.focusPrev()
 		case key.Matches(msg, formKeys.Enter):
 			return f.handleEnter()
+		case f.hideCancel && key.Matches(msg, formKeys.Esc):
+			return f.cancel()
 		}
 	}
 
@@ -352,17 +361,29 @@ func (f Form) View() string {
 	errorStyle := lipgloss.NewStyle().Foreground(Colors.Error)
 
 	for i, item := range f.items {
+		if _, isRadio := item.Field.(*RadioField); f.compact && isRadio {
+			labelStyle := Styles.Label
+			optionStyle := lipgloss.NewStyle()
+			if f.focused == i {
+				labelStyle = labelStyle.Foreground(Colors.Focused)
+				optionStyle = optionStyle.Foreground(Colors.Focused)
+			}
+			row := labelStyle.Render(item.Label) + "  " + optionStyle.Render(item.Field.View())
+			parts = append(parts, mouse.Mark(fieldTarget(item.Key), row), "")
+			continue
+		}
+
 		label := Styles.Label.Render(item.Label)
 
 		hasError := f.error != "" && item.Key == f.errorKey
 		inputStyle := Styles.WithError(Styles.Focus(Styles.Input, f.focused == i), hasError)
 		field := mouse.Mark(fieldTarget(item.Key), inputStyle.Render(item.Field.View()))
 
+		parts = append(parts, label, field)
 		if hasError {
-			parts = append(parts, label, field, errorStyle.Render(f.error), "")
-		} else {
-			parts = append(parts, label, field, "")
+			parts = append(parts, errorStyle.Render(f.error))
 		}
+		parts = append(parts, "")
 	}
 
 	submitButton := mouse.Mark("submit", Styles.Focus(Styles.ButtonPrimary, f.focused == f.submitIndex()).
@@ -376,18 +397,67 @@ func (f Form) View() string {
 		buttonParts = append(buttonParts, actionBtn)
 	}
 
-	cancelButton := mouse.Mark("cancel", Styles.Focus(Styles.Button, f.focused == f.cancelIndex()).
-		Render("Cancel"))
+	if !f.hideCancel {
+		cancelButton := mouse.Mark("cancel", Styles.Focus(Styles.Button, f.focused == f.cancelIndex()).
+			Render("Cancel"))
+		buttonParts = append(buttonParts, cancelButton)
+	}
 
-	buttonParts = append(buttonParts, cancelButton)
 	buttons := lipgloss.JoinHorizontal(lipgloss.Center, buttonParts...)
+	if f.buttonsRight {
+		// The last button's trailing margin would otherwise hold the row off
+		// the edge; there is no button after it to separate from.
+		buttons = lipgloss.PlaceHorizontal(contentWidth(parts), lipgloss.Right, trimLineEnds(buttons))
+	}
+	if f.minHeight > 0 {
+		have := lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, parts...)) + 1 + lipgloss.Height(buttons)
+		for range f.minHeight - have {
+			parts = append(parts, "")
+		}
+	}
 	parts = append(parts, "", buttons)
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
+func (f *Form) SetSubmitLabel(label string) {
+	f.submitLabel = label
+}
+
 func (f *Form) SetActionButton(label string, onPress func() tea.Msg) {
 	f.actionButton = &FormActionButton{Label: label, OnPress: onPress}
+}
+
+// HideCancelButton drops the Cancel button from the view, the click targets,
+// and the focus cycle. Esc becomes the cancel gesture instead, still routed
+// through OnCancel.
+func (f *Form) HideCancelButton() {
+	f.hideCancel = true
+}
+
+// AlignButtonsRight pushes the button row to the form's right edge, so the
+// primary button sits in the bottom-right corner.
+func (f *Form) AlignButtonsRight() {
+	f.buttonsRight = true
+}
+
+// SetCompact tightens the layout for short terminals: radio fields render
+// their label and options on one row instead of a bordered box. Focus shows
+// as color instead of a border on the inlined radios; every field keeps its
+// click target. The blank separator rows between fields stay - they are what
+// keeps a form of text inputs readable, and dropping them buys one row per
+// field at the cost of the layout the user actually reads.
+func (f *Form) SetCompact(compact bool) {
+	f.compact = compact
+}
+
+// SetMinHeight pads the view to at least rows tall, the padding sitting
+// between the fields and the button row. Opt-in for a form whose field set
+// follows another field's value (TailscaleForm's Mode radio): sized to the
+// tallest field set, the buttons hold still while the conditional field swaps
+// with reserved space instead of shifting everything below it.
+func (f *Form) SetMinHeight(rows int) {
+	f.minHeight = rows
 }
 
 func (f *Form) OnSubmit(fn func(f *Form) tea.Cmd) {
@@ -503,11 +573,15 @@ func (f Form) handleEnter() (Form, tea.Cmd) {
 		return f, func() tea.Msg { return f.actionButton.OnPress() }
 	case f.focused == f.submitIndex():
 		return f.submitIfValid()
-	case f.focused == f.cancelIndex():
-		if f.onCancel != nil {
-			return f, f.onCancel(&f)
-		}
-		return f, nil
+	case !f.hideCancel && f.focused == f.cancelIndex():
+		return f.cancel()
+	}
+	return f, nil
+}
+
+func (f Form) cancel() (Form, tea.Cmd) {
+	if f.onCancel != nil {
+		return f, f.onCancel(&f)
 	}
 	return f, nil
 }
@@ -547,10 +621,10 @@ func (f Form) handleClick(target string) (Form, tea.Cmd) {
 			return f, func() tea.Msg { return f.actionButton.OnPress() }
 		}
 	case "cancel":
-		f.blurCurrent()
-		f.focused = f.cancelIndex()
-		if f.onCancel != nil {
-			return f, f.onCancel(&f)
+		if !f.hideCancel {
+			f.blurCurrent()
+			f.focused = f.cancelIndex()
+			return f.cancel()
 		}
 	}
 
@@ -629,6 +703,9 @@ func (f Form) cancelIndex() int {
 }
 
 func (f Form) totalCount() int {
+	if f.hideCancel {
+		return f.cancelIndex()
+	}
 	return f.cancelIndex() + 1
 }
 
@@ -662,6 +739,29 @@ func fieldAs[T FormField](f Form, key, typeName string) T {
 		panic(fmt.Sprintf("form field %q is not a %s", key, typeName))
 	}
 	return field
+}
+
+func contentWidth(parts []string) int {
+	w := 0
+	for _, part := range parts {
+		w = max(w, lipgloss.Width(part))
+	}
+	return w
+}
+
+// trailingSpacesAndEscapes matches a line's tail of spaces interleaved with
+// zero-width escape sequences (styling resets, mouse markers): the spaces
+// there pad the visual width, but the escapes must survive a trim.
+var trailingSpacesAndEscapes = regexp.MustCompile("(?:\x1b\\[[0-9;]*[a-zA-Z]| )+$")
+
+func trimLineEnds(block string) string {
+	lines := strings.Split(block, "\n")
+	for i, line := range lines {
+		lines[i] = trailingSpacesAndEscapes.ReplaceAllStringFunc(line, func(tail string) string {
+			return strings.ReplaceAll(tail, " ", "")
+		})
+	}
+	return strings.Join(lines, "\n")
 }
 
 func fieldTarget(key string) string {

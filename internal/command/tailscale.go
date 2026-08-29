@@ -35,9 +35,10 @@ type tailscaleCommand struct {
 	// resolving and validation; this command only carries the flag through.
 	topology string
 	// policyTopology is separate from topology: `policy` prints a snippet with
-	// no install to read a stored topology from, so it needs its own default
-	// (Services, matching this flag's pre-ticket-05 behavior) rather than an
-	// empty value with nothing to resolve against.
+	// no install to read a stored topology from, so it needs a real default
+	// rather than an empty value with nothing to resolve against. It matches
+	// what a fresh enable resolves to (nodes): `policy` is step one of the
+	// enable flow, so whoever runs it is by definition not enabled yet.
 	policyTopology string
 	json           bool
 	duration       time.Duration
@@ -99,8 +100,8 @@ probed before anything boots.`,
 		RunE:  func(cmd *cobra.Command, args []string) error { return t.policy() },
 	}
 	policy.Flags().StringVar(&t.tag, "tag", nodesFacts.DefaultSettings.Tag, "Tailscale tag the policy sections are built for")
-	policy.Flags().StringVar(&t.policyTopology, "topology", docker.TailnetTopologyServices, fmt.Sprintf(
-		"tailnet topology to print the policy snippet for: %s or %s", docker.TailnetTopologyServices, docker.TailnetTopologyNodes))
+	policy.Flags().StringVar(&t.policyTopology, "topology", docker.TailnetTopologyNodes, fmt.Sprintf(
+		"tailnet topology to print the policy snippet for: %s or %s", docker.TailnetTopologyNodes, docker.TailnetTopologyServices))
 
 	disable := &cobra.Command{
 		Use:   "disable",
@@ -189,6 +190,10 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 		if facts, factsErr := docker.TailscaleTopologyFacts(topology); factsErr == nil {
 			printPolicySnippet(facts, t.tag)
 		}
+	}
+	var refused *docker.PolicyRefusedError
+	if errors.As(err, &refused) {
+		printMergedPolicy(refused.Review)
 	}
 	if err != nil {
 		return err
@@ -402,9 +407,22 @@ func printWarnings(warnings []string) {
 	}
 }
 
+// printMergedPolicy hands a refused enable its fix (ADR-0017): the Merged
+// Policy - the user's own tailnet policy plus the sections it is missing - to
+// apply in the policy editor before re-running. Printing is the whole
+// interaction: nothing prompts, so a script and a terminal behave the same.
+func printMergedPolicy(review docker.PolicyReview) {
+	fmt.Println()
+	fmt.Printf("Apply this Merged Policy - your tailnet policy plus the missing %s - at https://login.tailscale.com/admin/acls/file, then re-run `once tailscale enable`:\n",
+		strings.Join(review.Added, ", "))
+	fmt.Println()
+	fmt.Println(review.Merged)
+	fmt.Println()
+}
+
 func printPolicySnippet(facts docker.TopologyFacts, tag string) {
 	fmt.Println()
-	fmt.Println("Merge this snippet into your tailnet policy file (https://login.tailscale.com/admin/acls), then run `once tailscale enable`:")
+	fmt.Println("Merge this snippet into your tailnet policy file (https://login.tailscale.com/admin/acls/file), then run `once tailscale enable`:")
 	fmt.Println()
 	fmt.Println(facts.PolicySnippet(tag))
 	fmt.Println()

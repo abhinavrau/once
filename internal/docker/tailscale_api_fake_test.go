@@ -44,18 +44,21 @@ func (r apiRequest) String() string {
 
 // fakeAPICall is one call a flow made through the tailscaleAPI seam. It keeps
 // the payload bytes, so the assertions that Once's requests stay
-// byte-compatible with docktail's need no HTTP server to observe them.
+// byte-compatible with docktail's need no HTTP server to observe them, and
+// the request headers when the flow sent any.
 type fakeAPICall struct {
 	apiRequest
 	payload string
+	header  http.Header
 }
 
-// fakeAPIReply is the canned outcome of one request: either a status and body,
-// which the production code parses exactly as it parses the real API's, or an
-// injected transport failure.
+// fakeAPIReply is the canned outcome of one request: either a status, body,
+// and response headers, which the production code parses exactly as it parses
+// the real API's, or an injected transport failure.
 type fakeAPIReply struct {
 	status int
 	body   string
+	header http.Header
 	err    error
 }
 
@@ -92,26 +95,32 @@ type fakeTailscaleAPI struct {
 	t fakeAPIReporter
 
 	replies map[apiRequest]fakeAPIReply
+	queued  map[apiRequest][]fakeAPIReply
 	calls   []fakeAPICall
 }
 
 func newFakeTailscaleAPI(t fakeAPIReporter) *fakeTailscaleAPI {
-	return &fakeTailscaleAPI{t: t, replies: map[apiRequest]fakeAPIReply{}}
+	return &fakeTailscaleAPI{t: t, replies: map[apiRequest]fakeAPIReply{}, queued: map[apiRequest][]fakeAPIReply{}}
 }
 
 func (f *fakeTailscaleAPI) Call(ctx context.Context, method, path string, payload []byte) (int, []byte, error) {
-	reply, err := f.record(apiRequest{method, path}, string(payload))
+	status, _, body, err := f.CallWithHeaders(ctx, method, path, nil, payload)
+	return status, body, err
+}
+
+func (f *fakeTailscaleAPI) CallWithHeaders(ctx context.Context, method, path string, header http.Header, payload []byte) (int, http.Header, []byte, error) {
+	reply, err := f.record(apiRequest{method, path}, string(payload), header)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	if reply.err != nil {
-		return 0, nil, reply.err
+		return 0, nil, nil, reply.err
 	}
-	return reply.status, []byte(reply.body), nil
+	return reply.status, reply.header, []byte(reply.body), nil
 }
 
 func (f *fakeTailscaleAPI) Authenticate(ctx context.Context) error {
-	reply, err := f.record(apiRequest{authenticateMethod, ""}, "")
+	reply, err := f.record(apiRequest{authenticateMethod, ""}, "", nil)
 	if err != nil {
 		return err
 	}
@@ -120,13 +129,21 @@ func (f *fakeTailscaleAPI) Authenticate(ctx context.Context) error {
 
 // Private
 
-// record appends request to the call log with payload, and returns the
-// canned reply for it - the bookkeeping every operation the seam offers
-// shares, so a call fails the same way whether it carries a method and path
-// or, like Authenticate, neither.
-func (f *fakeTailscaleAPI) record(request apiRequest, payload string) (fakeAPIReply, error) {
-	f.calls = append(f.calls, fakeAPICall{apiRequest: request, payload: payload})
+// record appends request to the call log with payload and headers, and
+// returns the canned reply for it - the bookkeeping every operation the seam
+// offers shares, so a call fails the same way whether it carries a method and
+// path or, like Authenticate, neither. Queued one-shot replies are consumed
+// before the persistent one, so a flow that hits the same endpoint twice with
+// different meanings (the policy flow's two /acl/validate posts) can be
+// canned in order.
+func (f *fakeTailscaleAPI) record(request apiRequest, payload string, header http.Header) (fakeAPIReply, error) {
+	f.calls = append(f.calls, fakeAPICall{apiRequest: request, payload: payload, header: header})
 
+	if queue := f.queued[request]; len(queue) > 0 {
+		reply := queue[0]
+		f.queued[request] = queue[1:]
+		return reply, nil
+	}
 	reply, ok := f.replies[request]
 	if !ok {
 		f.t.Helper()
@@ -141,6 +158,19 @@ func (f *fakeTailscaleAPI) record(request apiRequest, payload string) (fakeAPIRe
 // as the flow asks.
 func (f *fakeTailscaleAPI) reply(method, path string, status int, body string) {
 	f.replies[apiRequest{method, path}] = fakeAPIReply{status: status, body: body}
+}
+
+// replyWithHeaders is reply with response headers, for the requests whose
+// answer the flow reads from a header (the policy read's ETag).
+func (f *fakeTailscaleAPI) replyWithHeaders(method, path string, status int, body string, header http.Header) {
+	f.replies[apiRequest{method, path}] = fakeAPIReply{status: status, body: body, header: header}
+}
+
+// replyOnce queues a one-shot reply, consumed before the persistent reply in
+// the order queued.
+func (f *fakeTailscaleAPI) replyOnce(method, path string, status int, body string) {
+	request := apiRequest{method, path}
+	f.queued[request] = append(f.queued[request], fakeAPIReply{status: status, body: body})
 }
 
 // fail injects a transport failure for this request, as the adapter reports one
@@ -168,6 +198,31 @@ func (f *fakeTailscaleAPI) payload(method, path string) string {
 		}
 	}
 	return ""
+}
+
+// payloads returns every payload the flow sent to this request, in order -
+// for the endpoints one flow hits more than once.
+func (f *fakeTailscaleAPI) payloads(method, path string) []string {
+	want := apiRequest{method, path}
+	var payloads []string
+	for _, call := range f.calls {
+		if call.apiRequest == want {
+			payloads = append(payloads, call.payload)
+		}
+	}
+	return payloads
+}
+
+// requestHeader returns the headers the flow last sent to this request, nil
+// when it sent none.
+func (f *fakeTailscaleAPI) requestHeader(method, path string) http.Header {
+	want := apiRequest{method, path}
+	for _, call := range slices.Backward(f.calls) {
+		if call.apiRequest == want {
+			return call.header
+		}
+	}
+	return nil
 }
 
 // paths returns the paths the flow called with this method, in order.
