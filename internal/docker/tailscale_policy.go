@@ -19,8 +19,9 @@ import (
 const tailnetPolicyPath = "/tailnet/-/acl"
 
 // The sections Once merges into the Tailnet Policy once a credential exists
-// (ADR-0017): tagOwners stays manual, phase one's job. autoApprovers.services
-// exists only under the Services topology (ADR-0015).
+// (ADR-0017): tagOwners stays manual, phase one's job. The 443 grant and
+// autoApprovers.services exist only under the Services topology (ADR-0015);
+// Nodes needs just the funnel nodeAttr.
 const (
 	policySectionGrants    = "grants"
 	policySectionApprovers = "autoApprovers.services"
@@ -167,37 +168,10 @@ func (e *PolicyRefusedError) Error() string {
 // ErrPolicyChangedDuringEnable is enable's stale outcome (ADR-0017): the
 // Tailnet Policy was edited between the merge and the install, so the
 // reviewed merge no longer describes it and installing on top would ignore
-// someone else's edit.
-var ErrPolicyChangedDuringEnable = errors.New("the tailnet policy was edited while enable was running, so it no longer matches the reviewed merge; nothing was installed - re-run `once tailscale enable` against the current policy")
-
-// reviewTailnetPolicy is the production merge behind `once tailscale enable`
-// (ADR-0017): read the Tailnet Policy, compute the Merged Policy for the
-// given tag and topology, and report which sections were added. A merged
-// document is validated through POST /acl/validate before it is returned, so
-// no frontend ever shows the user an unappliable policy. The 443 grant is
-// checked by an ACL test rather than by matching text, since an equivalent
-// grant may be spelled differently; nodeAttrs and autoApprovers are not
-// access rules, so they check the parsed document.
-func reviewTailnetPolicy(ctx context.Context, api tailscaleAPI, tag string, services bool) (PolicyReview, error) {
-	policy, etag, fallback, err := readTailnetPolicy(ctx, api)
-	if err != nil {
-		return PolicyReview{}, err
-	}
-	if fallback != "" {
-		return PolicyReview{Fallback: fallback}, nil
-	}
-
-	merged, added, err := mergeTailnetPolicy(ctx, api, policy, policyTags(tag), services)
-	if err != nil {
-		return PolicyReview{}, err
-	}
-	if len(added) > 0 {
-		if err := validateMergedPolicy(ctx, api, merged); err != nil {
-			return PolicyReview{}, err
-		}
-	}
-	return PolicyReview{Original: policy, Merged: merged, Added: added, ETag: etag}, nil
-}
+// someone else's edit. The stop lands after the local proxy setup (the check
+// runs immediately before the tailnet install, which the setup precedes), so
+// the message claims only what is true: nothing reached the tailnet.
+var ErrPolicyChangedDuringEnable = errors.New("the tailnet policy was edited while enable was running, so it no longer matches the reviewed merge; the tailnet install was stopped before it began - re-run `once tailscale enable` against the current policy")
 
 // Private
 
@@ -225,6 +199,33 @@ func (r PolicyReview) warning() string {
 
 // Helpers
 
+// reviewTailnetPolicy is the production merge behind `once tailscale enable`
+// (ADR-0017): read the Tailnet Policy, compute the Merged Policy for the
+// given tag and topology, and report which sections were added. A merged
+// document is validated through POST /acl/validate before it is returned, so
+// no frontend ever shows the user an unappliable policy. The 443 grant is
+// checked by an ACL test rather than by matching text, since an equivalent
+// grant may be spelled differently; nodeAttrs and autoApprovers are not
+// access rules, so they check the parsed document.
+func reviewTailnetPolicy(ctx context.Context, api tailscaleAPI, tag string, services bool) (PolicyReview, error) {
+	review, err := readTailnetPolicy(ctx, api)
+	if err != nil || review.Fallback != "" {
+		return review, err
+	}
+
+	merged, added, err := mergeTailnetPolicy(ctx, api, review.Original, policyTags(tag), services)
+	if err != nil {
+		return PolicyReview{}, err
+	}
+	if len(added) > 0 {
+		if err := validateMergedPolicy(ctx, api, merged); err != nil {
+			return PolicyReview{}, err
+		}
+	}
+	review.Merged, review.Added = merged, added
+	return review, nil
+}
+
 // requireUnchangedPolicy re-checks the ETag captured when the Merged Policy
 // was generated, immediately before install, so a policy edited by someone
 // else in between is reported rather than ignored (ADR-0017). A read that
@@ -232,11 +233,11 @@ func (r PolicyReview) warning() string {
 // nothing to compare and proceeds: the scope is an enhancement, never a
 // precondition.
 func requireUnchangedPolicy(ctx context.Context, api tailscaleAPI, etag string) error {
-	_, current, fallback, err := readTailnetPolicy(ctx, api)
+	current, err := readTailnetPolicy(ctx, api)
 	if err != nil {
 		return err
 	}
-	if fallback == "" && current != etag {
+	if current.Fallback == "" && current.ETag != etag {
 		return ErrPolicyChangedDuringEnable
 	}
 	return nil
@@ -244,29 +245,34 @@ func requireUnchangedPolicy(ctx context.Context, api tailscaleAPI, etag string) 
 
 // readTailnetPolicy fetches the Tailnet Policy as HuJSON - the Accept header
 // asks for the user's document verbatim, comments and all, not the API's JSON
-// rendering of it - and captures the ETag that guards the install. A 403
-// means the policy_file:read scope is missing or revoked, which is a fallback
-// to the static snippet path rather than a failure.
-func readTailnetPolicy(ctx context.Context, api tailscaleAPI) (policy, etag, fallback string, err error) {
+// rendering of it - and captures the ETag that guards the install, returning
+// both as a partial PolicyReview for the merge to complete. A 403 means the
+// policy_file:read scope is missing or revoked, which is a review carrying
+// only Fallback - the static snippet path - rather than a failure.
+func readTailnetPolicy(ctx context.Context, api tailscaleAPI) (PolicyReview, error) {
 	header := http.Header{"Accept": []string{"application/hujson"}}
 	status, respHeader, body, err := api.CallWithHeaders(ctx, http.MethodGet, tailnetPolicyPath, header, nil)
 	if err != nil {
-		return "", "", "", err
+		return PolicyReview{}, err
 	}
 	switch {
 	case status == http.StatusForbidden:
-		return "", "", fmt.Sprintf("the OAuth client is missing the policy_file:read scope, so the tailnet policy cannot be read and merged (HTTP %d): %s", status, errorMessage(body)), nil
+		return PolicyReview{Fallback: fmt.Sprintf("the OAuth client is missing the policy_file:read scope, so the tailnet policy cannot be read and merged (HTTP %d): %s", status, errorMessage(body))}, nil
 	case status != http.StatusOK:
-		return "", "", "", fmt.Errorf("reading the tailnet policy (HTTP %d): %s", status, errorMessage(body))
+		return PolicyReview{}, fmt.Errorf("reading the tailnet policy (HTTP %d): %s", status, errorMessage(body))
 	}
-	return string(body), respHeader.Get("ETag"), "", nil
+	return PolicyReview{Original: string(body), ETag: respHeader.Get("ETag")}, nil
 }
 
 // mergeTailnetPolicy inserts whichever of Once's sections the policy is
 // missing and reports which were added, in policy order. Sections already
 // present - the 443 grant proven by ACL test, the rest by the parsed
 // document - are left exactly as the user wrote them, never duplicated or
-// rewritten.
+// rewritten. The 443 grant and autoApprovers.services exist only under the
+// Services topology: a tagged node is an ordinary tailnet device, reachable
+// under the tailnet's existing rules like any other (NodesPolicySnippet's
+// rationale), so Nodes merges the funnel nodeAttr only and a missing grant
+// never blocks its install.
 func mergeTailnetPolicy(ctx context.Context, api tailscaleAPI, policy string, tags []string, services bool) (merged string, added []string, err error) {
 	v, err := hujson.Parse([]byte(policy))
 	if err != nil {
@@ -282,18 +288,17 @@ func mergeTailnetPolicy(ctx context.Context, api tailscaleAPI, policy string, ta
 	}
 	editor := newPolicyEditor(root)
 
-	granted, err := tailnetGrantsMemberAccess(ctx, api, tags)
-	if err != nil {
-		return "", nil, err
-	}
-	if !granted {
-		if err := editor.appendArrayEntry("grants", grantEntry(tags)); err != nil {
+	if services {
+		granted, err := tailnetGrantsMemberAccess(ctx, api, tags)
+		if err != nil {
 			return "", nil, err
 		}
-		added = append(added, policySectionGrants)
-	}
-
-	if services {
+		if !granted {
+			if err := editor.appendArrayEntry("grants", grantEntry(tags)); err != nil {
+				return "", nil, err
+			}
+			added = append(added, policySectionGrants)
+		}
 		if missing := missingApproverTags(doc, tags); len(missing) > 0 {
 			if err := editor.insertApprovers(missing, tags); err != nil {
 				return "", nil, err

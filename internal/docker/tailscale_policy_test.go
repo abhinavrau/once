@@ -117,14 +117,28 @@ func TestReviewNothingToAddSkipsTheMergedValidation(t *testing.T) {
 	assert.Equal(t, 2, api.callCount(), "nothing to add means nothing to validate: just the read and the grant test")
 }
 
-func TestReviewNodesTopologyDoesNotAddServiceApprovers(t *testing.T) {
-	api := reviewPolicyFixture(t, freshTailnetPolicy, false)
+func TestReviewNodesTopologyMergesOnlyTheFunnelNodeAttr(t *testing.T) {
+	// The fresh policy has no 443 grant, and no canned ACL test reply exists:
+	// under Nodes the grant test must never even run, because a tagged node
+	// is an ordinary tailnet device under the tailnet's existing rules, not a
+	// Service needing its own grant.
+	api := newFakeTailscaleAPI(t)
+	header := http.Header{}
+	header.Set("ETag", `"v1"`)
+	api.replyWithHeaders(http.MethodGet, tailnetPolicyPath, http.StatusOK, freshTailnetPolicy, header)
+	api.reply(http.MethodPost, tailnetPolicyValidatePath, http.StatusOK, "")
 
 	review, err := reviewTailnetPolicy(context.Background(), api, "tag:once", false)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"grants", "nodeAttrs"}, review.Added, "Nodes has no Tailscale Services to approve (ADR-0015)")
+	assert.Equal(t, []string{"nodeAttrs"}, review.Added, "Nodes needs no grant and has no Tailscale Services to approve (ADR-0015)")
+	assert.NotContains(t, review.Merged, "grants")
 	assert.NotContains(t, review.Merged, "autoApprovers")
+	assert.False(t, review.blocksInstall(), "a missing 443 grant must never block a Nodes install")
+
+	payloads := api.payloads(http.MethodPost, tailnetPolicyValidatePath)
+	require.Len(t, payloads, 1, "the only validate call is the merged document, never a 443-grant ACL test")
+	assert.Equal(t, review.Merged, payloads[0])
 }
 
 func TestReviewAddsOnlyTheMissingSections(t *testing.T) {
@@ -176,7 +190,7 @@ func TestReviewFollowsTheDocumentsOwnIndentationAndCommaStyle(t *testing.T) {
 }`
 	api := reviewPolicyFixture(t, fourSpaces, false)
 
-	review, err := reviewTailnetPolicy(context.Background(), api, "tag:once", false)
+	review, err := reviewTailnetPolicy(context.Background(), api, "tag:once", true)
 	require.NoError(t, err)
 
 	assert.Contains(t, review.Merged, "\n    \"grants\": [\n        {\"src\":")
@@ -260,7 +274,8 @@ func TestRequireUnchangedPolicyComparesTheCapturedETag(t *testing.T) {
 
 	err := requireUnchangedPolicy(context.Background(), etagReply(`"v2"`), `"v1"`)
 	require.ErrorIs(t, err, ErrPolicyChangedDuringEnable)
-	assert.Contains(t, err.Error(), "nothing was installed")
+	assert.Contains(t, err.Error(), "the tailnet install was stopped before it began",
+		"the message must not overstate: the proxy setup preceding the check may already have run")
 }
 
 func TestRequireUnchangedPolicyProceedsWhenTheScopeWasRevokedMidFlight(t *testing.T) {

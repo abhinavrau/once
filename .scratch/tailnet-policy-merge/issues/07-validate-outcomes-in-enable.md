@@ -46,3 +46,26 @@ proceeding exactly as before ADR-0017. No prompts anywhere; script and
 terminal behave the same. Covered by unit tests in the docker, command, and
 ui packages; the control-seam skip is exercised by the existing enable
 integration tests.
+
+**Review fixes (2026-08-29):**
+
+- **443 grant is Services-only.** The refuse clause's "Missing 443 grant ...
+  (Services topology): refuse" now holds in the merge engine too: under Nodes
+  no grant ACL test runs, no grants entry is merged, and a missing grant never
+  blocks the install. Rationale: NodesPolicySnippet (and its pinning test) -
+  a tagged node is an ordinary tailnet device under the tailnet's existing
+  rules, not a Service needing its own approval and access-grant step; ADR-0017's
+  grant refusal is motivated entirely by Services symptoms. This supersedes
+  the ADR-0017 amendment's "Nodes merges `grants` and `nodeAttrs` only"
+  sentence on the grants half: Nodes merges the funnel nodeAttr only.
+- **Stale-path placement and wording.** The ETag re-check stays immediately
+  before `tailscale.Enable` (after proxy Setup/EnsureNetwork): moving it ahead
+  of Setup would widen the check-to-install window by the whole proxy boot,
+  defeating "re-checks the captured ETag immediately before install". Since
+  the proxy may therefore already be up when the stop fires,
+  `ErrPolicyChangedDuringEnable` no longer claims "nothing was installed";
+  it says the tailnet install was stopped before it began.
+- **TUI outcome visibility after diff Continue.** Every enable finish resets
+  the overlay to the credential screen unless it is a refusal (which builds a
+  fresh diff), so a stale stop, credential error, or warn-and-proceed after
+  the diff's Continue renders instead of leaving the old diff on screen.
