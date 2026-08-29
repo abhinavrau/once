@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,6 +106,79 @@ func TestForm_NoFields(t *testing.T) {
 
 	formPressTab(&form)
 	assert.Equal(t, 0, form.Focused(), "wraps to submit")
+}
+
+func TestForm_HideCancelButton(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
+	)
+	form.HideCancelButton()
+
+	assert.NotContains(t, form.View(), "Cancel")
+
+	formPressTab(&form)
+	assert.Equal(t, 1, form.Focused(), "submit button")
+
+	formPressTab(&form)
+	assert.Equal(t, 0, form.Focused(), "wraps to field, no cancel stop")
+
+	formPressShiftTab(&form)
+	assert.Equal(t, 1, form.Focused(), "submit button")
+}
+
+func TestForm_HideCancelButton_EscCancels(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
+	)
+	form.HideCancelButton()
+
+	cancelled := false
+	form.OnCancel(func(f *Form) tea.Cmd {
+		cancelled = true
+		return nil
+	})
+
+	form, _ = form.Update(keyPressMsg("esc"))
+	assert.True(t, cancelled)
+}
+
+func TestForm_EscLeftToFieldWithCancelButton(t *testing.T) {
+	form := NewForm("Submit",
+		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
+	)
+	cancelled := false
+	form.OnCancel(func(f *Form) tea.Cmd {
+		cancelled = true
+		return nil
+	})
+
+	form, _ = form.Update(keyPressMsg("esc"))
+	assert.False(t, cancelled, "esc only cancels a form without a Cancel button")
+}
+
+func TestForm_AlignButtonsRight(t *testing.T) {
+	buttonRow := func(form Form) (rowWidth, viewWidth int) {
+		view := form.View()
+		for _, line := range strings.Split(view, "\n") {
+			if strings.Contains(line, "Submit") {
+				return lipgloss.Width(strings.TrimRight(line, " ")), lipgloss.Width(view)
+			}
+		}
+		t.Fatal("no button row found")
+		return 0, 0
+	}
+
+	form := NewForm("Submit",
+		FormItem{Key: "field", Label: "Field", Field: NewTextField("val")},
+	)
+	form, _ = form.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+
+	rowWidth, viewWidth := buttonRow(form)
+	assert.Less(t, rowWidth, viewWidth, "default row hugs the left edge")
+
+	form.AlignButtonsRight()
+	rowWidth, viewWidth = buttonRow(form)
+	assert.Equal(t, viewWidth, rowWidth, "row ends flush with the right edge")
 }
 
 func TestTextField_DigitsOnly(t *testing.T) {
