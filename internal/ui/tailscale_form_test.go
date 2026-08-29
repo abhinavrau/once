@@ -450,3 +450,15 @@ func TestTailscaleForm_GuidanceCollapsesBeforeTheFields(t *testing.T) {
 	assert.NotContains(t, floor, "Create a new OAuth client", "the guidance collapses at the floor")
 	assert.Contains(t, floor, "Client ID", "the fields survive the collapse")
 }
+
+func TestTailscaleForm_TopologyClickKeepsTheGuidanceVisible(t *testing.T) {
+	m := advanceToCredential(t, NewTailscaleForm(newTestNamespace()))
+	c, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 45})
+	nodes := c.(TailscaleForm)
+	require.Contains(t, ansi.Strip(nodes.View()), "Create a new OAuth client")
+
+	services := clickField(nodes, "topology") // reveals the Mode field
+	view := services.View()
+	assert.Contains(t, ansi.Strip(view), "Create a new OAuth client", "selecting a topology must not hide the steps that explain it")
+	assert.LessOrEqual(t, lipgloss.Height(view), 45)
+}

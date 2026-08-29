@@ -222,13 +222,18 @@ func (m TailscaleForm) View() string {
 		return m.diff.View()
 	}
 
-	// The full guidance runs well past the 24-row floor (the ADR-0017
-	// amendment measured 38 rows), so it collapses before anything else.
-	// Below that, the form itself tightens - inline radios, no separator or
-	// padding rows - so the fields, buttons and help stay reachable at every
-	// size the guard admits. TestTailscaleForm_CredentialScreenFitsThe24RowFloor
-	// pins it.
+	// The setup steps are the screen's point, so they are the last thing to
+	// go: when the full view overflows, the form tightens first - inline
+	// radios, no separator or padding rows - and only when even that cannot
+	// make room does the guidance collapse. The tightening also keeps the
+	// steps up when a topology click grows the form (Services reveals the
+	// Mode field), instead of popping them away mid-selection.
+	// TestTailscaleForm_CredentialScreenFitsThe24RowFloor and
+	// TestTailscaleForm_TopologyClickKeepsTheGuidanceVisible pin it.
 	if v := m.frame(m.setupView(true, false), false); m.height == 0 || lipgloss.Height(v) <= m.height {
+		return v
+	}
+	if v := m.frame(m.setupView(true, true), true); lipgloss.Height(v) <= m.height {
 		return v
 	}
 	if v := m.frame(m.setupView(false, false), false); lipgloss.Height(v) <= m.height {
