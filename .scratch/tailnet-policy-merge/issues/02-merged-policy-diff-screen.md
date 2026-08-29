@@ -12,7 +12,7 @@ critical path (ADR-0017).
 
 **Status:** ready-for-agent
 
-- [ ] Entering credential values and continuing shows the diff screen.
+- [x] Entering credential values and continuing shows the diff screen.
 - [x] Added lines are visually distinct from unchanged context, and nothing appears as removed, since Once only ever adds.
 - [x] The copy control copies the whole merged document, not the diff rendering.
 - [x] A fixture whose policy already contains one of Once's sections shows it as unchanged, never duplicated.
@@ -24,6 +24,7 @@ critical path (ADR-0017).
 Diff screen built early on user request (branch `prototype/tailnet-policy`).
 hujson Patch + Format produce the Merged Policy; LCS line diff renders
 additions green in a scrolling viewport with Copy/Continue buttons. A 200+
-line "Large GitOps policy" fixture exercises scrolling. Still open here: the
-Runtime Credential fields before the diff, and the Tailnet Topology switch
-(Nodes vs Services section sets).
+line "Large GitOps policy" fixture exercises scrolling. Still open here: the Tailnet Topology switch (Nodes vs Services section
+sets). The credential form now sits before the diff (ui.Form, same fields
+as tailscale_form.go), and the diff opens auto-scrolled to the first added
+line with a thumb-on-track scroll bar.

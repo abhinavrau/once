@@ -28,6 +28,7 @@ const (
 	tagOwnersBlock = "\"tagOwners\": {\n\t" + tagOwnersLine + "\n},"
 
 	policyEditorURL = "https://login.tailscale.com/admin/acls"
+	oauthClientsURL = "https://login.tailscale.com/admin/settings/oauth"
 	copyTarget      = "copy:tagowners"
 	continueTarget  = "continue"
 )
@@ -44,8 +45,14 @@ type screen int
 const (
 	screenScenario screen = iota
 	screenTagOwners
+	screenCredential
 	screenDiff
 	screenNext
+)
+
+type (
+	credSubmittedMsg struct{}
+	credCancelMsg    struct{}
 )
 
 var (
@@ -60,6 +67,7 @@ type model struct {
 	copied        bool
 	skipped       bool
 	width, height int
+	form          ui.Form
 
 	// Diff screen state, built on entry by enterDiff.
 	vp            viewport.Model
@@ -78,6 +86,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.sizeViewport()
+		if m.screen == screenCredential {
+			m.form, _ = m.form.Update(formSize(msg))
+		}
+		return m, nil
+
+	case credSubmittedMsg:
+		return m.enterDiff(), nil
+
+	case credCancelMsg:
+		m.screen = screenTagOwners
+		m.focused = 0
 		return m, nil
 
 	case tea.MouseWheelMsg:
@@ -106,6 +125,8 @@ func (m model) View() tea.View {
 		content = m.scenarioView()
 	case screenTagOwners:
 		content = m.tagOwnersView()
+	case screenCredential:
+		content = m.credentialView()
 	case screenDiff:
 		content = m.diffView()
 	case screenNext:
@@ -142,16 +163,27 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.focused == 0 {
 				return m.copyTagOwners()
 			}
-			return m.enterDiff(), nil
+			return m.enterCredential()
 		case msg.String() == "s":
 			// The skip path: a tag that already exists needs no verification -
 			// a working tagged credential is itself the proof.
 			m.skipped = true
-			return m.enterDiff(), nil
+			return m.enterCredential()
 		case msg.String() == "esc":
 			m.screen = screenScenario
 		}
 		return m, nil
+
+	case screenCredential:
+		if msg.String() == "esc" {
+			m.screen = screenTagOwners
+			m.skipped = false
+			m.focused = 0
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.form, cmd = m.form.Update(msg)
+		return m, cmd
 
 	case screenDiff:
 		switch {
@@ -165,9 +197,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.screen = screenNext
 		case msg.String() == "esc":
-			m.screen = screenTagOwners
-			m.skipped = false
-			m.focused = 0
+			return m.enterCredential()
 		default:
 			m.vp, _ = m.vp.Update(msg)
 		}
@@ -197,8 +227,13 @@ func (m model) handleClick(target string) (tea.Model, tea.Cmd) {
 		case copyTarget:
 			return m.copyTagOwners()
 		case continueTarget:
-			return m.enterDiff(), nil
+			return m.enterCredential()
 		}
+	}
+	if m.screen == screenCredential {
+		var cmd tea.Cmd
+		m.form, cmd = m.form.Update(ui.MouseEvent{Target: target, IsClick: true})
+		return m, cmd
 	}
 	if m.screen == screenDiff {
 		switch target {
@@ -228,6 +263,15 @@ func (m model) copyMerged() (tea.Model, tea.Cmd) {
 	return m, tea.SetClipboard(m.mergedDoc)
 }
 
+// enterCredential shows the Runtime Credential form, built fresh so the first
+// field is focused and empty on every visit.
+func (m model) enterCredential() (tea.Model, tea.Cmd) {
+	m.screen = screenCredential
+	m.form = newCredentialForm()
+	m.form, _ = m.form.Update(formSize(tea.WindowSizeMsg{Width: m.width, Height: m.height}))
+	return m, m.form.Init()
+}
+
 // enterDiff computes the Merged Policy for the selected fixture and rebuilds
 // the diff viewport.
 func (m model) enterDiff() model {
@@ -246,10 +290,14 @@ func (m model) enterDiff() model {
 	addedStyle := lipgloss.NewStyle().Foreground(ui.Colors.Success)
 	lines := diffLines(original, merged)
 	m.addedLines = 0
+	firstAdded := 0
 	rendered := make([]string, len(lines))
 	for i, line := range lines {
 		text := strings.ReplaceAll(line.text, "\t", "    ")
 		if line.added {
+			if m.addedLines == 0 {
+				firstAdded = i
+			}
 			m.addedLines++
 			rendered[i] = addedStyle.Render("+ " + text)
 		} else {
@@ -260,11 +308,37 @@ func (m model) enterDiff() model {
 	m.vp = viewport.New()
 	m.vp.SetContent(strings.Join(rendered, "\n"))
 	m.sizeViewport()
+	// Open scrolled to the first addition, with a little context above it -
+	// on a long policy the changes are usually near the bottom.
+	m.vp.SetYOffset(max(0, firstAdded-3))
 	return m
 }
 
+// scrollbar draws a thumb-on-track bar for the diff viewport, or nothing when
+// the whole diff already fits.
+func (m model) scrollbar() string {
+	total, height := m.vp.TotalLineCount(), m.vp.Height()
+	if total <= height {
+		return ""
+	}
+	thumb := max(1, height*height/total)
+	pos := int(float64(height-thumb)*m.vp.ScrollPercent() + 0.5)
+
+	track := muted("│")
+	thumbCell := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Render("┃")
+	cells := make([]string, height)
+	for i := range cells {
+		if i >= pos && i < pos+thumb {
+			cells[i] = thumbCell
+		} else {
+			cells[i] = track
+		}
+	}
+	return strings.Join(cells, "\n")
+}
+
 func (m *model) sizeViewport() {
-	m.vp.SetWidth(74)
+	m.vp.SetWidth(72)
 	m.vp.SetHeight(max(3, m.height-12))
 }
 
@@ -323,6 +397,16 @@ func (m model) actionButtons() string {
 			ui.Styles.Focus(ui.Styles.Button, m.focused == 1).Render("Continue")))
 }
 
+func (m model) credentialView() string {
+	oauthLink := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Underline(true).
+		Hyperlink(oauthClientsURL).Render(oauthClientsURL)
+	intro := muted("Create the client: ") + oauthLink
+
+	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
+		title("Runtime Credential"),
+		lipgloss.JoinVertical(lipgloss.Left, intro, m.form.View())))
+}
+
 func (m model) diffView() string {
 	if m.diffErr != nil {
 		return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
@@ -340,10 +424,11 @@ func (m model) diffView() string {
 	}
 
 	scroll := fmt.Sprintf("↑/↓ scroll %.0f%%", m.vp.ScrollPercent()*100)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, m.vp.View(), " ", m.scrollbar())
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Review the Merged Policy"),
 		lipgloss.JoinVertical(lipgloss.Left,
-			summary, "", m.vp.View(), "", m.actionButtons(),
+			summary, "", body, "", m.actionButtons(),
 			helpLine(scroll, "tab focus", "enter press", "ctrl+p copy", "esc back"))))
 }
 
@@ -383,6 +468,35 @@ func (m model) nextView() string {
 }
 
 // Helpers
+
+// newCredentialForm mirrors the real enable form's credential fields
+// (tailscale_form.go). Values are stand-ins - nothing probes Tailscale here.
+func newCredentialForm() ui.Form {
+	secretField := ui.NewTextField("tskey-client-...")
+	secretField.SetEchoPassword()
+	tagField := ui.NewTextField("tag:once")
+	tagField.SetValue("tag:once")
+
+	form := ui.NewForm("Continue",
+		ui.FormItem{Key: "client-id", Label: "Client ID", Field: ui.NewTextField("K123456CNTRL"), Required: true},
+		ui.FormItem{Key: "client-secret", Label: "Client Secret", Field: secretField, Required: true},
+		ui.FormItem{Key: "tag", Label: "Tag", Field: tagField, Required: true},
+	)
+	form.OnSubmit(func(f *ui.Form) tea.Cmd {
+		return func() tea.Msg { return credSubmittedMsg{} }
+	})
+	form.OnCancel(func(f *ui.Form) tea.Cmd {
+		return func() tea.Msg { return credCancelMsg{} }
+	})
+	return form
+}
+
+// formSize shrinks the terminal size by the surrounding box chrome, so the
+// form's inputs fit inside it at the 80-column floor.
+func formSize(msg tea.WindowSizeMsg) tea.WindowSizeMsg {
+	msg.Width -= 8
+	return msg
+}
 
 func scenarioTarget(i int) string {
 	return fmt.Sprintf("scenario:%d", i)
