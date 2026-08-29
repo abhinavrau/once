@@ -1,67 +1,95 @@
 # Creating the Tailscale OAuth client for `once tailscale enable`
 
-Status: done (rewritten for ADR-0006; the previous revision described the
-ADR-0004 bootstrap flow, whose central claim proved wrong - see "Scope
-attenuation" below)
+Status: done (rewritten for ADR-0015's Tailnet Topology seam - the scopes and
+the policy snippet now differ per topology. The previous revision described
+only the Services topology; the revision before that described the ADR-0004
+bootstrap flow, whose central claim proved wrong - see "Scope attenuation".)
 
-Once uses one OAuth client, which you create directly in the Tailscale admin
-console (ADR-0006, `docs/adr/0006-direct-minimal-scope-tailscale-credential.md`):
-a tagged client with write access to Auth Keys, Devices Core, and Services.
-It is the credential Docktail and the `once-tailscale` sidecar run with, and
+Once uses one OAuth client, created directly in the Tailscale admin console
+(ADR-0006, `docs/adr/0006-direct-minimal-scope-tailscale-credential.md`): a
+tagged client that is the credential the topology's provider runs with, and
 the most powerful Tailscale credential that ever exists in this design.
 
-## What the code needs
+Which scopes it needs depends on the Tailnet Topology (ADR-0015,
+`docs/adr/0015-tailnet-topology-seam-nodes-default.md`):
 
-The enable flow (`internal/command/tailscale.go`) takes:
+| Topology | `--topology` | Provider | Console scopes (all **Write**) | API identifiers |
+| --- | --- | --- | --- | --- |
+| Nodes (default) | `nodes` | TSDProxy, one tailnet node per app | Keys > Auth Keys, Devices > Core | `auth_keys`, `devices:core` |
+| Services | `services` | Docktail, one shared node advertising a Service per app | Keys > Auth Keys, Devices > Core, Services | `auth_keys`, `devices:core`, `services` |
+
+Both are tagged clients carrying your tag (default `tag:once`). The scope
+lists are not prose in this doc alone - they are `TopologyFacts.OAuthScopes`
+in `internal/docker/tailscale_nodes.go` and
+`internal/docker/tailscale_services.go`, which is what the CLI help and the
+enable form render.
+
+A fresh `once tailscale enable` with no `--topology` resolves to **nodes**; an
+already-enabled install keeps its stored topology. Switching topology later
+means a new policy snippet and (for nodes -> services) a new credential with
+the extra `services` scope, since scopes are fixed at creation.
+
+## What the code needs, either topology
 
 ```sh
 read -rs ONCE_TAILSCALE_CLIENT_SECRET && export ONCE_TAILSCALE_CLIENT_SECRET
-once tailscale enable --client-id <id> [--tag tag:once]
+once tailscale enable --client-id <id> [--topology nodes|services] [--tag tag:once]
 ```
 
 The secret arrives only in the environment; `--client-secret` is refused
-(ADR-0013). Reading it with `read -rs` keeps it out of shell history too, which
-an inline `VAR=... once ...` would not.
-
-or the same three values in the TUI form ("Client ID", "Client Secret", "Tag" -
-`internal/ui/tailscale_form.go`). `--tag` defaults to `tag:once`; bare names
-get `tag:` prepended and comma-separated lists are accepted
-(`internal/docker/tailscale.go` `normalizeTag`).
+(ADR-0013). `read -rs` keeps it out of shell history too, which an inline
+`VAR=... once ...` would not. The TUI form takes the same values ("Client ID",
+"Client Secret", "Tag" - `internal/ui/tailscale_form.go`). `--tag` defaults to
+`tag:once`; bare names get `tag:` prepended and comma-separated lists are
+accepted (`internal/docker/tailscale.go` `normalizeTag`).
 
 Before booting any container, Once probes the credential with the same request
-shapes Docktail and the sidecar use at runtime
-(`internal/docker/tailscale_validate.go`): a token exchange at
-`POST /api/v2/oauth/token`, mint-and-delete of a tagged auth key
-(`POST`/`DELETE /api/v2/tailnet/-/keys`), then create, inspect, and delete a
-throwaway Service `svc:once-probe`
-(`GET`/`PUT`/`DELETE /api/v2/tailnet/-/services/{name}` and `GET .../devices`).
-Each failure mode gets its own actionable error; a missing-tag failure carries
+shapes the topology's provider uses at runtime (below). Each failure mode gets
+its own actionable error; a missing-tag failure carries
 `docker.ErrTagNotInPolicy` and the CLI prints the policy snippet after it.
 
-The hidden headscale control seam (integration tests) uses a pre-minted auth
-key and skips OAuth entirely.
+The hidden headscale control seam (integration tests) skips OAuth entirely.
 
-## Step 1: merge the policy snippet
+## Step 1: merge the policy snippet - per topology
 
-A tag must be defined in the `tagOwners` section of the tailnet policy file
-before anything can carry it ([kb/1068](https://tailscale.com/kb/1068/tags)),
-and the admin console's credential form only offers tags that already exist -
-so the policy edit must come first.
+A tag must exist in the `tagOwners` section of the tailnet policy before
+anything can carry it ([kb/1068](https://tailscale.com/kb/1068/tags)), and the
+admin console's credential form only offers tags that already exist - so the
+policy edit comes first, either topology.
 
-Run `once tailscale policy` (add `--tag` if you use a custom tag) and merge the
-printed HuJSON snippet into <https://login.tailscale.com/admin/acls>. It covers
-the four sections Once needs (`internal/docker/tailscale_policy.go`
-`PolicySnippet`):
+```sh
+once tailscale policy                        # Nodes, the default
+once tailscale policy --topology services    # Services
+```
 
-- `tagOwners` - defines the tag (owner: `autogroup:admin`).
-- `autoApprovers.services` - so new app Services don't sit pending approval
-  ([kb/1552](https://tailscale.com/kb/1552/tailscale-services)).
-- a grant from `autogroup:member` to the tag on port 443 - Services access.
+`policy` and `enable` default to the same topology (nodes), so a fresh install
+needs no `--topology` on either. On a Services install, pass
+`--topology services` or you will merge the wrong snippet.
+
+Merge the printed HuJSON into <https://login.tailscale.com/admin/acls>, or
+commit it to the policy repo if the policy is GitOps-managed.
+
+**Nodes** (`NodesPolicySnippet`) - two sections:
+
+- `tagOwners` - defines the tag (owner: `autogroup:admin`), so the client may
+  create devices with it.
 - the `funnel` nodeAttr - for `once tailscale funnel enable`
   ([kb/1223](https://tailscale.com/kb/1223/funnel)).
 
-If the policy is managed via GitOps, commit the snippet to the policy repo
-instead of pasting it into the console editor.
+No `autoApprovers.services` and no grant: a tagged node is an ordinary tailnet
+device, reachable under the tailnet's existing default/ACL rules like any
+other, with no approval or access-grant step of its own.
+
+**Services** (`PolicySnippet`) - the same two, plus two more:
+
+- `autoApprovers.services` - so new app Services don't sit pending approval
+  ([kb/1552](https://tailscale.com/kb/1552/tailscale-services)).
+- a grant from `autogroup:member` to the tag on port 443 - Services access.
+  The dst is the tag, not `svc:` names, so one grant covers apps deployed
+  later.
+
+Both live in `internal/docker/tailscale_policy.go`; the enable-time credential
+probe is the enforcement.
 
 ## Step 2: create the credential in the admin console
 
@@ -74,11 +102,13 @@ scopes and the tag ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)).
    page - [kb/1215](https://tailscale.com/kb/1215/oauth-clients),
    [kb/1623](https://tailscale.com/kb/1623/trust-credentials)).
 2. Select the **Credential** button, then **OAuth**.
-3. Select **Write** on exactly these scopes (console label -> API identifier,
-   per the [trust-credentials reference](https://tailscale.com/docs/reference/trust-credentials)):
-   - **Keys > Auth Keys** -> `auth_keys`
-   - **Devices > Core** -> `devices:core`
-   - **Services** -> `services`
+3. Select **Write** on exactly the scopes for your topology (console label ->
+   API identifier, per the
+   [trust-credentials reference](https://tailscale.com/docs/reference/trust-credentials)):
+   - **Keys > Auth Keys** -> `auth_keys` (both topologies)
+   - **Devices > Core** -> `devices:core` (both topologies)
+   - **Services** -> `services` (**Services topology only**)
+
    The `auth_keys` and `devices:core` write scopes force a tag selection
    ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)); pick your tag
    (default `tag:once`). Optionally add a description like `once`.
@@ -87,6 +117,7 @@ scopes and the tag ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)).
    - **Client secret**, of the form `tskey-client-k123456CNTRL-abcdef...`
      (example format from the
      [Kubernetes operator guide](https://tailscale.com/docs/kubernetes-operator/install-operator)).
+
    The secret is shown only once - "After you close the Credential created
    page, you won't be able to copy the secret again" - and it is case-sensitive
    ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)).
@@ -95,60 +126,103 @@ scopes and the tag ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)).
 
 ```sh
 read -rs ONCE_TAILSCALE_CLIENT_SECRET && export ONCE_TAILSCALE_CLIENT_SECRET
-once tailscale enable --client-id <id>
+once tailscale enable --client-id <id>              # nodes, the default
+once tailscale enable --client-id <id> --topology services
 ```
 
 The probe runs first; on success the credential is stored in the `once`
-container label and the Docktail topology boots.
+container label and the topology's containers boot.
 
-## What each scope is for
+## What each scope is for, and what the probe does with it
 
 Per the endpoint annotations in the
-[OpenAPI spec](https://api.tailscale.com/api/v2?outputOpenapiSchema=true):
+[OpenAPI spec](https://api.tailscale.com/api/v2?outputOpenapiSchema=true).
+Both topologies first exchange the credential for a token at
+`POST /api/v2/oauth/token` (`internal/docker/tailscale_api.go`); rejected
+credentials surface there, before any key is minted.
 
-- `auth_keys` - mint the sidecar's tagged, preauthorized auth key
-  (`POST /tailnet/{t}/keys`). Keys minted by a tagged OAuth client "must have
-  those exact tags, or tags owned by the credential's tags"
+### Nodes (`validateNodesCredentials`, `internal/docker/tailscale_nodes.go`)
+
+- `auth_keys` - TSDProxy mints one auth key per app node at runtime. The probe
+  mints and deletes a key with TSDProxy's exact shape: non-reusable (one key
+  per node), non-ephemeral (app nodes keep tsnet state on the data volume),
+  preauthorized, tagged (`POST`/`DELETE /tailnet/-/keys`). Keys minted by a
+  tagged OAuth client "must have those exact tags, or tags owned by the
+  credential's tags"
   ([trust-credentials reference](https://tailscale.com/docs/reference/trust-credentials)),
   which is why the credential carries the same tag Once mints keys for.
-- `services` - create/update/delete Tailscale Service definitions
-  (`PUT`/`DELETE /tailnet/{t}/services/{name}`), one per exposed app.
-- `devices:core` - required together with `services` to list which devices
-  host a Service (`GET /tailnet/{t}/services/{name}/devices` is annotated
+- `devices:core` - `GET /tailnet/-/devices`, used by the deploy-time
+  host-collision check (so TSDProxy never falls back to a `-1` alias) and by
+  the best-effort deletion of per-app devices on teardown.
+
+Nodes needs no `services` scope: it creates no Tailscale Services.
+
+### Services (`validateOAuthCredentials`, `internal/docker/tailscale_services.go`)
+
+- `auth_keys` - mint the shared sidecar's tagged, preauthorized, **reusable**
+  key (`POST`/`DELETE /tailnet/-/keys`).
+- `services` - create/update/delete Service definitions
+  (`GET`/`PUT`/`DELETE /tailnet/-/services/{name}`), one per exposed app. The
+  probe creates, inspects, and deletes a throwaway `svc:once-probe` Service
+  with a payload byte-compatible with Docktail's own.
+- `devices:core` - required *together with* `services` to list which devices
+  host a Service (`GET /tailnet/-/services/{name}/devices` is annotated
   "OAuth Scope: `services`, `devices:core`").
+
+#### Services + `--mode host`
+
+Host mode (ADR-0007) needs no extra OAuth scope, but adds four preflight
+checks on top of the credential probe (`validateHostModePreflight`):
+a running host `tailscaled`, the host node carrying your tag
+(`sudo tailscale up --advertise-tags=tag:once`), host daemon v1.86.0+, and the
+host node present in the credential's tailnet - that last one reading the
+devices list, so `devices:core` covers it. Sidecar mode is the default and
+needs none of this.
 
 ## Scope attenuation (why the bootstrap design died)
 
-The previous revision of this doc, following ADR-0004, claimed a single
-`oauth_keys`-scoped credential could mint the client above, because the
-create-key endpoint's description says the returned key "wields the
-capabilities or scopes specified in the request". In practice the API
-attenuates: an OAuth client creating another OAuth client cannot grant scopes
-it does not itself hold, and rejects with HTTP 403 `actor cannot set scopes:
-[...]` (observed live on 2026-07-19 against `POST /api/v2/tailnet/-/keys`;
-consistent with kb/1215's rule that non-admin creators are limited to "the
-scopes and tags for which they have permissions"). A bootstrap credential
-would need every scope it delegates, making it strictly more powerful than
-the credential it produces - so ADR-0006 drops the indirection.
+An earlier revision, following ADR-0004, claimed a single `oauth_keys`-scoped
+credential could mint the client above, because the create-key endpoint's
+description says the returned key "wields the capabilities or scopes specified
+in the request". In practice the API attenuates: an OAuth client creating
+another OAuth client cannot grant scopes it does not itself hold, and rejects
+with HTTP 403 `actor cannot set scopes: [...]` (observed live on 2026-07-19
+against `POST /api/v2/tailnet/-/keys`; consistent with kb/1215's rule that
+non-admin creators are limited to "the scopes and tags for which they have
+permissions"). A bootstrap credential would need every scope it delegates,
+making it strictly more powerful than the credential it produces - so ADR-0006
+drops the indirection.
 
 ## Gotchas
 
+- **`policy` does not know your install.** It reads no Docker state, so it
+  cannot see a stored topology; it always prints the default (nodes) unless you
+  pass `--topology services`. On a Services install, pass it.
 - **Copy the secret immediately.** It is displayed exactly once on the
   Credential created page ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)).
-- **Scopes are fixed at creation.** To change scopes you create a new
-  credential and revoke the old one on the Trust credentials page
+- **Scopes are fixed at creation.** To change scopes - including moving a nodes
+  install to services, which adds `services` - create a new credential and
+  revoke the old one on the Trust credentials page
   ([kb/1623](https://tailscale.com/kb/1623/trust-credentials)).
 - **Policy first, credential second.** The console's tag picker only offers
   tags already in `tagOwners`; if your tag is missing, merge the snippet from
   `once tailscale policy` first.
-- **Interrupted probes.** A leftover `svc:once-probe` Service is recognized
-  (by its comment) and reused by the next probe, so it never blocks a re-run.
-- **Plan/version floor.** Tailscale Services is GA on all plans with a limit of
-  10 Services per tailnet
+- **Interrupted probes (Services).** A leftover `svc:once-probe` Service is
+  recognized by its comment and reused by the next probe, so it never blocks a
+  re-run. A different Service already holding that name fails the probe with a
+  named error.
+- **Plan/version floor (Services only).** Tailscale Services is GA on all plans
+  with a limit of 10 Services per tailnet
   ([services-ga blog](https://tailscale.com/blog/services-ga)); Service hosts
   need Tailscale v1.86.0+ and a tag-based identity
   ([kb/1552](https://tailscale.com/kb/1552/tailscale-services)) - Once's pinned
-  sidecar image and minted tagged key satisfy both.
+  sidecar image and minted tagged key satisfy both. Nodes has no such ceiling:
+  each app is an ordinary device, subject only to the tailnet's device limit.
+- **A pre-ADR-0015 install has no stored topology** and reports
+  `docker.ErrOlderOnceSetup`; re-running `once tailscale enable` rebuilds it as
+  nodes unless `--topology services` is given. An existing Services install's
+  credential already covers nodes' scopes (nodes' are a subset), so no new
+  credential is needed in that direction.
 
 ## Sources
 
@@ -162,7 +236,7 @@ the credential it produces - so ADR-0006 drops the indirection.
   and descriptions, minted-key tag rule, companion-scope notes.
 - <https://api.tailscale.com/api/v2?outputOpenapiSchema=true> - per-endpoint
   scope annotations: `services` + `devices:core` on the Service device listing,
-  `auth_keys` on key minting.
+  `auth_keys` on key minting, `devices:core` on the tailnet devices list.
 - Live API behavior, 2026-07-19: `POST /api/v2/tailnet/-/keys` with
   `keyType: client` returns HTTP 403 `actor cannot set scopes: [...]` when the
   requested scopes exceed the creating client's own.
@@ -175,7 +249,12 @@ the credential it produces - so ADR-0006 drops the indirection.
   v1.86.0+, `autoApprovers.services`, grants for Services.
 - <https://tailscale.com/kb/1223/funnel> - `funnel` nodeAttr prerequisite.
 - <https://tailscale.com/blog/services-ga> - GA on all plans, 10-Service limit.
-- `docs/adr/0006-direct-minimal-scope-tailscale-credential.md`,
-  `docs/adr/0002-docktail-tailscale-services.md`.
-- `internal/command/tailscale.go`, `internal/docker/tailscale_validate.go`,
+- ADRs: `0015-tailnet-topology-seam-nodes-default.md`,
+  `0006-direct-minimal-scope-tailscale-credential.md`,
+  `0013-runtime-credential-from-the-environment.md`,
+  `0007-sidecar-default-tailscale-mode.md`, `0002-docktail-tailscale-services.md`.
+- Code: `internal/command/tailscale.go`, `internal/docker/tailscale_topology.go`
+  (`TopologyFacts`), `internal/docker/tailscale_nodes.go`
+  (`validateNodesCredentials`), `internal/docker/tailscale_services.go`
+  (`validateOAuthCredentials`, `validateHostModePreflight`),
   `internal/docker/tailscale_policy.go`, `internal/ui/tailscale_form.go`.

@@ -7,6 +7,14 @@ setup command line below is now
 `ONCE_TAILSCALE_CLIENT_SECRET=... once tailscale enable --client-id ...`, and
 `--client-secret` is refused.
 
+Amended by [ADR-0015](0015-tailnet-topology-seam-nodes-default.md): the three
+scopes below are the Services topology's. A fresh enable now defaults to the
+Nodes topology, whose credential needs only `auth_keys` and `devices:core`
+(there are no Services to create), and whose policy snippet comes from
+`once tailscale policy --topology nodes`. The decision this ADR records - the
+user creates one tagged runtime credential directly, and the enable-time probe
+is the enforcement - is unchanged; only the scope list varies by topology.
+
 ADR-0004's premise was that a single `oauth_keys`-scoped bootstrap credential
 could mint the narrower clients Once needs, so the user's admin-console work
 shrank to one scope checkbox and the powerful credential was never persisted.
