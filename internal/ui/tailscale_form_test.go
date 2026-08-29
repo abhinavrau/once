@@ -70,6 +70,20 @@ func TestTailscaleForm_CtrlPCopiesTheSelectedTopologysSnippet(t *testing.T) {
 	assert.Equal(t, docker.PolicySnippet("tag:once"), fmt.Sprint(cmd()))
 }
 
+func TestTailscaleForm_ARefusedEnableTurnsCtrlPIntoTheMergedPolicyCopy(t *testing.T) {
+	m := NewTailscaleForm(newTestNamespace())
+	merged := "{\n\t// the user's policy plus Once's sections\n}"
+	m.err = &docker.PolicyRefusedError{Review: docker.PolicyReview{Merged: merged, Added: []string{"grants"}}}
+
+	_, cmd := m.Update(keyPressMsg("ctrl+p"))
+	require.NotNil(t, cmd)
+	assert.Equal(t, merged, fmt.Sprint(cmd()), "the fix for a refusal is the Merged Policy, not the static snippet")
+
+	view := ansi.Strip(m.setupView())
+	assert.Contains(t, view, "nothing was installed")
+	assert.Contains(t, view, "ctrl+p copies the Merged Policy")
+}
+
 func TestTailscaleForm_EnabledFormShowsStoredSettingsWithBothActions(t *testing.T) {
 	m := newTailscaleForm(newTestNamespace(), true, docker.TailscaleSettings{
 		ClientID:     "K123456CNTRL",

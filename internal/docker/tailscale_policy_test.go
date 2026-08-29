@@ -210,6 +210,67 @@ func TestReviewReportsAMergedPolicyFailingValidation(t *testing.T) {
 	require.ErrorContains(t, err, "invalid policy")
 }
 
+func TestPolicyOutcomesProceedWarnAndRefuse(t *testing.T) {
+	nothingToAdd := PolicyReview{}
+	assert.False(t, nothingToAdd.blocksInstall())
+	assert.Empty(t, nothingToAdd.warning())
+
+	funnelOnly := PolicyReview{Added: []string{policySectionNodeAttrs}}
+	assert.False(t, funnelOnly.blocksInstall(), "a missing funnel nodeAttr breaks only Funnel, so enable proceeds")
+	assert.Contains(t, funnelOnly.warning(), "only Tailscale Funnel breaks", "the warning must name Funnel as the only casualty")
+
+	missingGrant := PolicyReview{Added: []string{policySectionGrants, policySectionNodeAttrs}}
+	assert.True(t, missingGrant.blocksInstall())
+	assert.Empty(t, missingGrant.warning(), "a refusal is not also a warning")
+
+	missingApprovers := PolicyReview{Added: []string{policySectionApprovers}}
+	assert.True(t, missingApprovers.blocksInstall())
+
+	fallback := PolicyReview{Fallback: "the OAuth client is missing the policy_file:read scope"}
+	assert.False(t, fallback.blocksInstall())
+	assert.Contains(t, fallback.warning(), "policy_file:read")
+	assert.Contains(t, fallback.warning(), "once tailscale policy", "the degraded path must point at the static snippet")
+}
+
+func TestPolicyRefusedErrorNamesEachSectionAndWhatItBreaks(t *testing.T) {
+	err := &PolicyRefusedError{Review: PolicyReview{Added: []string{policySectionGrants, policySectionApprovers, policySectionNodeAttrs}}}
+
+	msg := err.Error()
+	assert.Contains(t, msg, "443 grant")
+	assert.Contains(t, msg, "cannot reach the apps on port 443")
+	assert.Contains(t, msg, "autoApprovers.services")
+	assert.Contains(t, msg, "manual approval")
+	assert.Contains(t, msg, "nothing was installed")
+	assert.Contains(t, msg, "apply the Merged Policy, then re-run")
+
+	grantOnly := &PolicyRefusedError{Review: PolicyReview{Added: []string{policySectionGrants}}}
+	assert.NotContains(t, grantOnly.Error(), "autoApprovers", "only what is actually missing gets named")
+}
+
+func TestRequireUnchangedPolicyComparesTheCapturedETag(t *testing.T) {
+	etagReply := func(etag string) *fakeTailscaleAPI {
+		api := newFakeTailscaleAPI(t)
+		header := http.Header{}
+		header.Set("ETag", etag)
+		api.replyWithHeaders(http.MethodGet, tailnetPolicyPath, http.StatusOK, "{}", header)
+		return api
+	}
+
+	assert.NoError(t, requireUnchangedPolicy(context.Background(), etagReply(`"v1"`), `"v1"`))
+
+	err := requireUnchangedPolicy(context.Background(), etagReply(`"v2"`), `"v1"`)
+	require.ErrorIs(t, err, ErrPolicyChangedDuringEnable)
+	assert.Contains(t, err.Error(), "nothing was installed")
+}
+
+func TestRequireUnchangedPolicyProceedsWhenTheScopeWasRevokedMidFlight(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, tailnetPolicyPath, http.StatusForbidden, `{"message":"insufficient permissions"}`)
+
+	assert.NoError(t, requireUnchangedPolicy(context.Background(), api, `"v1"`),
+		"the scope is an enhancement, never a precondition - no comparison, no stop")
+}
+
 // assertKeepsEveryLine asserts every line of the original policy survives in
 // the merged one, byte for byte and in order - the merge only adds.
 func assertKeepsEveryLine(t *testing.T, original, merged string) {

@@ -191,6 +191,10 @@ func (t *tailscaleCommand) enable(ctx context.Context, ns *docker.Namespace, cmd
 			printPolicySnippet(facts, t.tag)
 		}
 	}
+	var refused *docker.PolicyRefusedError
+	if errors.As(err, &refused) {
+		printMergedPolicy(refused.Review)
+	}
 	if err != nil {
 		return err
 	}
@@ -401,6 +405,19 @@ func printWarnings(warnings []string) {
 	for _, w := range warnings {
 		fmt.Println("Warning:", w)
 	}
+}
+
+// printMergedPolicy hands a refused enable its fix (ADR-0017): the Merged
+// Policy - the user's own tailnet policy plus the sections it is missing - to
+// apply in the policy editor before re-running. Printing is the whole
+// interaction: nothing prompts, so a script and a terminal behave the same.
+func printMergedPolicy(review docker.PolicyReview) {
+	fmt.Println()
+	fmt.Printf("Apply this Merged Policy - your tailnet policy plus the missing %s - at https://login.tailscale.com/admin/acls, then re-run `once tailscale enable`:\n",
+		strings.Join(review.Added, ", "))
+	fmt.Println()
+	fmt.Println(review.Merged)
+	fmt.Println()
 }
 
 func printPolicySnippet(facts docker.TopologyFacts, tag string) {

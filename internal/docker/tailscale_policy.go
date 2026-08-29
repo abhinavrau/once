@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -114,6 +115,35 @@ type PolicyReview struct {
 	Fallback string
 }
 
+// PolicyRefusedError is enable's refusal outcome (ADR-0017): the Tailnet
+// Policy is missing sections without which the install does not work, so
+// nothing was installed. It carries the review so each frontend can hand the
+// user the Merged Policy to apply before re-running - the CLI prints it, the
+// TUI copies it.
+type PolicyRefusedError struct {
+	Review PolicyReview
+}
+
+func (e *PolicyRefusedError) Error() string {
+	var sections, breaks []string
+	if slices.Contains(e.Review.Added, policySectionGrants) {
+		sections = append(sections, "the 443 grant")
+		breaks = append(breaks, "without the grant, tailnet members cannot reach the apps on port 443")
+	}
+	if slices.Contains(e.Review.Added, policySectionApprovers) {
+		sections = append(sections, policySectionApprovers)
+		breaks = append(breaks, "without autoApprovers.services, every Service waits for manual approval and enable times out")
+	}
+	return fmt.Sprintf("the tailnet policy is missing %s: %s; apply the Merged Policy, then re-run - nothing was installed",
+		strings.Join(sections, " and "), strings.Join(breaks, ", and "))
+}
+
+// ErrPolicyChangedDuringEnable is enable's stale outcome (ADR-0017): the
+// Tailnet Policy was edited between the merge and the install, so the
+// reviewed merge no longer describes it and installing on top would ignore
+// someone else's edit.
+var ErrPolicyChangedDuringEnable = errors.New("the tailnet policy was edited while enable was running, so it no longer matches the reviewed merge; nothing was installed - re-run `once tailscale enable` against the current policy")
+
 // reviewTailnetPolicy is the production merge behind `once tailscale enable`
 // (ADR-0017): read the Tailnet Policy, compute the Merged Policy for the
 // given tag and topology, and report which sections were added. A merged
@@ -143,7 +173,48 @@ func reviewTailnetPolicy(ctx context.Context, api tailscaleAPI, tag string, serv
 	return PolicyReview{Merged: merged, Added: added, ETag: etag}, nil
 }
 
+// Private
+
+// blocksInstall reports whether a missing section means the install does not
+// work: a missing 443 grant or autoApprovers.services refuses the enable,
+// because validation that cannot refuse is decoration (ADR-0017). A missing
+// funnel nodeAttr never blocks - it breaks only Funnel, which warning() names.
+func (r PolicyReview) blocksInstall() bool {
+	return slices.Contains(r.Added, policySectionGrants) || slices.Contains(r.Added, policySectionApprovers)
+}
+
+// warning is the one line a proceeding enable surfaces about the policy, or
+// "": the funnel nodeAttr warn (only Tailscale Funnel breaks, opt-in and
+// temporary, so enable proceeds), or the fallback's why when the policy could
+// not be read at all.
+func (r PolicyReview) warning() string {
+	switch {
+	case r.Fallback != "":
+		return r.Fallback + "; check the sections `once tailscale policy` prints by hand"
+	case !r.blocksInstall() && slices.Contains(r.Added, policySectionNodeAttrs):
+		return "the tailnet policy is missing the funnel nodeAttr; only Tailscale Funnel breaks without it - apply the nodeAttrs section from the Merged Policy before running `once tailscale funnel enable`"
+	}
+	return ""
+}
+
 // Helpers
+
+// requireUnchangedPolicy re-checks the ETag captured when the Merged Policy
+// was generated, immediately before install, so a policy edited by someone
+// else in between is reported rather than ignored (ADR-0017). A read that
+// newly degrades to the fallback (the scope was revoked mid-flight) has
+// nothing to compare and proceeds: the scope is an enhancement, never a
+// precondition.
+func requireUnchangedPolicy(ctx context.Context, api tailscaleAPI, etag string) error {
+	_, current, fallback, err := readTailnetPolicy(ctx, api)
+	if err != nil {
+		return err
+	}
+	if fallback == "" && current != etag {
+		return ErrPolicyChangedDuringEnable
+	}
+	return nil
+}
 
 // readTailnetPolicy fetches the Tailnet Policy as HuJSON - the Accept header
 // asks for the user's document verbatim, comments and all, not the API's JSON

@@ -90,8 +90,7 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 			return m, func() tea.Msg { return TailscaleFormCloseMsg{} }
 		}
 		if key.Matches(msg, tailscaleCopyKey) {
-			facts := tailscaleFactsFor(selectedTailscaleTopology(m.form))
-			return m, tea.SetClipboard(facts.PolicySnippet(m.form.TextField("tag").Value()))
+			return m, tea.SetClipboard(m.copyPayload())
 		}
 		m.err = nil
 		m.warnings = nil
@@ -170,6 +169,18 @@ func (m TailscaleForm) View() string {
 
 // Private
 
+// copyPayload is what ctrl+p carries: after a refused enable the fix is the
+// Merged Policy, so that is what the copy control holds; the selected
+// topology's static snippet is the payload in every other state.
+func (m TailscaleForm) copyPayload() string {
+	var refused *docker.PolicyRefusedError
+	if errors.As(m.err, &refused) {
+		return refused.Review.Merged
+	}
+	facts := tailscaleFactsFor(selectedTailscaleTopology(m.form))
+	return facts.PolicySnippet(m.form.TextField("tag").Value())
+}
+
 // startRunning switches to the progress view and runs cmd in the background.
 func (m TailscaleForm) startRunning(cmd tea.Cmd) (Component, tea.Cmd) {
 	m.running = true
@@ -208,7 +219,11 @@ func (m TailscaleForm) setupView() string {
 	var parts []string
 	if m.err != nil {
 		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Error).Width(tailscaleFormTextWidth).Render(docker.ErrorMessage(m.err)))
-		if errors.Is(m.err, docker.ErrTagNotInPolicy) {
+		var refused *docker.PolicyRefusedError
+		switch {
+		case errors.As(m.err, &refused):
+			parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Muted).Render("ctrl+p copies the Merged Policy - apply it, then enable again."))
+		case errors.Is(m.err, docker.ErrTagNotInPolicy):
 			parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Muted).Render("ctrl+p copies the required policy snippet."))
 		}
 		parts = append(parts, "")
