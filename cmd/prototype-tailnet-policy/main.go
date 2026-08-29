@@ -74,6 +74,7 @@ type model struct {
 	mergedDoc     string
 	addedSections []string
 	addedLines    int
+	addedAt       []int // diff line indices of the additions, for the scrollbar markers
 	diffErr       error
 }
 
@@ -290,14 +291,12 @@ func (m model) enterDiff() model {
 	addedStyle := lipgloss.NewStyle().Foreground(ui.Colors.Success)
 	lines := diffLines(original, merged)
 	m.addedLines = 0
-	firstAdded := 0
+	m.addedAt = nil
 	rendered := make([]string, len(lines))
 	for i, line := range lines {
 		text := strings.ReplaceAll(line.text, "\t", "    ")
 		if line.added {
-			if m.addedLines == 0 {
-				firstAdded = i
-			}
+			m.addedAt = append(m.addedAt, i)
 			m.addedLines++
 			rendered[i] = addedStyle.Render("+ " + text)
 		} else {
@@ -310,12 +309,16 @@ func (m model) enterDiff() model {
 	m.sizeViewport()
 	// Open scrolled to the first addition, with a little context above it -
 	// on a long policy the changes are usually near the bottom.
-	m.vp.SetYOffset(max(0, firstAdded-3))
+	if len(m.addedAt) > 0 {
+		m.vp.SetYOffset(max(0, m.addedAt[0]-3))
+	}
 	return m
 }
 
 // scrollbar draws a thumb-on-track bar for the diff viewport, or nothing when
-// the whole diff already fits.
+// the whole diff already fits. Added lines project onto the track as green
+// markers, like an editor's overview ruler, so they are findable from
+// anywhere in a long policy.
 func (m model) scrollbar() string {
 	total, height := m.vp.TotalLineCount(), m.vp.Height()
 	if total <= height {
@@ -324,13 +327,26 @@ func (m model) scrollbar() string {
 	thumb := max(1, height*height/total)
 	pos := int(float64(height-thumb)*m.vp.ScrollPercent() + 0.5)
 
+	markers := make(map[int]bool, len(m.addedAt))
+	for _, idx := range m.addedAt {
+		markers[min(idx*height/total, height-1)] = true
+	}
+
 	track := muted("│")
 	thumbCell := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Render("┃")
+	markerCell := lipgloss.NewStyle().Foreground(ui.Colors.Success).Render("▐")
+	markerThumbCell := lipgloss.NewStyle().Foreground(ui.Colors.Success).Render("┃")
 	cells := make([]string, height)
 	for i := range cells {
-		if i >= pos && i < pos+thumb {
+		inThumb := i >= pos && i < pos+thumb
+		switch {
+		case markers[i] && inThumb:
+			cells[i] = markerThumbCell
+		case markers[i]:
+			cells[i] = markerCell
+		case inThumb:
 			cells[i] = thumbCell
-		} else {
+		default:
 			cells[i] = track
 		}
 	}
