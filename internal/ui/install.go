@@ -67,6 +67,11 @@ type Install struct {
 	// opened from the participation checkbox: it opens once, not on every
 	// toggle, so a user who declines to configure a repo is not trapped.
 	backupsOffered bool
+	// pendingSubmit holds a submitted install that detoured into the inline
+	// Tailscale enable overlay. A successful enable continues it - the user
+	// already pressed the button; dropping it would read as a silent failure.
+	// A dismissed or failed enable clears it and returns to the form.
+	pendingSubmit *InstallFormSubmitMsg
 }
 
 func NewInstall(ns *docker.Namespace, imageRef string) Install {
@@ -135,11 +140,21 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 
 	if m.overlay != nil {
 		switch msg.(type) {
-		case TailscaleFormCloseMsg, BackupsFormCloseMsg:
+		case TailscaleFormCloseMsg:
 			m.overlay = nil
+			enabled := m.tailscaleEnabled()
 			if m.state == installStateHostname {
-				m.hostnameForm.SetTailscaleEnabled(m.tailscaleEnabled())
+				m.hostnameForm.SetTailscaleEnabled(enabled)
 			}
+			if pending := m.pendingSubmit; pending != nil {
+				m.pendingSubmit = nil
+				if enabled {
+					return m.startInstall(*pending)
+				}
+			}
+			return m, nil
+		case BackupsFormCloseMsg:
+			m.overlay = nil
 			return m, nil
 		}
 		var overlayCmd tea.Cmd
@@ -262,20 +277,14 @@ func (m Install) Update(msg tea.Msg) (Component, tea.Cmd) {
 
 	case InstallFormSubmitMsg:
 		// Tailnet exposure before Tailscale is enabled: offer the enable
-		// overlay inline instead of bouncing the user to the CLI. Closing it
-		// returns to the filled-in form.
+		// overlay inline instead of bouncing the user to the CLI. The submit
+		// is kept: a successful enable continues it, a dismissal returns to
+		// the filled-in form.
 		if msg.Exposure == docker.ExposureTailnet && !m.tailscaleEnabled() {
+			m.pendingSubmit = &msg
 			return m, m.openOverlay(NewTailscaleForm(m.namespace))
 		}
-		host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), msg.App.Profile.AppName(msg.App.ImageRef))
-		if err != nil {
-			m.err = err
-			return m, nil
-		}
-		m.state = installStateActivity
-		m.activity = NewInstallActivity(m.namespace, msg.App, host, msg.Exposure, msg.AutoBackup)
-		m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		return m, m.activity.Init()
+		return m.startInstall(msg)
 
 	case InstallActivityFailedMsg:
 		_ = m.namespace.Refresh(context.Background())
@@ -455,6 +464,20 @@ func (m Install) imageErrorState() installState {
 		return installStateImageForm
 	}
 	return installStateAppList
+}
+
+// startInstall runs a submitted install: resolve the host, then hand off to
+// the activity screen, whose deploy spine is the same one the CLI uses.
+func (m Install) startInstall(msg InstallFormSubmitMsg) (Component, tea.Cmd) {
+	host, err := docker.ResolveHost(msg.Exposure, strings.TrimSpace(msg.Hostname), msg.App.Profile.AppName(msg.App.ImageRef))
+	if err != nil {
+		m.err = err
+		return m, nil
+	}
+	m.state = installStateActivity
+	m.activity = NewInstallActivity(m.namespace, msg.App, host, msg.Exposure, msg.AutoBackup)
+	m.activity.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return m, m.activity.Init()
 }
 
 func (m Install) tailscaleEnabled() bool {
