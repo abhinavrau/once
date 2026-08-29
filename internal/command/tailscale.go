@@ -35,9 +35,10 @@ type tailscaleCommand struct {
 	// resolving and validation; this command only carries the flag through.
 	topology string
 	// policyTopology is separate from topology: `policy` prints a snippet with
-	// no install to read a stored topology from, so it needs its own default
-	// (Services, matching this flag's pre-ticket-05 behavior) rather than an
-	// empty value with nothing to resolve against.
+	// no install to read a stored topology from, so it needs a real default
+	// rather than an empty value with nothing to resolve against. It matches
+	// what a fresh enable resolves to (nodes): `policy` is step one of the
+	// enable flow, so whoever runs it is by definition not enabled yet.
 	policyTopology string
 	json           bool
 	duration       time.Duration
@@ -99,8 +100,8 @@ probed before anything boots.`,
 		RunE:  func(cmd *cobra.Command, args []string) error { return t.policy() },
 	}
 	policy.Flags().StringVar(&t.tag, "tag", nodesFacts.DefaultSettings.Tag, "Tailscale tag the policy sections are built for")
-	policy.Flags().StringVar(&t.policyTopology, "topology", docker.TailnetTopologyServices, fmt.Sprintf(
-		"tailnet topology to print the policy snippet for: %s or %s", docker.TailnetTopologyServices, docker.TailnetTopologyNodes))
+	policy.Flags().StringVar(&t.policyTopology, "topology", docker.TailnetTopologyNodes, fmt.Sprintf(
+		"tailnet topology to print the policy snippet for: %s or %s", docker.TailnetTopologyNodes, docker.TailnetTopologyServices))
 
 	disable := &cobra.Command{
 		Use:   "disable",

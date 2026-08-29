@@ -112,6 +112,19 @@ func TestPolicyPrintsTheRequestedTopologysSnippet(t *testing.T) {
 	assert.Contains(t, output, docker.NodesPolicySnippet("tag:once"))
 }
 
+// policy is step one of the enable flow, so its caller is by definition not
+// enabled yet - the snippet it prints unasked must be the one a fresh enable
+// will need.
+func TestPolicyDefaultsToWhatAFreshEnableResolvesTo(t *testing.T) {
+	ts, _ := tailscaleSubcommand(t, "policy")
+
+	output := captureStdout(t, func() {
+		require.NoError(t, ts.policy())
+	})
+
+	assert.Contains(t, output, docker.NodesPolicySnippet("tag:once"))
+}
+
 func TestPolicyRejectsAnInvalidTopology(t *testing.T) {
 	ts, policy := tailscaleSubcommand(t, "policy")
 	require.NoError(t, policy.Flags().Set("topology", "both"))
