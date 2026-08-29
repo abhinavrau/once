@@ -200,24 +200,25 @@ func (m model) tagOwnersView() string {
 		policyBlock(tagOwnersLine),
 	)
 
-	after := muted("Paste it in the policy editor: "+policyEditorURL) + "\n" +
+	editorLink := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Underline(true).
+		Hyperlink(policyEditorURL).Render(policyEditorURL)
+	after := muted("Paste it in the policy editor: ") + editorLink + "\n" +
 		muted("Done when tag:once appears in the credential form's tag picker.")
 
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Declare the tag"),
 		lipgloss.JoinVertical(lipgloss.Left,
-			intro, "", shapes, "", m.copyControl(), after,
+			intro, shapes, m.copyControl(), after,
 			helpLine("ctrl+p copy", "enter continue", "s tag already exists - skip", "esc fixtures"))))
 }
 
 func (m model) copyControl() string {
+	style, label := ui.Styles.ButtonPrimary, "Copy to clipboard"
 	if m.copied {
-		return mouse.Mark(copyTarget,
-			lipgloss.NewStyle().Foreground(ui.Colors.Success).Render("[ copied ✓ ]"))
+		style = style.BorderForeground(ui.Colors.Success).Foreground(ui.Colors.Success)
+		label = "Copied ✓"
 	}
-	button := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Bold(true).
-		Render("[ copy the block ]")
-	return mouse.Mark(copyTarget, button)
+	return mouse.Mark(copyTarget, style.Render(label))
 }
 
 func (m model) nextView() string {
