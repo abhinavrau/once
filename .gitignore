@@ -1,5 +1,7 @@
 /bin
 /dist
+/backups
+/backups.staging
 coverage.out
 /.agents/skills/
 /.claude/skills/
