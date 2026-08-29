@@ -424,18 +424,15 @@ func (m model) tagOwnersView() string {
 		num.Render("3. Continue")+muted(" - done when tag:once is in the tag picker"),
 	)
 
+	copy := m.copyControl("Copy to clipboard")
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top, copy,
+		lipgloss.PlaceHorizontal(lipgloss.Width(steps)-lipgloss.Width(copy),
+			lipgloss.Right, m.continueButton()))
+
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Need tagOwners in Policy File"),
-		lipgloss.JoinVertical(lipgloss.Left, steps, "", m.actionButtons(),
+		lipgloss.JoinVertical(lipgloss.Left, steps, "", buttons,
 			helpLine("tab focus", "enter press", "ctrl+p copy", "s skip - tag exists", "esc fixtures"))))
-}
-
-// actionButtons is the Copy/Continue pair the tagOwners and diff screens
-// share, with the focused one highlighted.
-func (m model) actionButtons() string {
-	return lipgloss.JoinHorizontal(lipgloss.Center,
-		m.copyControl("Copy to clipboard"),
-		m.continueButton())
 }
 
 func (m model) continueButton() string {
@@ -470,7 +467,7 @@ func (m model) credentialView() string {
 
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Runtime Credential"),
-		lipgloss.JoinVertical(lipgloss.Left, steps, m.form.View())))
+		lipgloss.JoinVertical(lipgloss.Left, steps, rightAlignButtons(m.form.View()))))
 }
 
 func (m model) diffView() string {
@@ -595,6 +592,27 @@ func newCredentialForm() (ui.Form, *ui.RadioField) {
 func formSize(msg tea.WindowSizeMsg) tea.WindowSizeMsg {
 	msg.Width -= 8
 	return msg
+}
+
+// rightAlignButtons pushes a form's trailing button block to its right edge,
+// so Continue sits in the bottom-right corner on every screen.
+func rightAlignButtons(view string) string {
+	lines := strings.Split(view, "\n")
+	w := lipgloss.Width(view)
+	start := max(0, len(lines)-3)
+
+	// The form pads every line to its width; strip that, then shift the whole
+	// block by one shared amount so the rows stay aligned with each other.
+	block := 0
+	for i := start; i < len(lines); i++ {
+		lines[i] = strings.TrimRight(lines[i], " ")
+		block = max(block, lipgloss.Width(lines[i]))
+	}
+	pad := strings.Repeat(" ", max(0, w-block))
+	for i := start; i < len(lines); i++ {
+		lines[i] = pad + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func scenarioTarget(i int) string {
