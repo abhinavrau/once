@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,4 +21,52 @@ func TestTagOwnersShapesAgree(t *testing.T) {
 
 	_, err := hujson.Parse([]byte("{" + tagOwnersBlock + "}"))
 	require.NoError(t, err, "the paste payload must be valid HuJSON in context")
+}
+
+func TestMergeAddsMissingSections(t *testing.T) {
+	original, merged, added, err := mergePolicy(fixture(t, "Fresh tailnet").policy)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"grants", "autoApprovers.services", "nodeAttrs"}, added)
+
+	_, err = hujson.Parse([]byte(merged))
+	require.NoError(t, err)
+	assert.Contains(t, merged, "Default Tailnet Policy", "comments must survive the merge")
+	assert.Contains(t, merged, `"443"`)
+
+	nonAdded := 0
+	for _, line := range diffLines(original, merged) {
+		if !line.added {
+			nonAdded++
+		}
+	}
+	assert.Equal(t, len(strings.Split(original, "\n")), nonAdded, "the diff must show every original line as unchanged")
+}
+
+func TestMergeNothingToAdd(t *testing.T) {
+	original, merged, added, err := mergePolicy(fixture(t, "Everything already present").policy)
+	require.NoError(t, err)
+	assert.Empty(t, added)
+	assert.Equal(t, original, merged, "present sections are never duplicated")
+}
+
+func TestMergePartial(t *testing.T) {
+	_, merged, added, err := mergePolicy(fixture(t, "Missing funnel nodeAttr").policy)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"nodeAttrs"}, added)
+	assert.Equal(t, 1, strings.Count(merged, `"funnel"`))
+}
+
+func TestLargeFixtureScrolls(t *testing.T) {
+	policy := fixture(t, "Large GitOps policy").policy
+	assert.GreaterOrEqual(t, strings.Count(policy, "\n"), 200)
+}
+
+func fixture(t *testing.T, name string) scenario {
+	for _, s := range scenarios {
+		if s.name == name {
+			return s
+		}
+	}
+	t.Fatalf("no fixture named %q", name)
+	return scenario{}
 }

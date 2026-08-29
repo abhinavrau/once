@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -43,6 +44,7 @@ type screen int
 const (
 	screenScenario screen = iota
 	screenTagOwners
+	screenDiff
 	screenNext
 )
 
@@ -54,10 +56,17 @@ var (
 type model struct {
 	screen        screen
 	choice        int
-	focused       int // tagOwners screen: 0 = copy, 1 = continue
+	focused       int // 0 = copy, 1 = continue, on the screens that have both
 	copied        bool
 	skipped       bool
 	width, height int
+
+	// Diff screen state, built on entry by enterDiff.
+	vp            viewport.Model
+	mergedDoc     string
+	addedSections []string
+	addedLines    int
+	diffErr       error
 }
 
 func (m model) Init() tea.Cmd {
@@ -68,6 +77,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.sizeViewport()
+		return m, nil
+
+	case tea.MouseWheelMsg:
+		if m.screen == screenDiff {
+			m.vp, _ = m.vp.Update(msg)
+		}
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -90,6 +106,8 @@ func (m model) View() tea.View {
 		content = m.scenarioView()
 	case screenTagOwners:
 		content = m.tagOwnersView()
+	case screenDiff:
+		content = m.diffView()
 	case screenNext:
 		content = m.nextView()
 	}
@@ -124,21 +142,40 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.focused == 0 {
 				return m.copyTagOwners()
 			}
-			m.screen = screenNext
+			return m.enterDiff(), nil
 		case msg.String() == "s":
 			// The skip path: a tag that already exists needs no verification -
 			// a working tagged credential is itself the proof.
 			m.skipped = true
-			m.screen = screenNext
+			return m.enterDiff(), nil
 		case msg.String() == "esc":
 			m.screen = screenScenario
 		}
 		return m, nil
 
-	case screenNext:
-		if msg.String() == "esc" {
+	case screenDiff:
+		switch {
+		case key.Matches(msg, copyKey):
+			return m.copyMerged()
+		case msg.String() == "tab", msg.String() == "shift+tab", msg.String() == "left", msg.String() == "right":
+			m.focused = 1 - m.focused
+		case msg.String() == "enter":
+			if m.focused == 0 {
+				return m.copyMerged()
+			}
+			m.screen = screenNext
+		case msg.String() == "esc":
 			m.screen = screenTagOwners
 			m.skipped = false
+			m.focused = 0
+		default:
+			m.vp, _ = m.vp.Update(msg)
+		}
+		return m, nil
+
+	case screenNext:
+		if msg.String() == "esc" {
+			return m.enterDiff(), nil
 		}
 		return m, nil
 	}
@@ -160,6 +197,14 @@ func (m model) handleClick(target string) (tea.Model, tea.Cmd) {
 		case copyTarget:
 			return m.copyTagOwners()
 		case continueTarget:
+			return m.enterDiff(), nil
+		}
+	}
+	if m.screen == screenDiff {
+		switch target {
+		case copyTarget:
+			return m.copyMerged()
+		case continueTarget:
 			m.screen = screenNext
 			return m, nil
 		}
@@ -174,6 +219,53 @@ func (m model) handleClick(target string) (tea.Model, tea.Cmd) {
 func (m model) copyTagOwners() (tea.Model, tea.Cmd) {
 	m.copied = true
 	return m, tea.SetClipboard(tagOwnersBlock)
+}
+
+// copyMerged copies the whole Merged Policy document - the paste payload -
+// never the diff rendering.
+func (m model) copyMerged() (tea.Model, tea.Cmd) {
+	m.copied = true
+	return m, tea.SetClipboard(m.mergedDoc)
+}
+
+// enterDiff computes the Merged Policy for the selected fixture and rebuilds
+// the diff viewport.
+func (m model) enterDiff() model {
+	m.screen = screenDiff
+	m.focused = 0
+	m.copied = false
+
+	original, merged, added, err := mergePolicy(scenarios[m.choice].policy)
+	m.diffErr = err
+	if err != nil {
+		return m
+	}
+	m.mergedDoc = merged
+	m.addedSections = added
+
+	addedStyle := lipgloss.NewStyle().Foreground(ui.Colors.Success)
+	lines := diffLines(original, merged)
+	m.addedLines = 0
+	rendered := make([]string, len(lines))
+	for i, line := range lines {
+		text := strings.ReplaceAll(line.text, "\t", "    ")
+		if line.added {
+			m.addedLines++
+			rendered[i] = addedStyle.Render("+ " + text)
+		} else {
+			rendered[i] = muted("  " + text)
+		}
+	}
+
+	m.vp = viewport.New()
+	m.vp.SetContent(strings.Join(rendered, "\n"))
+	m.sizeViewport()
+	return m
+}
+
+func (m *model) sizeViewport() {
+	m.vp.SetWidth(74)
+	m.vp.SetHeight(max(3, m.height-12))
 }
 
 func (m model) scenarioView() string {
@@ -216,15 +308,43 @@ func (m model) tagOwnersView() string {
 		num.Render("3. Continue")+muted(" - done when tag:once is in the tag picker"),
 	)
 
-	buttons := lipgloss.JoinHorizontal(lipgloss.Center,
+	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
+		title("Need tagOwners in Policy File"),
+		lipgloss.JoinVertical(lipgloss.Left, steps, "", m.actionButtons(),
+			helpLine("tab focus", "enter press", "ctrl+p copy", "s skip - tag exists", "esc fixtures"))))
+}
+
+// actionButtons is the Copy/Continue pair the tagOwners and diff screens
+// share, with the focused one highlighted.
+func (m model) actionButtons() string {
+	return lipgloss.JoinHorizontal(lipgloss.Center,
 		m.copyControl(),
 		mouse.Mark(continueTarget,
 			ui.Styles.Focus(ui.Styles.Button, m.focused == 1).Render("Continue")))
+}
 
+func (m model) diffView() string {
+	if m.diffErr != nil {
+		return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
+			title("Review the Merged Policy"),
+			lipgloss.NewStyle().Foreground(ui.Colors.Error).Render("Could not merge: "+m.diffErr.Error()),
+			helpLine("esc back")))
+	}
+
+	summary := lipgloss.NewStyle().Foreground(ui.Colors.Success).Bold(true).
+		Render(fmt.Sprintf("+%d lines", m.addedLines)) +
+		muted(" · adds "+strings.Join(m.addedSections, ", "))
+	if len(m.addedSections) == 0 {
+		summary = lipgloss.NewStyle().Foreground(ui.Colors.Success).Bold(true).
+			Render("Nothing to add") + muted(" - every section is already in your policy")
+	}
+
+	scroll := fmt.Sprintf("↑/↓ scroll %.0f%%", m.vp.ScrollPercent()*100)
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
-		title("Need tagOwners in Policy File"),
-		lipgloss.JoinVertical(lipgloss.Left, steps, "", buttons,
-			helpLine("tab focus", "enter press", "ctrl+p copy", "s skip - tag exists", "esc fixtures"))))
+		title("Review the Merged Policy"),
+		lipgloss.JoinVertical(lipgloss.Left,
+			summary, "", m.vp.View(), "", m.actionButtons(),
+			helpLine(scroll, "tab focus", "enter press", "ctrl+p copy", "esc back"))))
 }
 
 func (m model) copyControl() string {
@@ -251,7 +371,7 @@ func (m model) nextView() string {
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		muted("Phase two - the credential form and the Merged Policy diff -\nis ticket 02 and not built yet. It will read this state:"),
+		muted("Phase three - Validate Policy & Install - is ticket 03 and not\nbuilt yet. It will read this state:"),
 		"",
 		lipgloss.NewStyle().Bold(true).Render("Fixture   ")+s.name+"  "+muted(fmt.Sprintf("(%d lines)", strings.Count(s.policy, "\n")+1)),
 		lipgloss.NewStyle().Bold(true).Render("Phase one ")+muted(how),
