@@ -54,6 +54,7 @@ var (
 type model struct {
 	screen        screen
 	choice        int
+	focused       int // tagOwners screen: 0 = copy, 1 = continue
 	copied        bool
 	skipped       bool
 	width, height int
@@ -117,7 +118,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, copyKey):
 			return m.copyTagOwners()
+		case msg.String() == "tab", msg.String() == "shift+tab", msg.String() == "left", msg.String() == "right":
+			m.focused = 1 - m.focused
 		case msg.String() == "enter":
+			if m.focused == 0 {
+				return m.copyTagOwners()
+			}
 			m.screen = screenNext
 		case msg.String() == "s":
 			// The skip path: a tag that already exists needs no verification -
@@ -202,7 +208,8 @@ func (m model) tagOwnersView() string {
 	steps := lipgloss.JoinVertical(lipgloss.Left,
 		num.Render("1. Copy this entry"),
 		policyBlock(tagOwnersBlock),
-		muted(`   already have tagOwners? add just the "tag:once" line`),
+		muted("   already have tagOwners? add just this line inside it:"),
+		policyBlock(tagOwnersLine),
 		"",
 		num.Render("2. Paste it")+muted(" in the policy editor: ")+editorLink,
 		"",
@@ -211,18 +218,20 @@ func (m model) tagOwnersView() string {
 
 	buttons := lipgloss.JoinHorizontal(lipgloss.Center,
 		m.copyControl(),
-		mouse.Mark(continueTarget, ui.Styles.Button.Render("Continue")))
+		mouse.Mark(continueTarget,
+			ui.Styles.Focus(ui.Styles.Button, m.focused == 1).Render("Continue")))
 
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
 		title("Need tagOwners in Policy File"),
 		lipgloss.JoinVertical(lipgloss.Left, steps, "", buttons,
-			helpLine("ctrl+p copy", "enter continue", "s tag already exists - skip", "esc fixtures"))))
+			helpLine("tab focus", "enter press", "ctrl+p copy", "s skip - tag exists", "esc fixtures"))))
 }
 
 func (m model) copyControl() string {
-	style, label := ui.Styles.ButtonPrimary, "Copy to clipboard"
+	label := "Copy to clipboard"
+	style := ui.Styles.Focus(ui.Styles.ButtonPrimary, m.focused == 0)
 	if m.copied {
-		style = style.BorderForeground(ui.Colors.Success).Foreground(ui.Colors.Success)
+		style = style.Foreground(ui.Colors.Success)
 		label = "Copied ✓"
 	}
 	return mouse.Mark(copyTarget, style.Render(label))
