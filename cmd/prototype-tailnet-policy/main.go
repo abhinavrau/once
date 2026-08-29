@@ -177,10 +177,15 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case screenCredential:
-		if msg.String() == "esc" {
+		switch msg.String() {
+		case "esc":
 			m.screen = screenTagOwners
 			m.skipped = false
 			m.focused = 0
+			return m, nil
+		case "ctrl+t":
+			// ctrl, not bare t: the text fields below need the letter.
+			m.topology.Cycle()
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -242,6 +247,10 @@ func (m model) handleClick(target string) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.screen == screenCredential {
+		if target == "topology" {
+			m.topology.Cycle()
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.form, cmd = m.form.Update(ui.MouseEvent{Target: target, IsClick: true})
 		return m, cmd
@@ -439,19 +448,24 @@ func (m model) credentialView() string {
 	oauthLink := lipgloss.NewStyle().Foreground(ui.Colors.Primary).Underline(true).
 		Hyperlink(oauthClientsURL).Render(oauthClientsURL)
 
-	// The scope list follows the Topology field below, live: Services needs
-	// the extra `services` scope (ADR-0015), and both topologies carry the
+	// The scope list follows the topology in step 1, live: Services needs the
+	// extra `services` scope (ADR-0015), and both topologies carry the
 	// policy-read pair from ADR-0017.
-	scopes := "auth_keys, devices:core, policy_file:read,\n   devices:posture_attributes:read"
+	scopes := "auth_keys:write, devices:core:write, policy_file:read,\n   devices:posture_attributes:read"
 	if m.topology != nil && m.topology.Selected() == 1 {
-		scopes = "auth_keys, devices:core, services, policy_file:read,\n   devices:posture_attributes:read"
+		scopes = "auth_keys:write, devices:core:write, services:write,\n   policy_file:read, devices:posture_attributes:read"
 	}
 
 	steps := lipgloss.JoinVertical(lipgloss.Left,
-		num.Render("1. Navigate to")+muted(": ")+oauthLink,
-		num.Render("2. Create a new OAuth client")+muted(" with these scopes:"),
+		num.Render("1. Select your topology")+muted(" - ctrl+t or click to switch:"),
+		"   "+mouse.Mark("topology", m.topology.View()),
+		"",
+		num.Render("2. Navigate to")+muted(": ")+oauthLink,
+		"",
+		num.Render("3. Create a new OAuth client")+muted(" with these scopes:"),
 		"   "+lipgloss.NewStyle().Foreground(ui.Colors.Primary).Render(scopes),
-		num.Render("3. Enter its values below")+muted(":"),
+		"",
+		num.Render("4. Enter its values below")+muted(":"),
 	)
 
 	return boxTight().Render(lipgloss.JoinVertical(lipgloss.Center,
@@ -553,8 +567,8 @@ func (m model) nextView() string {
 
 // newCredentialForm mirrors the real enable form's credential fields
 // (tailscale_form.go). Values are stand-ins - nothing probes Tailscale here.
-// The topology field comes back separately so the scope list in the view can
-// follow its live selection.
+// The topology radio lives outside the form, as step 1 above it, so it comes
+// back separately.
 func newCredentialForm() (ui.Form, *ui.RadioField) {
 	secretField := ui.NewTextField("tskey-client-...")
 	secretField.SetEchoPassword()
@@ -566,7 +580,6 @@ func newCredentialForm() (ui.Form, *ui.RadioField) {
 		ui.FormItem{Key: "client-id", Label: "Client ID", Field: ui.NewTextField("K123456CNTRL"), Required: true},
 		ui.FormItem{Key: "client-secret", Label: "Client Secret", Field: secretField, Required: true},
 		ui.FormItem{Key: "tag", Label: "Tag", Field: tagField, Required: true},
-		ui.FormItem{Key: "topology", Label: "Topology", Field: topologyField},
 	)
 	form.OnSubmit(func(f *ui.Form) tea.Cmd {
 		return func() tea.Msg { return credSubmittedMsg{} }
