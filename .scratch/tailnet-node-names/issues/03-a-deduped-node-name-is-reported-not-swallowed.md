@@ -1,8 +1,9 @@
 # 03 - A deduped node name is reported, not swallowed
 
 **What to build:** When Once asks the tailnet for a Host and gets a different
-one back, it says so. Today the substitution is silent, and the user finds out
-by noticing an odd URL days later.
+one back, it says so, and it routes on the name it actually got. Today the
+substitution is silent, and the route falls back to the requested name
+whenever the node is not there to be asked.
 
 **Blocked by:** None - can start immediately.
 
@@ -12,9 +13,9 @@ by noticing an odd URL days later.
 
 Magic DNS gives a node the next free variant when the requested name is taken:
 ask for `campfire`, get `campfire-1`. That suffix is permanent for that node.
-Once handles it correctly for routing - `waitForNodeFQDN` deliberately reads
-the assigned FQDN rather than composing one - but it never compares the name it
-received against the name it asked for. The rename is invisible.
+Once reads the assigned FQDN rather than composing one wherever it can, but it
+never compares the name it received against the name it asked for. The rename
+is invisible.
 
 `validateHost` does guard the obvious case: a tailnet *device* already holding
 the name is refused before the Deploy. It cannot see every holder. A Tailscale
@@ -45,6 +46,36 @@ The first is cheap and complete; the second is the nicer experience where it
 applies. Worth deciding whether the mismatch should fail the Deploy or warn and
 continue - a `-1` node does work, it is just not the name the user chose.
 
+## The route is only right when the node happens to be up
+
+Reading the assigned FQDN is not unconditional, and this is the half of the
+problem that is still open in the code rather than only in the reporting.
+
+`NodeRouteHost` prefers the FQDN the node reports, but falls back to composing
+the requested name plus the Magic DNS suffix when the node reports nothing
+within a short wait, and it logs that fallback rather than failing the Deploy.
+The fallback exists because requiring the node to be live broke every Roll:
+TSDProxy drops an app's proxy from its API entirely while its container is
+being replaced, so a Funnel toggle or a settings change waited out the full
+timeout and then failed a Deploy whose route was already correct and unchanged.
+
+That fallback leaves two costs, both of which this ticket should close:
+
+- **A renamed node routes on the wrong Host until something redeploys it.**
+  The composed Host is exactly the pre-existing bug this feature set to fix.
+  It is no worse than what Once did before it could read assigned names at
+  all, so it is a fair fallback, but nothing corrects it afterwards. The route
+  should heal once the FQDN becomes knowable, rather than being resolved once
+  at registration time and left. The post-proxy-roll sweep that already
+  re-issues app and `once-admin` routes is the natural home for that.
+- **Every Roll pays the wait before falling back.** The expiry is the routine
+  case on a Roll, not the exceptional one, so the wait buys nothing there and
+  costs the user real time: the nodes/services round-trip integration test went
+  from 17.5s to 94.9s on this alone. Once the route can heal, registration can
+  read once and move on instead of waiting at all.
+
+The wait is marked with a `ponytail:` comment naming this as the upgrade path.
+
 ## Acceptance criteria
 
 - [ ] A Deploy whose node joins under a name other than the requested Host
@@ -59,3 +90,13 @@ continue - a `-1` node does work, it is just not the name the user chose.
 - [ ] Unit coverage for the comparison: an exact match is silent, a `-1` style
       substitution is reported, and a Host that is a prefix of another node's
       name is not a false positive.
+- [ ] A route registered on a composed Host, because the node reported no FQDN
+      at the time, is re-registered on the node's real FQDN once it is
+      knowable, with no manual redeploy.
+- [ ] Registering a nodes route no longer waits on the node, so a Roll costs
+      what it did before the FQDN read was introduced. The round-trip
+      integration test returns to its former runtime.
+- [ ] The existing nodes integration tests still pass, including the Roll paths
+      (`TestTailscaleEnableBootsNodesTopology`,
+      `TestTailscaleRoundTripsBetweenNodesAndServices`) that the first attempt
+      at requiring a live node broke.
