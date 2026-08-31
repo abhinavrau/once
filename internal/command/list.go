@@ -36,7 +36,7 @@ func newListCommand() *listCommand {
 
 func (l *listCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.Command, args []string) error {
 	apps := ns.Applications()
-	settings, tailnetEnabled, err := tailscaleSettingsForReport(ctx, ns)
+	report, err := tailscaleSettingsForReport(ctx, ns)
 	if err != nil && !l.json {
 		printWarnings([]string{docker.ErrorMessage(err)})
 	}
@@ -44,12 +44,12 @@ func (l *listCommand) run(ctx context.Context, ns *docker.Namespace, cmd *cobra.
 	if l.json {
 		reports := make([]appReport, 0, len(apps))
 		for _, app := range apps {
-			reports = append(reports, newAppReport(app, tailnetURLFor(app, settings, tailnetEnabled), funnelURLFor(app, settings, tailnetEnabled)))
+			reports = append(reports, newAppReport(app, tailnetURLFor(app, report), funnelURLFor(app, report)))
 		}
 		return printJSON(reports)
 	}
 
-	printAppLines(ctx, apps, settings, tailnetEnabled)
+	printAppLines(ctx, apps, report)
 	return nil
 }
 
@@ -83,16 +83,16 @@ func newAppReport(app *docker.Application, tailnetURL, funnelURL string) appRepo
 
 // printAppLines prints each application's line, followed by the warn-only note
 // when its tailnet service name does not resolve from this machine.
-func printAppLines(ctx context.Context, apps []*docker.Application, settings docker.TailscaleSettings, tailnetEnabled bool) {
+func printAppLines(ctx context.Context, apps []*docker.Application, report tailnetReport) {
 	tailnet := make(map[string]string, len(apps))
 	for _, app := range apps {
-		tailnet[app.Settings.Name] = tailnetURLFor(app, settings, tailnetEnabled)
+		tailnet[app.Settings.Name] = tailnetURLFor(app, report)
 	}
 	warnings := tailnetDNSWarnings(ctx, resolvableTailnetURLs(apps, tailnet))
 
 	for i, app := range apps {
 		fmt.Println(appLine(app, tailnet[app.Settings.Name]))
-		if funnelURL := funnelURLFor(app, settings, tailnetEnabled); funnelURL != "" {
+		if funnelURL := funnelURLFor(app, report); funnelURL != "" {
 			fmt.Printf("\tFunnel: %s\n", funnelURL)
 		}
 		if warnings[i] != "" {
@@ -149,44 +149,57 @@ func appLine(app *docker.Application, tailnetURL string) string {
 	return line
 }
 
-// tailscaleSettingsForReport reads the facade's settings once for list's and
-// status's per-app tailnet and Funnel URLs, so both are rendered from one
-// facade read rather than reconstructed by this command; ok is false when
-// Tailscale is not enabled, or its settings could not be read. Best effort in
-// the general case (any other read failure degrades to ok=false so these
-// commands still print the public/local lines), except the one failure worth
-// telling the user about: a stored label with no topology, whose message the
-// caller shows once, verbatim.
-func tailscaleSettingsForReport(ctx context.Context, ns *docker.Namespace) (settings docker.TailscaleSettings, ok bool, err error) {
+// tailnetReport is everything list's and status's per-app tailnet and Funnel
+// URLs are rendered from, read once per command rather than reconstructed per
+// app: the facade's settings, whether they are usable at all, and the live
+// FQDNs the apps' nodes answer on. The FQDNs are what keep a printed URL
+// dialable - under nodes an app's node can hold a name Tailscale deduped
+// (campfire-1), which the settings alone cannot know.
+type tailnetReport struct {
+	settings docker.TailscaleSettings
+	enabled  bool
+	fqdns    map[string]string
+}
+
+// tailscaleSettingsForReport reads the facade once for list's and status's
+// per-app tailnet and Funnel URLs, so both are rendered from one facade read
+// rather than reconstructed by this command; enabled is false when Tailscale
+// is not enabled, or its settings could not be read. Best effort in the
+// general case (any other read failure degrades to disabled so these commands
+// still print the public/local lines), except the one failure worth telling
+// the user about: a stored label with no topology, whose message the caller
+// shows once, verbatim.
+func tailscaleSettingsForReport(ctx context.Context, ns *docker.Namespace) (tailnetReport, error) {
 	enabled, enabledErr := ns.Tailscale().Enabled(ctx)
 	if enabledErr != nil || !enabled {
-		return docker.TailscaleSettings{}, false, nil
+		return tailnetReport{}, nil
 	}
 
-	settings, err = ns.Tailscale().LoadSettings(ctx)
+	settings, err := ns.Tailscale().LoadSettings(ctx)
 	if err != nil {
 		if errors.Is(err, docker.ErrOlderOnceSetup) {
-			return docker.TailscaleSettings{}, false, err
+			return tailnetReport{}, err
 		}
-		return docker.TailscaleSettings{}, false, nil
+		return tailnetReport{}, nil
 	}
-	return settings, true, nil
+	fqdns, _ := ns.Tailscale().NodeFQDNs(ctx)
+	return tailnetReport{settings: settings, enabled: true, fqdns: fqdns}, nil
 }
 
 // tailnetURLFor gives app's tailnet service URL, or "" when Tailscale is
 // disabled or the app has no tailnet service at all.
-func tailnetURLFor(app *docker.Application, settings docker.TailscaleSettings, tailnetEnabled bool) string {
-	if !tailnetEnabled || app.Settings.Exposure != docker.ExposureTailnet {
+func tailnetURLFor(app *docker.Application, report tailnetReport) string {
+	if !report.enabled || app.Settings.Exposure != docker.ExposureTailnet {
 		return ""
 	}
-	return settings.TailnetURL(app.Settings.Host)
+	return report.settings.TailnetURLFor(app.Settings.Host, report.fqdns)
 }
 
 // funnelURLFor gives app's public Funnel URL, or "" when Tailscale is
 // disabled, the app has no tailnet service, or its Funnel is not active.
-func funnelURLFor(app *docker.Application, settings docker.TailscaleSettings, tailnetEnabled bool) string {
-	if !tailnetEnabled || app.Settings.Exposure != docker.ExposureTailnet {
+func funnelURLFor(app *docker.Application, report tailnetReport) string {
+	if !report.enabled || app.Settings.Exposure != docker.ExposureTailnet {
 		return ""
 	}
-	return settings.FunnelURL(app.Settings.Host, app.Settings.ActiveFunnelPort())
+	return report.settings.FunnelURL(app.Settings.Host, app.Settings.ActiveFunnelPort(), report.fqdns)
 }

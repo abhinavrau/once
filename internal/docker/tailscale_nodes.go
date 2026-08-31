@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
@@ -229,7 +230,7 @@ func (n *nodesTopology) status(ctx context.Context, settings TailscaleSettings, 
 		}
 		statuses = append(statuses, ServiceStatus{
 			Name:  name,
-			URL:   settings.TailnetURL(name),
+			URL:   settings.TailnetURLFor(name, serve.FQDNs),
 			State: state,
 		})
 	}
@@ -684,38 +685,55 @@ func deviceHasAnyTag(deviceTags, tags []string) bool {
 	return false
 }
 
-// nodesRouteHost joins a node's bare name to the tailnet's Magic DNS suffix.
-// An empty suffix is refused rather than registered bare: TSDProxy always
-// forwards the node's FQDN as the Host, so a bare route matches nothing it
-// ever sends and every tailnet request to the app answers 404 - and nothing
-// re-registers the route once the suffix is finally learned. Failing the
-// deploy surfaces that as the tailnet problem it is, instead of a healthy
-// container no one can reach.
-func nodesRouteHost(host, suffix string) (string, error) {
-	if suffix == "" {
-		return "", fmt.Errorf("the tailnet has not reported its domain yet, so %q has no tailnet host to answer on; check that the node joined (`once tailscale status`) and deploy again", host)
+// waitForNodeFQDN polls TSDProxy until the named app's node reports the
+// tailnet FQDN it answers on. Read, never composed from the name and the
+// Magic DNS suffix: Tailscale hands a deduped "name-1" to a node whose
+// requested hostname is taken - which Once's own leftover-device sweep
+// provokes, since deleting the predecessor does not free the name in time for
+// the replacement - and TSDProxy goes on calling the proxy by the requested
+// name while forwarding the assigned one as the Host. A composed route then
+// matches nothing TSDProxy ever sends, so every tailnet request answers 404
+// against a healthy container, and nothing re-registers the route afterwards.
+// Waited for rather than read once, because a node is routinely still joining
+// when its app's route is registered. A node that never reports is an error
+// for the same reason: there is no Host that would have worked, so failing the
+// deploy beats registering a guess.
+func waitForNodeFQDN(ctx context.Context, reader TailnetReader, name string, timeout, poll time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		status, err := reader.ServeStatus(ctx)
+		if err == nil {
+			if fqdn := status.FQDNs[name]; fqdn != "" {
+				return fqdn, nil
+			}
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return "", fmt.Errorf("reading the tailnet host %q answers on: %w", name, lastErr)
+			}
+			return "", fmt.Errorf("the node for %q has not reported a tailnet host yet, so there is nothing to route to it; check that it joined (`once tailscale status`) and deploy again", name)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(poll):
+		}
 	}
-	return host + "." + suffix, nil
 }
 
 // registerNodesProxyRoute registers the Proxy route a nodes-topology app (or
-// once-admin) answers on: its own tailnet Host, the app/node's bare name plus
-// the tailnet's Magic DNS suffix. The suffix is waited for rather than read
-// once - under nodes it is only knowable after some node has joined, and the
-// first app's own node is routinely the first to join anywhere, so a single
-// read at deploy time races the join it depends on. TLS is off: TSDProxy
-// already terminated it with the tailnet's own certificate before forwarding
-// here. Shared by application.go and admin.go, the two callers that create a
+// once-admin) answers on: the tailnet FQDN its own TSDProxy node reports,
+// which is what TSDProxy forwards as the Host. TLS is off: TSDProxy already
+// terminated it with the tailnet's own certificate before forwarding here.
+// Shared by application.go and admin.go, the two callers that create a
 // container tailnet apps answer through under nodes. The route answers only a
 // Trusted Source (ADR-0016): tailnet traffic arrives from the TSDProxy node,
 // a container on the once network, so the network's subnets admit it while an
 // outsider spoofing the tailnet Host gets an unknown-Host 404.
 func registerNodesProxyRoute(ctx context.Context, ns *Namespace, appName, host, containerID, healthCheckPath string) error {
-	suffix, err := ns.Tailscale().WaitForDomainSuffix(ctx)
-	if err != nil {
-		return fmt.Errorf("resolving tailnet domain suffix: %w", err)
-	}
-	host, err = nodesRouteHost(host, suffix)
+	host, err := ns.Tailscale().WaitForNodeFQDN(ctx, host)
 	if err != nil {
 		return err
 	}

@@ -622,6 +622,17 @@ func (n *Namespace) reregisterNonPublicRoutes(ctx context.Context) {
 			slog.Error("Failed to re-register route after proxy roll", "app", app.Settings.Name, "error", err)
 		}
 	}
+
+	// once-admin's route lives on the Proxy under nodes exactly as an app's
+	// does, so it belongs in the same sweep: registered only at create time,
+	// it otherwise keeps naming whatever tailnet host its node held then, and
+	// a node that rejoined under a name Tailscale deduped (once-admin-1)
+	// leaves the stale route answering 404 with nothing to correct it.
+	if tailnetViaProxy {
+		if err := n.admin.ReregisterRoute(ctx); err != nil {
+			slog.Error("Failed to re-register once-admin's route after proxy roll", "error", err)
+		}
+	}
 }
 
 // deployWarnings collects the warn-only pre-deploy checks: a tailnet service

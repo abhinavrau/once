@@ -482,6 +482,30 @@ func TestTSDProxyReaderServeStatusFromFixture(t *testing.T) {
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"whoami", "once-admin"}, status.Services, "a proxy that hasn't joined yet is not advertised")
 	assert.Equal(t, map[string]string{"once-admin": "once-admin.tail1234.ts.net:443"}, status.Funnels)
+	assert.Equal(t, map[string]string{
+		"whoami":     "whoami.tail1234.ts.net",
+		"once-admin": "once-admin.tail1234.ts.net",
+	}, status.FQDNs)
+}
+
+// TestTSDProxyReaderReportsTheDedupedFQDN pins the name Once must route on.
+// Tailscale appends "-1" when a node's requested hostname is taken - which
+// Once's own leftover-device sweep provokes, since deleting the predecessor
+// does not free the name in time for the replacement's registration. TSDProxy
+// keeps calling the proxy by the requested name and reports the assigned one
+// in its URL, so the two diverge and only the URL says what the node answers
+// to.
+func TestTSDProxyReaderReportsTheDedupedFQDN(t *testing.T) {
+	reader := newTSDProxyReaderFromFixture(t, `{
+	  "proxies": [
+	    {"name": "campfire", "status": "Running", "url": "https://campfire-1.tail1234.ts.net", "ports": [{"funnel": false}]}
+	  ]
+	}`)
+
+	status, err := reader.ServeStatus(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"campfire": "campfire-1.tail1234.ts.net"}, status.FQDNs)
 }
 
 func TestTSDProxyReaderMagicDNSSuffixFromFirstJoinedNode(t *testing.T) {
@@ -525,24 +549,63 @@ func TestTSDProxyReaderSurfacesHTTPErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "403")
 }
 
-// nodesRouteHost
+// waitForNodeFQDN
 
-// TestNodesRouteHostRefusesUnknownSuffix pins the fix for the silent-404 bug:
-// a nodes route registered on a bare Host matches nothing TSDProxy ever
-// forwards (it always sends the node's FQDN), and nothing re-registers it
-// later, so the app is unreachable forever. Refusing beats registering it.
-func TestNodesRouteHostRefusesUnknownSuffix(t *testing.T) {
-	_, err := nodesRouteHost("vaultwarden", "")
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vaultwarden")
+// fqdnReader reports one proxy's assigned FQDN, after readsBeforeJoin reads
+// return nothing - the way TSDProxy's API reads while a fresh node is still
+// walking Initializing -> Starting -> Authenticating -> Running.
+type fqdnReader struct {
+	FakeTailnetReader
+	name            string
+	fqdn            string
+	readsBeforeJoin int
+	reads           int
 }
 
-func TestNodesRouteHostJoinsNameToSuffix(t *testing.T) {
-	host, err := nodesRouteHost("vaultwarden", "tail1234.ts.net")
+func (r *fqdnReader) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
+	r.reads++
+	if r.reads <= r.readsBeforeJoin {
+		return TailscaleServeStatus{}, nil
+	}
+	return TailscaleServeStatus{
+		Services: []string{r.name},
+		FQDNs:    map[string]string{r.name: r.fqdn},
+	}, nil
+}
+
+// TestWaitForNodeFQDNUsesTheNameTheNodeActuallyGot pins the fix for the
+// silent-404 bug: composing the route Host as name+suffix asserts a name the
+// node may not hold. Tailscale hands a deduped "-1" name to any node whose
+// requested one is taken, TSDProxy forwards that name as the Host, and the
+// composed route matches nothing it ever sends - so every tailnet request
+// 404s at the Proxy while the container sits there healthy.
+func TestWaitForNodeFQDNUsesTheNameTheNodeActuallyGot(t *testing.T) {
+	reader := &fqdnReader{name: "campfire", fqdn: "campfire-1.tail1234.ts.net"}
+
+	host, err := waitForNodeFQDN(t.Context(), reader, "campfire", time.Second, time.Millisecond)
+
+	require.NoError(t, err)
+	assert.Equal(t, "campfire-1.tail1234.ts.net", host)
+}
+
+func TestWaitForNodeFQDNOutlastsANodeStillJoining(t *testing.T) {
+	reader := &fqdnReader{name: "vaultwarden", fqdn: "vaultwarden.tail1234.ts.net", readsBeforeJoin: 2}
+
+	host, err := waitForNodeFQDN(t.Context(), reader, "vaultwarden", time.Second, time.Millisecond)
 
 	require.NoError(t, err)
 	assert.Equal(t, "vaultwarden.tail1234.ts.net", host)
+}
+
+// TestWaitForNodeFQDNRefusesANodeThatNeverReports keeps the old bug's other
+// half fixed: with no FQDN to route on there is no Host that works, and
+// nothing re-registers the route later, so failing the deploy beats
+// registering a guess no request will ever match.
+func TestWaitForNodeFQDNRefusesANodeThatNeverReports(t *testing.T) {
+	_, err := waitForNodeFQDN(t.Context(), &FakeTailnetReader{}, "vaultwarden", 10*time.Millisecond, time.Millisecond)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vaultwarden")
 }
 
 // joinLateReader reports no Magic DNS suffix until the node it is waiting on

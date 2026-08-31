@@ -137,6 +137,20 @@ func (s TailscaleSettings) TailnetURL(appName string) string {
 	return "https://" + appName + "." + s.DomainSuffix
 }
 
+// TailnetURLFor is TailnetURL with the app's live FQDN preferred over the
+// composed one. The two differ whenever Tailscale deduped the node's
+// hostname (campfire -> campfire-1), and only the live one is an address
+// that resolves - so anything showing a user a URL, or resolving one, takes
+// fqdns from the topology's reader rather than composing behind its back.
+// A name absent from fqdns falls back to the composed URL, which is right
+// under services and the best guess available before a node has joined.
+func (s TailscaleSettings) TailnetURLFor(appName string, fqdns map[string]string) string {
+	if fqdn := fqdns[appName]; fqdn != "" {
+		return "https://" + fqdn
+	}
+	return s.TailnetURL(appName)
+}
+
 // FunnelURL builds appName's public Funnel URL for the given public port, or
 // "" when port is 0 (Funnel off) or the topology-specific state it needs
 // isn't known yet. The two topologies shape this differently: Services
@@ -145,13 +159,15 @@ func (s TailscaleSettings) TailnetURL(appName string) string {
 // Funnel is per-app on the app's own tailnet URL, since every app is its own
 // node and 443 is the only port it ever offers Funnel on. Frontends call
 // this directly on whatever settings the facade already handed them, rather
-// than branching on topology themselves (ticket 05).
-func (s TailscaleSettings) FunnelURL(appName string, port int) string {
+// than branching on topology themselves (ticket 05). fqdns is the live map
+// from NodeFQDNs, for the same reason TailnetURLFor takes one: under nodes
+// the Funnel answers on the node's assigned name, deduped or not.
+func (s TailscaleSettings) FunnelURL(appName string, port int, fqdns map[string]string) string {
 	if port == 0 {
 		return ""
 	}
 	if s.Topology == TailnetTopologyNodes {
-		return s.TailnetURL(appName)
+		return s.TailnetURLFor(appName, fqdns)
 	}
 	if s.NodeHost == "" {
 		return ""
@@ -366,6 +382,35 @@ func (t *Tailscale) WaitForDomainSuffix(ctx context.Context) (string, error) {
 	return t.resolveDomainSuffix(ctx, func(ctx context.Context, reader TailnetReader) (string, error) {
 		return waitForMagicDNSSuffix(ctx, reader, routeSuffixWaitTimeout, routeSuffixWaitPoll)
 	})
+}
+
+// NodeFQDNs maps each app name to the tailnet FQDN its node actually answers
+// on, for the read paths that show a URL. Best effort and never waits - a
+// frontend refreshing a card must not block on a node still joining - so an
+// unreadable topology yields no entries and callers fall back to the composed
+// URL (TailnetURLFor). Empty under services, which has no per-app node.
+func (t *Tailscale) NodeFQDNs(ctx context.Context) (map[string]string, error) {
+	_, reader, err := t.session(ctx)
+	if err != nil {
+		return nil, err
+	}
+	status, err := reader.ServeStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return status.FQDNs, nil
+}
+
+// WaitForNodeFQDN returns the tailnet FQDN the named app's node actually
+// answers on, waiting for a node still joining. Nodes-topology only: it is
+// what registerNodesProxyRoute routes on, and the only place the deduped
+// "-1" name Tailscale may have assigned is knowable.
+func (t *Tailscale) WaitForNodeFQDN(ctx context.Context, name string) (string, error) {
+	_, reader, err := t.session(ctx)
+	if err != nil {
+		return "", err
+	}
+	return waitForNodeFQDN(ctx, reader, name, routeSuffixWaitTimeout, routeSuffixWaitPoll)
 }
 
 // WaitForFunnelActive polls the active topology's reader until it reports a

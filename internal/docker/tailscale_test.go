@@ -159,11 +159,11 @@ func TestTailnetURL(t *testing.T) {
 
 func TestSettingsFunnelURL(t *testing.T) {
 	s := TailscaleSettings{NodeHost: "once-tailscale-1.tailnet-name.ts.net"}
-	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net", s.FunnelURL("books", 443))
-	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net:8443", s.FunnelURL("books", 8443))
+	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net", s.FunnelURL("books", 443, nil))
+	assert.Equal(t, "https://once-tailscale-1.tailnet-name.ts.net:8443", s.FunnelURL("books", 8443, nil))
 	// No node host, or no active port -> no URL.
-	assert.Empty(t, TailscaleSettings{}.FunnelURL("books", 443))
-	assert.Empty(t, s.FunnelURL("books", 0))
+	assert.Empty(t, TailscaleSettings{}.FunnelURL("books", 443, nil))
+	assert.Empty(t, s.FunnelURL("books", 0, nil))
 }
 
 func TestSettingsFunnelURLUnderNodesIsTheAppsOwnTailnetURL(t *testing.T) {
@@ -171,9 +171,21 @@ func TestSettingsFunnelURLUnderNodesIsTheAppsOwnTailnetURL(t *testing.T) {
 	// tailnet URL, not a shared node host - and 443 is the only port it ever
 	// offers Funnel on.
 	s := TailscaleSettings{Topology: TailnetTopologyNodes, DomainSuffix: "tailnet-name.ts.net"}
-	assert.Equal(t, "https://books.tailnet-name.ts.net", s.FunnelURL("books", 443))
-	assert.Empty(t, s.FunnelURL("books", 0))
-	assert.Empty(t, TailscaleSettings{Topology: TailnetTopologyNodes}.FunnelURL("books", 443), "no suffix known yet -> no URL")
+	assert.Equal(t, "https://books.tailnet-name.ts.net", s.FunnelURL("books", 443, nil))
+	assert.Empty(t, s.FunnelURL("books", 0, nil))
+	assert.Empty(t, TailscaleSettings{Topology: TailnetTopologyNodes}.FunnelURL("books", 443, nil), "no suffix known yet -> no URL")
+}
+
+// TestSettingsTailnetURLForPrefersTheLiveFQDN pins the rule every URL path
+// shares: a node Tailscale renamed (books -> books-1) answers only to the name
+// it was given, so the live FQDN beats the one composed from the app's name.
+func TestSettingsTailnetURLForPrefersTheLiveFQDN(t *testing.T) {
+	s := TailscaleSettings{Topology: TailnetTopologyNodes, DomainSuffix: "tailnet-name.ts.net"}
+	fqdns := map[string]string{"books": "books-1.tailnet-name.ts.net"}
+
+	assert.Equal(t, "https://books-1.tailnet-name.ts.net", s.TailnetURLFor("books", fqdns))
+	assert.Equal(t, "https://books-1.tailnet-name.ts.net", s.FunnelURL("books", 443, fqdns))
+	assert.Equal(t, "https://chat.tailnet-name.ts.net", s.TailnetURLFor("chat", fqdns), "a name with no live node falls back to the composed URL")
 }
 
 func TestDocktailLabelsWhenEnabled(t *testing.T) {

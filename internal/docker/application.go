@@ -347,7 +347,13 @@ func (a *Application) resolvedURL(ctx context.Context, tailscaleEnabled bool) st
 			return ""
 		}
 		suffix, _ := a.namespace.Tailscale().DomainSuffix(ctx)
-		return TailscaleSettings{DomainSuffix: suffix}.TailnetURL(a.Settings.Host)
+		// ponytail: read, don't wait. The node holding a deduped name
+		// (campfire-1) reports it here on every deploy but the very first,
+		// where its container - and so its node - does not exist yet and the
+		// composed name is the only guess available. Waiting for the node to
+		// join would block every first deploy on a value only some apps use.
+		fqdns, _ := a.namespace.Tailscale().NodeFQDNs(ctx)
+		return TailscaleSettings{DomainSuffix: suffix}.TailnetURLFor(a.Settings.Host, fqdns)
 	}
 	return a.URL()
 }

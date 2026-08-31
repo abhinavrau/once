@@ -80,6 +80,13 @@ type Dashboard struct {
 	// been checked yet, and neither renders a warning.
 	tailnetWarnings map[string]string
 
+	// tailnetFQDNs maps each app to the tailnet name its node actually
+	// answers on, refreshed with the rest of the Tailscale info. Under nodes
+	// that is not always the app's own name: Tailscale appends "-1" when the
+	// requested one is taken, and a card built from the app's name alone
+	// would link at an address that does not resolve.
+	tailnetFQDNs map[string]string
+
 	// backupStatus caches the install-wide backup facts, refreshed on its own
 	// slow schedule because the staleness answer costs a restic container per
 	// app. The zero value is "not configured", which renders nothing.
@@ -93,6 +100,7 @@ type tailscaleInfoMsg struct {
 	settings     docker.TailscaleSettings
 	setupWarning string
 	warnings     map[string]string
+	fqdns        map[string]string
 }
 
 type tailscaleRefreshMsg struct{}
@@ -270,6 +278,7 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 		m.tailscaleSettings = msg.settings
 		m.tailscaleSetupWarning = msg.setupWarning
 		m.tailnetWarnings = msg.warnings
+		m.tailnetFQDNs = msg.fqdns
 		m.updateViewportSize()
 		m.rebuildViewportContent()
 
@@ -386,13 +395,15 @@ func (m Dashboard) helpBindings() []key.Binding {
 	return []key.Binding{dashboardKeys.NewApp, dashboardKeys.Tailscale, dashboardKeys.Backups, dashboardKeys.Quit}
 }
 
-// tailnetURL is the app's service URL, from the facade's own settings, never
-// looked up live. Empty when the app has no tailnet service.
+// tailnetURL is the app's service URL, from the facade's own settings and the
+// live FQDNs fetched alongside them - the app's node may answer to a deduped
+// name (campfire-1), and showing the composed one links the user at an address
+// that does not resolve. Empty when the app has no tailnet service.
 func (m Dashboard) tailnetURL(app docker.ApplicationSettings) string {
 	if app.Exposure != docker.ExposureTailnet {
 		return ""
 	}
-	return m.tailscaleSettings.TailnetURL(app.Host)
+	return m.tailscaleSettings.TailnetURLFor(app.Host, m.tailnetFQDNs)
 }
 
 // tailnetWarningNote spells out, below the panels, what the selected panel's
@@ -477,10 +488,12 @@ func (m Dashboard) fetchTailscaleInfo() tea.Cmd {
 		if suffix, err := ns.Tailscale().DomainSuffix(ctx); err == nil && suffix != "" {
 			settings.DomainSuffix = suffix
 		}
+		fqdns, _ := ns.Tailscale().NodeFQDNs(ctx)
 		return tailscaleInfoMsg{
 			enabled:  true,
 			settings: settings,
-			warnings: tailnetDNSWarnings(ctx, hosts, settings),
+			warnings: tailnetDNSWarnings(ctx, hosts, settings, fqdns),
+			fqdns:    fqdns,
 		}
 	}
 }
@@ -527,7 +540,7 @@ func (m *Dashboard) rebuildViewportContent() {
 		url := m.tailnetURL(app)
 		var funnelURL string
 		if app.Exposure == docker.ExposureTailnet {
-			funnelURL = m.tailscaleSettings.FunnelURL(app.Host, app.ActiveFunnelPort())
+			funnelURL = m.tailscaleSettings.FunnelURL(app.Host, app.ActiveFunnelPort(), m.tailnetFQDNs)
 		}
 		m.panels[i].tailnetURL = url
 		m.panels[i].funnelURL = funnelURL
@@ -605,12 +618,12 @@ func (m *Dashboard) buildPanels() {
 // off the UI goroutine, in parallel, so a wedged resolver costs one timeout
 // rather than one per app - and never a frame. settings is the facade's own
 // read, not reconstructed here.
-func tailnetDNSWarnings(ctx context.Context, hosts []string, settings docker.TailscaleSettings) map[string]string {
+func tailnetDNSWarnings(ctx context.Context, hosts []string, settings docker.TailscaleSettings, fqdns map[string]string) map[string]string {
 	urls := make([]string, len(hosts))
 	notes := make([]string, len(hosts))
 	var wg sync.WaitGroup
 	for i, host := range hosts {
-		urls[i] = settings.TailnetURL(host)
+		urls[i] = settings.TailnetURLFor(host, fqdns)
 		wg.Go(func() { notes[i] = docker.TailnetDNSWarning(ctx, urls[i]) })
 	}
 	wg.Wait()
