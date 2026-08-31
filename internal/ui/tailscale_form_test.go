@@ -52,11 +52,12 @@ func TestTailscaleForm_EnableFormDefaultsToNodesWithNoModeField(t *testing.T) {
 	assert.NotContains(t, view, "copy policy snippet", "no screen of this flow renders a help line: the screen behind the overlay already has one")
 	assert.NotContains(t, view, "F1 help")
 
-	nodesFacts, err := docker.TailscaleTopologyFacts(docker.TailnetTopologyNodes)
-	require.NoError(t, err)
-	assert.Contains(t, normalizeWhitespace(ansi.Strip(m.setupView(true, false))),
-		normalizeWhitespace(strings.Join(nodesFacts.OAuthScopes, ", ")),
-		"the scope list must come from the topology's facts")
+	guidanceView := normalizeWhitespace(ansi.Strip(m.setupView(true, false)))
+	assert.Contains(t, guidanceView, "General -> Policy File ✓ Read", "scopes render as the admin console's checklist")
+	assert.Contains(t, guidanceView, "Devices -> Core ✓ Write")
+	assert.Contains(t, guidanceView, "Keys -> Auth Keys ✓ Write")
+	assert.NotContains(t, guidanceView, "General -> Services", "nodes needs no services scope")
+	assert.NotContains(t, guidanceView, "posture", "companion grants are checked by the console, not the user")
 }
 
 func TestTailscaleForm_FreshEnableOpensOnTheTagOwnersScreen(t *testing.T) {
@@ -93,10 +94,6 @@ func TestTailscaleForm_TagOwnersSnippetsEachCarryTheirOwnCopyControl(t *testing.
 	_, cmd = m.Update(MouseEvent{IsClick: true, Target: policyCopyLineTarget})
 	require.NotNil(t, cmd)
 	assert.Equal(t, docker.TagOwnersPolicyLines("tag:once"), fmt.Sprint(cmd()), "the line snippet's control copies just the line")
-
-	_, cmd = m.Update(keyPressMsg("ctrl+p"))
-	require.NotNil(t, cmd)
-	assert.Equal(t, docker.TagOwnersPolicyBlock("tag:once"), fmt.Sprint(cmd()), "ctrl+p copies the block, the fresh-policy default")
 }
 
 func TestTailscaleForm_SelectingServicesRevealsTheModeField(t *testing.T) {
@@ -106,33 +103,19 @@ func TestTailscaleForm_SelectingServicesRevealsTheModeField(t *testing.T) {
 
 	assert.Equal(t, 1, m.form.RadioField("topology").Selected())
 	assert.Equal(t, 4, m.form.ItemCount(), "services offers a Mode choice")
+	assert.Equal(t, "mode", m.form.items[1].Key, "Mode sits directly under the Topology it depends on")
 	assert.Equal(t, 0, m.form.RadioField("mode").Selected(), "sidecar should be preselected (ADR-0007)")
 
 	view := m.View()
 	assert.Contains(t, view, "(•) Services")
 	assert.Contains(t, view, "(•) Sidecar")
 
-	servicesFacts, err := docker.TailscaleTopologyFacts(docker.TailnetTopologyServices)
-	require.NoError(t, err)
-	assert.Contains(t, normalizeWhitespace(ansi.Strip(m.setupView(true, false))),
-		normalizeWhitespace(strings.Join(servicesFacts.OAuthScopes, ", ")),
-		"the scope list must follow the topology selection live")
+	guidanceView := normalizeWhitespace(ansi.Strip(m.setupView(true, false)))
+	assert.Contains(t, guidanceView, "General -> Services ✓ Write", "the scope list must follow the topology selection live")
+	assert.Contains(t, guidanceView, "Devices -> Core ✓ Write", "services still needs devices:core (service-device listing, teardown, host preflight)")
 
 	m = clickField(m, "topology") // services -> nodes
 	assert.Equal(t, 3, m.form.ItemCount(), "the Mode field disappears again")
-}
-
-func TestTailscaleForm_CtrlPCopiesTheSelectedTopologysSnippet(t *testing.T) {
-	m := advanceToCredential(t, NewTailscaleForm(newTestNamespace()))
-
-	_, cmd := m.Update(keyPressMsg("ctrl+p"))
-	require.NotNil(t, cmd)
-	assert.Equal(t, docker.NodesPolicySnippet("tag:once"), fmt.Sprint(cmd()))
-
-	m = clickField(m, "topology")
-	_, cmd = m.Update(keyPressMsg("ctrl+p"))
-	require.NotNil(t, cmd)
-	assert.Equal(t, docker.PolicySnippet("tag:once"), fmt.Sprint(cmd()))
 }
 
 func TestTailscaleForm_ARefusedEnableShowsTheMergedPolicyDiff(t *testing.T) {
@@ -153,11 +136,8 @@ func TestTailscaleForm_ARefusedEnableShowsTheMergedPolicyDiff(t *testing.T) {
 	assert.Contains(t, view, "adds grants")
 	assert.Contains(t, view, "Copy Policy File")
 
-	// ctrl+p and the visible control both carry the whole merged document.
-	_, cmd := got.Update(keyPressMsg("ctrl+p"))
-	require.NotNil(t, cmd)
-	assert.Equal(t, review.Merged, fmt.Sprint(cmd()), "the fix for a refusal is the Merged Policy, not the static snippet")
-	_, cmd = got.Update(MouseEvent{IsClick: true, Target: policyCopyTarget})
+	// The copy control carries the whole merged document.
+	_, cmd := got.Update(MouseEvent{IsClick: true, Target: policyCopyTarget})
 	require.NotNil(t, cmd)
 	assert.Equal(t, review.Merged, fmt.Sprint(cmd()))
 
@@ -165,7 +145,7 @@ func TestTailscaleForm_ARefusedEnableShowsTheMergedPolicyDiff(t *testing.T) {
 	c, _ = got.Update(keyPressMsg("esc"))
 	formView := normalizeWhitespace(ansi.Strip(c.(TailscaleForm).View()))
 	assert.Contains(t, formView, "nothing was installed")
-	assert.Contains(t, formView, "ctrl+p copies the Merged Policy")
+	assert.Contains(t, formView, "Continue to review the Merged Policy")
 }
 
 func TestTailscaleForm_DiffContinueRerunsTheEnable(t *testing.T) {
@@ -373,13 +353,6 @@ func TestTailscaleForm_StatusShowsWhileRunningAndKeepsListening(t *testing.T) {
 	assert.Nil(t, cmd())
 }
 
-func TestTailscaleForm_CopyKeyCopiesSnippetForEnteredTag(t *testing.T) {
-	m := advanceToCredential(t, NewTailscaleForm(newTestNamespace()))
-
-	_, cmd := m.Update(keyPressMsg("ctrl+p"))
-	assert.NotNil(t, cmd)
-}
-
 func TestTailscaleForm_FinishedErrorStaysOpen(t *testing.T) {
 	m := advanceToCredential(t, NewTailscaleForm(newTestNamespace()))
 	m.running = true
@@ -392,14 +365,14 @@ func TestTailscaleForm_FinishedErrorStaysOpen(t *testing.T) {
 	assert.Contains(t, got.View(), "probe failed")
 }
 
-func TestTailscaleForm_TagPolicyErrorPointsAtSnippet(t *testing.T) {
+func TestTailscaleForm_TagPolicyErrorPointsBackAtTheTagOwnersScreen(t *testing.T) {
 	m := advanceToCredential(t, NewTailscaleForm(newTestNamespace()))
 	m.running = true
 
 	c, _ := m.Update(tailscaleFormFinishedMsg{err: fmt.Errorf("probe: %w", docker.ErrTagNotInPolicy)})
 
 	got := c.(TailscaleForm)
-	assert.Contains(t, got.View(), "ctrl+p copies the required policy snippet")
+	assert.Contains(t, got.View(), "esc returns to the tagOwners screen, where the entry can be copied")
 }
 
 func TestTailscaleForm_FinishedSuccessCloses(t *testing.T) {
@@ -498,6 +471,18 @@ func TestTailscaleForm_CredentialScreenFitsThe24RowFloor(t *testing.T) {
 		view = services.View()
 		assert.LessOrEqual(t, lipgloss.Height(view), rows, "at %d rows with the Mode field", rows)
 		assert.Contains(t, ansi.Strip(view), "(•) Sidecar", "at %d rows", rows)
+	}
+}
+
+func TestTailscaleForm_GuidanceStepsInterleaveWithTheFieldsTheyExplain(t *testing.T) {
+	m := advanceToCredential(t, NewTailscaleForm(newTestNamespace()))
+	c, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 60})
+
+	view := ansi.Strip(c.(TailscaleForm).View())
+	order := []string{"1. Select your topology", "Topology", "2. Navigate to", "Client ID"}
+	for i := range len(order) - 1 {
+		assert.Less(t, strings.Index(view, order[i]), strings.Index(view, order[i+1]),
+			"%q must render above %q", order[i], order[i+1])
 	}
 }
 

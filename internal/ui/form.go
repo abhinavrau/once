@@ -279,7 +279,9 @@ type Form struct {
 	hideCancel   bool
 	buttonsRight bool
 	compact      bool
-	minHeight    int
+	prologues    map[string]string
+	reserveKey   string
+	reserveRows  int
 	focused      int
 	width        int
 	errorKey     string
@@ -361,6 +363,10 @@ func (f Form) View() string {
 	errorStyle := lipgloss.NewStyle().Foreground(Colors.Error)
 
 	for i, item := range f.items {
+		if p := f.prologues[item.Key]; p != "" {
+			parts = append(parts, p, "")
+		}
+
 		if _, isRadio := item.Field.(*RadioField); f.compact && isRadio {
 			labelStyle := Styles.Label
 			optionStyle := lipgloss.NewStyle()
@@ -370,20 +376,23 @@ func (f Form) View() string {
 			}
 			row := labelStyle.Render(item.Label) + "  " + optionStyle.Render(item.Field.View())
 			parts = append(parts, mouse.Mark(fieldTarget(item.Key), row), "")
-			continue
+		} else {
+			label := Styles.Label.Render(item.Label)
+
+			hasError := f.error != "" && item.Key == f.errorKey
+			inputStyle := Styles.WithError(Styles.Focus(Styles.Input, f.focused == i), hasError)
+			field := mouse.Mark(fieldTarget(item.Key), inputStyle.Render(item.Field.View()))
+
+			parts = append(parts, label, field)
+			if hasError {
+				parts = append(parts, errorStyle.Render(f.error))
+			}
+			parts = append(parts, "")
 		}
 
-		label := Styles.Label.Render(item.Label)
-
-		hasError := f.error != "" && item.Key == f.errorKey
-		inputStyle := Styles.WithError(Styles.Focus(Styles.Input, f.focused == i), hasError)
-		field := mouse.Mark(fieldTarget(item.Key), inputStyle.Render(item.Field.View()))
-
-		parts = append(parts, label, field)
-		if hasError {
-			parts = append(parts, errorStyle.Render(f.error))
+		if item.Key == f.reserveKey {
+			parts = append(parts, make([]string, f.reserveRows)...)
 		}
-		parts = append(parts, "")
 	}
 
 	submitButton := mouse.Mark("submit", Styles.Focus(Styles.ButtonPrimary, f.focused == f.submitIndex()).
@@ -409,13 +418,9 @@ func (f Form) View() string {
 		// the edge; there is no button after it to separate from.
 		buttons = lipgloss.PlaceHorizontal(contentWidth(parts), lipgloss.Right, trimLineEnds(buttons))
 	}
-	if f.minHeight > 0 {
-		have := lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, parts...)) + 1 + lipgloss.Height(buttons)
-		for range f.minHeight - have {
-			parts = append(parts, "")
-		}
-	}
-	parts = append(parts, "", buttons)
+	// Every field block already ends with a separator row, so the button row
+	// needs no blank of its own; adding one would double the gap.
+	parts = append(parts, buttons)
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
@@ -451,13 +456,27 @@ func (f *Form) SetCompact(compact bool) {
 	f.compact = compact
 }
 
-// SetMinHeight pads the view to at least rows tall, the padding sitting
-// between the fields and the button row. Opt-in for a form whose field set
-// follows another field's value (TailscaleForm's Mode radio): sized to the
-// tallest field set, the buttons hold still while the conditional field swaps
-// with reserved space instead of shifting everything below it.
-func (f *Form) SetMinHeight(rows int) {
-	f.minHeight = rows
+// SetItemPrologue renders text (and a blank separator row) directly above the
+// keyed field, so guidance prose can interleave with the fields it explains.
+// The key must name a field of this form, so a drifted key dies rather than
+// silently dropping the prose.
+func (f *Form) SetItemPrologue(key, text string) {
+	_ = f.indexOf(key)
+	if f.prologues == nil {
+		f.prologues = map[string]string{}
+	}
+	f.prologues[key] = text
+}
+
+// SetReservedRowsAfter renders rows blank rows directly below the keyed field.
+// Opt-in for a form whose field set follows another field's value
+// (TailscaleForm's Mode radio): sized to the absent field's height, the
+// conditional field swaps with reserved space instead of shifting everything
+// below it.
+func (f *Form) SetReservedRowsAfter(key string, rows int) {
+	_ = f.indexOf(key)
+	f.reserveKey = key
+	f.reserveRows = rows
 }
 
 func (f *Form) OnSubmit(fn func(f *Form) tea.Cmd) {
@@ -480,6 +499,17 @@ func (f *Form) AppendItems(items ...FormItem) {
 		item.Field.SetWidth(inputWidth)
 	}
 	f.items = append(f.items, items...)
+}
+
+// InsertItemAfter places item directly below the keyed field, for a
+// conditional field that belongs next to the field whose value controls it
+// rather than at the end. The clone keeps the insert from shifting a sibling
+// copy's items through the shared backing array.
+func (f *Form) InsertItemAfter(key string, item FormItem) {
+	requireUniqueKeys(f.items, []FormItem{item})
+
+	item.Field.SetWidth(min(f.width-4, 60))
+	f.items = slices.Insert(slices.Clone(f.items), f.indexOf(key)+1, item)
 }
 
 // RemoveItem drops the keyed field, a no-op if the form has no such key. Used

@@ -732,15 +732,46 @@ func TestFormSetCompactInlinesRadiosAndKeepsThemClickable(t *testing.T) {
 	assert.Equal(t, 1, form.RadioField("choice").Selected(), "the inlined radio keeps its click target")
 }
 
-func TestFormSetMinHeightPadsBetweenFieldsAndButtons(t *testing.T) {
-	form := NewForm("Save", FormItem{Key: "name", Label: "Name", Field: NewTextField("")})
+func TestFormSetItemPrologueRendersAboveTheKeyedField(t *testing.T) {
+	form := NewForm("Save",
+		FormItem{Key: "first", Label: "First", Field: NewTextField("")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("")},
+	)
+	form.SetItemPrologue("second", "Between the fields")
+
+	view := ansi.Strip(form.View())
+	assert.Less(t, strings.Index(view, "First"), strings.Index(view, "Between the fields"))
+	assert.Less(t, strings.Index(view, "Between the fields"), strings.Index(view, "Second"))
+
+	assert.Panics(t, func() { form.SetItemPrologue("missing", "x") }, "a drifted key must die rather than silently drop the prose")
+}
+
+func TestFormSetReservedRowsAfterHoldsTheAbsentFieldsPlace(t *testing.T) {
+	form := NewForm("Save",
+		FormItem{Key: "first", Label: "First", Field: NewTextField("")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("")},
+	)
 	bare := lipgloss.Height(form.View())
 
-	form.SetMinHeight(bare + 3)
+	form.SetReservedRowsAfter("first", 3)
 	view := form.View()
 	assert.Equal(t, bare+3, lipgloss.Height(view))
 
 	lines := strings.Split(view, "\n")
 	bottom := strings.Join(lines[len(lines)-3:], "\n")
-	assert.Contains(t, bottom, "Save", "the button row stays last")
+	assert.Contains(t, bottom, "Save", "the reserved rows sit mid-form, not below the buttons")
+}
+
+func TestFormInsertItemAfterPlacesTheFieldAndKeepsSiblingCopiesIntact(t *testing.T) {
+	form := NewForm("Save",
+		FormItem{Key: "first", Label: "First", Field: NewTextField("")},
+		FormItem{Key: "second", Label: "Second", Field: NewTextField("")},
+	)
+	sibling := form
+
+	form.InsertItemAfter("first", FormItem{Key: "inserted", Label: "Inserted", Field: NewTextField("")})
+
+	assert.Equal(t, "inserted", form.items[1].Key)
+	assert.Equal(t, 3, form.ItemCount())
+	assert.Equal(t, "second", sibling.items[1].Key, "the insert must not shift a sibling copy's items through the shared backing array")
 }

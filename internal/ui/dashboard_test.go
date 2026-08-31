@@ -344,6 +344,20 @@ func TestDashboardResolvableTailnetHostsSkipsStoppedAndNonTailnetApps(t *testing
 	assert.Equal(t, []string{"app-0.example.com"}, d.resolvableTailnetHosts())
 }
 
+// A service URL is there to be opened, so the row carries the OSC 8 escape
+// that makes it clickable rather than a string to retype into a browser.
+func TestDashboard_TailnetURLRowIsAHyperlink(t *testing.T) {
+	failOnLookup(t)
+
+	d := testDashboard(1)
+	d.apps[0].Settings.Exposure = docker.ExposureTailnet
+	d.buildPanels()
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
+	d, _ = updateDashboard(d, tailscaleInfoMsg{enabled: true, settings: docker.TailscaleSettings{DomainSuffix: "tailnet.ts.net"}})
+
+	assert.Contains(t, d.View(), "\x1b]8;;https://app-0.example.com.tailnet.ts.net")
+}
+
 // A start or stop that fails used to change nothing on screen, which reads as
 // the key having done nothing rather than as the container having refused.
 func TestDashboard_FailedStartStopIsShownAndCopyable(t *testing.T) {
