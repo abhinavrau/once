@@ -32,6 +32,10 @@ type backupStatusMsg struct {
 
 type backupStatusRefreshMsg struct{}
 
+// warnPrefix marks a note line as something to fix, which is also what makes
+// it worth copying (see Dashboard.CopyableError).
+const warnPrefix = "⚠ "
+
 // backupNoteLine is one compact line of the dashboard's backup note.
 type backupNoteLine struct {
 	text  string
@@ -85,13 +89,13 @@ func backupNoteLines(s docker.BackupStatus) []backupNoteLine {
 	// "your backup did not run", and it is the one that is silent otherwise.
 	for _, check := range s.FailedChecks() {
 		lines = append(lines, backupNoteLine{
-			text:  fmt.Sprintf("⚠ The %s backup repository failed its check - it may not restore", check.Name),
+			text:  fmt.Sprintf(warnPrefix+"The %s backup repository failed its check - it may not restore", check.Name),
 			color: Colors.Error,
 		})
 	}
 	if s.OnDataDevice {
 		lines = append(lines, backupNoteLine{
-			text:  "⚠ Backups share a disk with your app data - keep an offsite copy",
+			text:  warnPrefix + "Backups share a disk with your app data - keep an offsite copy",
 			color: Colors.Warning,
 		})
 	}
@@ -105,7 +109,7 @@ func backupNoteLines(s docker.BackupStatus) []backupNoteLine {
 func backupHeadlineLine(s docker.BackupStatus) backupNoteLine {
 	if !s.Enabled {
 		return backupNoteLine{
-			text:  "⚠ Backups are configured, not enabled - run `once backup enable`",
+			text:  warnPrefix + "Backups are configured, not enabled - run `once backup enable`",
 			color: Colors.Warning,
 		}
 	}
@@ -126,9 +130,9 @@ func backupHeadlineLine(s docker.BackupStatus) backupNoteLine {
 		// they have nothing.
 		return backupNoteLine{text: "Backups: offsite copy age unknown", color: Colors.Muted}
 	case age.Missing():
-		return backupNoteLine{text: "⚠ Backups: no offsite copy yet", color: Colors.Warning}
+		return backupNoteLine{text: warnPrefix + "Backups: no offsite copy yet", color: Colors.Warning}
 	case age.Stale():
-		return backupNoteLine{text: "⚠ Backups: offsite copy is " + age.AgeText() + " old", color: Colors.Warning}
+		return backupNoteLine{text: warnPrefix + "Backups: offsite copy is " + age.AgeText() + " old", color: Colors.Warning}
 	default:
 		return backupNoteLine{text: "Backups: offsite copy is " + age.AgeText() + " old", color: Colors.Muted}
 	}

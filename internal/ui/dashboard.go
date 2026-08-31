@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"image/color"
 	"os"
 	"strings"
 	"sync"
@@ -87,6 +88,11 @@ type Dashboard struct {
 	// would link at an address that does not resolve.
 	tailnetFQDNs map[string]string
 
+	// startStopErr is the last failed start or stop. It is shown below the
+	// panels until the next toggle: an action that silently does nothing
+	// reads as a broken dashboard rather than a failed container.
+	startStopErr error
+
 	// backupStatus caches the install-wide backup facts, refreshed on its own
 	// slow schedule because the staleness answer costs a restic container per
 	// app. The zero value is "not configured", which renders nothing.
@@ -148,6 +154,32 @@ func (m Dashboard) ShowingSecret() bool {
 // outlive the process that made them.
 func (m Dashboard) Busy() bool {
 	return overlayBusy(m.overlay)
+}
+
+// CopyableError is the messages currently shown below the panels as plain
+// text - what a user would otherwise retype into an issue or a search box.
+// Only the ones that name something to fix count: the informational backup
+// lines are not worth a clipboard.
+func (m Dashboard) CopyableError() string {
+	if text := copyableError(m.overlay); text != "" {
+		return text
+	}
+
+	var lines []string
+	for _, line := range []string{m.tailscaleSetupWarning, m.selectedTailnetWarning()} {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if m.startStopErr != nil {
+		lines = append(lines, docker.ErrorMessage(m.startStopErr))
+	}
+	for _, line := range backupNoteLines(m.backupStatus) {
+		if strings.HasPrefix(line.text, warnPrefix) {
+			lines = append(lines, strings.TrimPrefix(line.text, warnPrefix))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Dashboard) Init() tea.Cmd {
@@ -252,6 +284,7 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 			app := msg.app
 			m.toggling = true
 			m.togglingApp = app.Settings.Name
+			m.startStopErr = nil
 			m.progress = NewProgress(m.width, Colors.Border)
 			m.updateViewportSize()
 			m.rebuildViewportContent()
@@ -263,6 +296,7 @@ func (m Dashboard) Update(msg tea.Msg) (Component, tea.Cmd) {
 	case startStopFinishedMsg:
 		m.toggling = false
 		m.togglingApp = ""
+		m.startStopErr = msg.err
 		m.updateViewportSize()
 		m.rebuildViewportContent()
 
@@ -356,15 +390,7 @@ func (m Dashboard) View() string {
 	if m.toggling {
 		parts = append(parts, m.progress.View())
 	}
-	if note := m.tailscaleSetupNote(); note != "" {
-		parts = append(parts, note)
-	}
-	if note := m.tailnetWarningNote(); note != "" {
-		parts = append(parts, note)
-	}
-	if note := m.backupNote(); note != "" {
-		parts = append(parts, note)
-	}
+	parts = append(parts, m.notes()...)
 	parts = append(parts, helpLine)
 	content := strings.Join(parts, "\n")
 
@@ -406,18 +432,37 @@ func (m Dashboard) tailnetURL(app docker.ApplicationSettings) string {
 	return m.tailscaleSettings.TailnetURLFor(app.Host, m.tailnetFQDNs)
 }
 
-// tailnetWarningNote spells out, below the panels, what the selected panel's
-// Tailnet URL marker means: the row itself has no room for the sentence.
-func (m Dashboard) tailnetWarningNote() string {
+// notes is the message block between the panels and the help line: the setup
+// warning, the selected panel's DNS warning, a failed start or stop, and the
+// backup lines, plus the hint for copying whichever of them can be copied.
+// The view and the viewport height both read it, so a note can never take a
+// row the panels also believe is theirs.
+func (m Dashboard) notes() []string {
+	var notes []string
+	for _, note := range []string{m.tailscaleSetupNote(), m.tailnetWarningNote(), m.startStopNote(), m.backupNote()} {
+		if note != "" {
+			notes = append(notes, note)
+		}
+	}
+	if len(notes) > 0 && m.CopyableError() != "" {
+		notes = append(notes, copyHintLine(m.width))
+	}
+	return notes
+}
+
+// selectedTailnetWarning is the DNS warning for the selected panel's service
+// URL, which is the only one the dashboard has room to spell out.
+func (m Dashboard) selectedTailnetWarning() string {
 	if m.selectedIndex >= len(m.panels) {
 		return ""
 	}
-	warning := m.tailnetWarnings[m.tailnetURL(m.panels[m.selectedIndex].app.Settings)]
-	if warning == "" {
-		return ""
-	}
-	wrapped := lipgloss.NewStyle().Foreground(Colors.Warning).Width(max(m.width-4, 20)).Render("⚠ " + warning)
-	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, wrapped)
+	return m.tailnetWarnings[m.tailnetURL(m.panels[m.selectedIndex].app.Settings)]
+}
+
+// tailnetWarningNote spells out, below the panels, what the selected panel's
+// Tailnet URL marker means: the row itself has no room for the sentence.
+func (m Dashboard) tailnetWarningNote() string {
+	return centeredNote(m.selectedTailnetWarning(), Colors.Warning, m.width)
 }
 
 // tailscaleSetupNote renders the older-install message verbatim, once, below
@@ -425,11 +470,16 @@ func (m Dashboard) tailnetWarningNote() string {
 // instead of a stack of inspect errors that all trace back to the same
 // missing topology.
 func (m Dashboard) tailscaleSetupNote() string {
-	if m.tailscaleSetupWarning == "" {
+	return centeredNote(m.tailscaleSetupWarning, Colors.Warning, m.width)
+}
+
+// startStopNote reports a start or stop that failed. Without it the panel
+// simply stays as it was, which reads as the key having done nothing.
+func (m Dashboard) startStopNote() string {
+	if m.startStopErr == nil {
 		return ""
 	}
-	wrapped := lipgloss.NewStyle().Foreground(Colors.Warning).Width(max(m.width-4, 20)).Render("⚠ " + m.tailscaleSetupWarning)
-	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, wrapped)
+	return centeredNote(docker.ErrorMessage(m.startStopErr), Colors.Error, m.width)
 }
 
 // resolvableTailnetHosts is the hostnames worth a DNS check: a stopped app's
@@ -517,13 +567,7 @@ func (m *Dashboard) updateViewportSize() {
 		progressHeight = 1
 	}
 	noteHeight := 0
-	if note := m.tailscaleSetupNote(); note != "" {
-		noteHeight += lipgloss.Height(note)
-	}
-	if note := m.tailnetWarningNote(); note != "" {
-		noteHeight += lipgloss.Height(note)
-	}
-	if note := m.backupNote(); note != "" {
+	for _, note := range m.notes() {
 		noteHeight += lipgloss.Height(note)
 	}
 	vpHeight := max(m.height-titleHeight-headerHeight-helpHeight-progressHeight-noteHeight, 0)
@@ -612,6 +656,17 @@ func (m *Dashboard) buildPanels() {
 }
 
 // Helpers
+
+// centeredNote is one message in the block below the panels: marked with the
+// warning glyph, wrapped to the terminal, and centered. Empty text renders
+// nothing, so a caller can hand over a message it may not have.
+func centeredNote(text string, c color.Color, width int) string {
+	if text == "" {
+		return ""
+	}
+	wrapped := lipgloss.NewStyle().Foreground(c).Width(max(width-4, 20)).Align(lipgloss.Center).Render(warnPrefix + text)
+	return lipgloss.PlaceHorizontal(width, lipgloss.Center, wrapped)
+}
 
 // tailnetDNSWarnings resolves each host's service URL and returns the warn-only
 // note for the ones that do not resolve from this machine, keyed by URL. It runs

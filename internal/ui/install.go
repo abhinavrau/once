@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"os"
@@ -113,6 +114,12 @@ func (m Install) Busy() bool {
 // overlay's custody moment can open inline from the install flow).
 func (m Install) ShowingSecret() bool {
 	return overlayShowingSecret(m.overlay)
+}
+
+// CopyableError is the overlay's message, or the deploy or validation
+// failure shown above the form, for App's copy key.
+func (m Install) CopyableError() string {
+	return cmp.Or(copyableError(m.overlay), errorText(m.err))
 }
 
 func (m Install) Init() tea.Cmd {
@@ -326,7 +333,7 @@ func (m Install) View() string {
 	} else {
 		formView := m.viewCurrentScreen()
 		if m.err != nil {
-			errorLine := lipgloss.NewStyle().Foreground(Colors.Error).Width(m.width).Align(lipgloss.Center).Render(docker.ErrorMessage(m.err))
+			errorLine := lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(errorWithCopyHint(m.err))
 			formView = lipgloss.JoinVertical(lipgloss.Center, errorLine, "", formView)
 		}
 		contentView = formView

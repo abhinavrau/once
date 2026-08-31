@@ -103,6 +103,12 @@ func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 	return newTailscaleForm(ns, enabled, settings, loadErr)
 }
 
+// CopyableError is the failed enable's message, for App's copy key. It
+// reaches App through the screen hosting this overlay.
+func (m TailscaleForm) CopyableError() string {
+	return errorText(m.err)
+}
+
 func (m TailscaleForm) Init() tea.Cmd {
 	if m.screen == tailscaleScreenTagOwners {
 		return m.tagOwners.Init()
@@ -373,7 +379,7 @@ func (m TailscaleForm) fits(guidance, compact, tight bool) bool {
 func (m TailscaleForm) setupView(guidance, compact bool) string {
 	var parts []string
 	if m.err != nil {
-		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Error).Width(tailscaleFormTextWidth).Render(docker.ErrorMessage(m.err)))
+		parts = append(parts, lipgloss.NewStyle().Width(tailscaleFormTextWidth).Render(errorWithCopyHint(m.err)))
 		var refused *docker.PolicyRefusedError
 		switch {
 		case errors.As(m.err, &refused):

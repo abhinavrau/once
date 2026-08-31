@@ -283,7 +283,7 @@ func TestDashboard_TailnetWarningNoteShrinksTheViewport(t *testing.T) {
 	plain, _ = updateDashboard(plain, tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	warned := tailnetDashboard(t)
-	noteHeight := lipgloss.Height(warned.tailnetWarningNote())
+	noteHeight := lipgloss.Height(warned.tailnetWarningNote()) + 1 // + the copy hint row
 
 	assert.Positive(t, noteHeight)
 	assert.Equal(t, plain.viewport.Height()-noteHeight, warned.viewport.Height())
@@ -342,6 +342,19 @@ func TestDashboardResolvableTailnetHostsSkipsStoppedAndNonTailnetApps(t *testing
 	d.apps[2].Settings.Exposure = docker.ExposureLocal
 
 	assert.Equal(t, []string{"app-0.example.com"}, d.resolvableTailnetHosts())
+}
+
+// A start or stop that fails used to change nothing on screen, which reads as
+// the key having done nothing rather than as the container having refused.
+func TestDashboard_FailedStartStopIsShownAndCopyable(t *testing.T) {
+	d := testDashboard(1)
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
+	d, _ = updateDashboard(d, startStopFinishedMsg{err: errors.New("container refused to stop")})
+
+	view := ansi.Strip(d.View())
+	assert.Contains(t, view, "container refused to stop")
+	assert.Contains(t, view, "to copy")
+	assert.Equal(t, "container refused to stop", d.CopyableError())
 }
 
 // Helpers
