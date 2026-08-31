@@ -597,15 +597,48 @@ func TestWaitForNodeFQDNOutlastsANodeStillJoining(t *testing.T) {
 	assert.Equal(t, "vaultwarden.tail1234.ts.net", host)
 }
 
-// TestWaitForNodeFQDNRefusesANodeThatNeverReports keeps the old bug's other
-// half fixed: with no FQDN to route on there is no Host that works, and
-// nothing re-registers the route later, so failing the deploy beats
-// registering a guess no request will ever match.
 func TestWaitForNodeFQDNRefusesANodeThatNeverReports(t *testing.T) {
 	_, err := waitForNodeFQDN(t.Context(), &FakeTailnetReader{}, "vaultwarden", 10*time.Millisecond, time.Millisecond)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vaultwarden")
+}
+
+// nodeRouteHost
+
+// TestNodeRouteHostPrefersTheNameTheNodeReports is the whole point of reading
+// rather than composing: a node holding a deduped name answers only to it.
+func TestNodeRouteHostPrefersTheNameTheNodeReports(t *testing.T) {
+	reader := &fqdnReader{name: "campfire", fqdn: "campfire-1.tail1234.ts.net"}
+
+	host, err := nodeRouteHost(t.Context(), reader, "campfire", time.Second, time.Second, time.Millisecond)
+
+	require.NoError(t, err)
+	assert.Equal(t, "campfire-1.tail1234.ts.net", host)
+}
+
+// TestNodeRouteHostComposesWhenTheNodeReportsNothing pins the fix for the
+// Roll regression: TSDProxy drops an app's proxy from its API entirely while
+// the container is replaced, so a Funnel toggle or settings change found no
+// FQDN and failed a deploy whose route was already correct. The composed Host
+// is what Once routed on before it could read the assigned name at all, so
+// falling back to it is never worse than that - only less precise.
+func TestNodeRouteHostComposesWhenTheNodeReportsNothing(t *testing.T) {
+	reader := &joinLateReader{} // suffix known (some node joined), this app's proxy absent
+
+	host, err := nodeRouteHost(t.Context(), reader, "whoami", 10*time.Millisecond, time.Second, time.Millisecond)
+
+	require.NoError(t, err)
+	assert.Equal(t, "whoami.tail1234.ts.net", host)
+}
+
+// A tailnet that reports neither the app's FQDN nor a suffix leaves no Host
+// that could work, so the deploy still fails rather than routing on a name.
+func TestNodeRouteHostRefusesWhenTheTailnetReportsNothingAtAll(t *testing.T) {
+	_, err := nodeRouteHost(t.Context(), &FakeTailnetReader{}, "whoami", 10*time.Millisecond, 10*time.Millisecond, time.Millisecond)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "whoami")
 }
 
 // joinLateReader reports no Magic DNS suffix until the node it is waiting on

@@ -59,6 +59,20 @@ const (
 	routeSuffixWaitPoll    = 2 * time.Second
 )
 
+// nodeFQDNWaitTimeout bounds the wait for one app's node to report the FQDN
+// it answers on. Much shorter than routeSuffixWaitTimeout because every Roll
+// pays it before falling back to the composed Host: TSDProxy drops a proxy
+// from its API while the container is replaced, so the wait expiring is the
+// routine case there, not the exceptional one. Long enough for a cold join
+// on a first deploy, which is the case where the assigned name can differ
+// from the requested one and so the one worth waiting out.
+//
+// ponytail: one timeout for both cases. A first registration could afford to
+// wait far longer than a re-registration, but telling them apart needs the
+// route table the Proxy already holds; split it if a slow first join is
+// observed composing the wrong Host.
+const nodeFQDNWaitTimeout = 20 * time.Second
+
 var (
 	ErrFunnelDurationInvalid = errors.New("funnel duration must be positive")
 	ErrFunnelDurationTooLong = fmt.Errorf("funnel duration must not exceed %s", MaxFunnelDuration)
@@ -401,16 +415,27 @@ func (t *Tailscale) NodeFQDNs(ctx context.Context) (map[string]string, error) {
 	return status.FQDNs, nil
 }
 
-// WaitForNodeFQDN returns the tailnet FQDN the named app's node actually
-// answers on, waiting for a node still joining. Nodes-topology only: it is
-// what registerNodesProxyRoute routes on, and the only place the deduped
-// "-1" name Tailscale may have assigned is knowable.
-func (t *Tailscale) WaitForNodeFQDN(ctx context.Context, name string) (string, error) {
+// NodeRouteHost is the Host a nodes-topology Proxy route answers on: the
+// tailnet FQDN the named app's node reports, or the name composed with the
+// tailnet's Magic DNS suffix when the node has none to report.
+//
+// The read is preferred because only it knows a deduped name (campfire-1),
+// which a composed Host gets wrong for the life of the route. It cannot be
+// required, though: TSDProxy drops an app's proxy from its API entirely while
+// the container is being replaced, so a Roll - a Funnel toggle, a settings
+// change - would otherwise block until the wait expired and then fail a
+// deploy whose route was already correct and unchanged.
+//
+// So the wait is bounded and non-fatal, and the composed Host is the
+// fallback rather than a failure. It is what Once used before nodes could
+// read the assigned name at all, so falling back is never worse than the
+// behaviour it replaced - only less precise, which is why it is logged.
+func (t *Tailscale) NodeRouteHost(ctx context.Context, name string) (string, error) {
 	_, reader, err := t.session(ctx)
 	if err != nil {
 		return "", err
 	}
-	return waitForNodeFQDN(ctx, reader, name, routeSuffixWaitTimeout, routeSuffixWaitPoll)
+	return nodeRouteHost(ctx, reader, name, nodeFQDNWaitTimeout, routeSuffixWaitTimeout, routeSuffixWaitPoll)
 }
 
 // WaitForFunnelActive polls the active topology's reader until it reports a

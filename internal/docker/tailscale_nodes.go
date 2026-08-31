@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -695,9 +696,11 @@ func deviceHasAnyTag(deviceTags, tags []string) bool {
 // matches nothing TSDProxy ever sends, so every tailnet request answers 404
 // against a healthy container, and nothing re-registers the route afterwards.
 // Waited for rather than read once, because a node is routinely still joining
-// when its app's route is registered. A node that never reports is an error
-// for the same reason: there is no Host that would have worked, so failing the
-// deploy beats registering a guess.
+// when its app's route is registered. A node that never reports within the
+// wait is an error here, which NodeRouteHost - the only caller that registers
+// a route - turns into its composed-Host fallback rather than a failed
+// deploy: TSDProxy drops a proxy from its API entirely while its container is
+// replaced, so a silent node is the routine case on a Roll.
 func waitForNodeFQDN(ctx context.Context, reader TailnetReader, name string, timeout, poll time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
@@ -723,9 +726,31 @@ func waitForNodeFQDN(ctx context.Context, reader TailnetReader, name string, tim
 	}
 }
 
+// nodeRouteHost resolves the Host a nodes route answers on: the FQDN the
+// node reports, else the name composed with the tailnet's Magic DNS suffix.
+// See Tailscale.NodeRouteHost for why the read is preferred but not required.
+func nodeRouteHost(ctx context.Context, reader TailnetReader, name string, fqdnTimeout, suffixTimeout, poll time.Duration) (string, error) {
+	fqdn, fqdnErr := waitForNodeFQDN(ctx, reader, name, fqdnTimeout, poll)
+	if fqdnErr == nil {
+		return fqdn, nil
+	}
+	if ctx.Err() != nil {
+		return "", fqdnErr
+	}
+
+	suffix, err := waitForMagicDNSSuffix(ctx, reader, suffixTimeout, poll)
+	if err != nil || suffix == "" {
+		return "", fmt.Errorf("no tailnet host to route %q on: %w", name, fqdnErr)
+	}
+	slog.Warn("Node reported no tailnet host; routing on the composed name, which is wrong if the node was renamed",
+		"app", name, "host", name+"."+suffix, "reason", fqdnErr)
+	return name + "." + suffix, nil
+}
+
 // registerNodesProxyRoute registers the Proxy route a nodes-topology app (or
-// once-admin) answers on: the tailnet FQDN its own TSDProxy node reports,
-// which is what TSDProxy forwards as the Host. TLS is off: TSDProxy already
+// once-admin) answers on: the Host NodeRouteHost resolves, which is the
+// tailnet FQDN its own TSDProxy node reports whenever it has one, since that
+// is what TSDProxy forwards as the Host. TLS is off: TSDProxy already
 // terminated it with the tailnet's own certificate before forwarding here.
 // Shared by application.go and admin.go, the two callers that create a
 // container tailnet apps answer through under nodes. The route answers only a
@@ -733,7 +758,7 @@ func waitForNodeFQDN(ctx context.Context, reader TailnetReader, name string, tim
 // a container on the once network, so the network's subnets admit it while an
 // outsider spoofing the tailnet Host gets an unknown-Host 404.
 func registerNodesProxyRoute(ctx context.Context, ns *Namespace, appName, host, containerID, healthCheckPath string) error {
-	host, err := ns.Tailscale().WaitForNodeFQDN(ctx, host)
+	host, err := ns.Tailscale().NodeRouteHost(ctx, host)
 	if err != nil {
 		return err
 	}
