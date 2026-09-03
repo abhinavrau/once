@@ -64,6 +64,15 @@ type TailscaleServeStatus struct {
 	// what names its public URL. An app absent from the map has no live
 	// Funnel.
 	Funnels map[string]string
+	// FQDNs maps an app name to the tailnet FQDN its node actually answers
+	// on. Nodes-only, and not always the app's name plus the Magic DNS
+	// suffix: Tailscale appends "-1" (and up) when the requested hostname is
+	// taken, so a node named campfire can answer only to
+	// campfire-1.<suffix>. Nothing else reports that divergence - TSDProxy
+	// still calls the proxy "campfire" - so a Proxy route composed from the
+	// name instead of read from here matches nothing TSDProxy forwards.
+	// Empty under services, where a Service name is exact by construction.
+	FQDNs map[string]string
 }
 
 // The Serve-enablement probe: the `tailscale serve` invocation that reveals

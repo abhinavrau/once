@@ -78,7 +78,16 @@ func (a *Admin) Boot(ctx context.Context) error {
 
 	info, err := a.namespace.client.ContainerInspect(ctx, a.containerName())
 	if err == nil {
-		return a.ensureRunning(ctx, info)
+		if err := a.ensureRunning(ctx, info); err != nil {
+			return err
+		}
+		// Re-issue the route as well as start the container. once-admin's
+		// route is otherwise only registered at create time, so it keeps
+		// naming whatever tailnet host its node held then - and a node that
+		// rejoins under a name Tailscale deduped (once-admin-1) leaves the
+		// old route answering 404 with nothing to correct it. Boot runs on
+		// every Setup, so the drift heals on the next Once command.
+		return a.registerTailnetRoute(ctx, info.ID)
 	}
 	if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspecting once-admin container: %w", err)
@@ -88,6 +97,20 @@ func (a *Admin) Boot(ctx context.Context) error {
 		return err
 	}
 	return a.create(ctx, socket, conf)
+}
+
+// ReregisterRoute re-issues once-admin's Proxy route at its running
+// container, for the post-proxy-roll sweep. A once-admin that is not part of
+// this install has no route to re-issue and is not an error.
+func (a *Admin) ReregisterRoute(ctx context.Context) error {
+	info, err := a.namespace.client.ContainerInspect(ctx, a.containerName())
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("inspecting once-admin container: %w", err)
+	}
+	return a.registerTailnetRoute(ctx, info.ID)
 }
 
 // Destroy stops and removes once-admin.
@@ -160,21 +183,31 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 		return fmt.Errorf("starting once-admin container: %w", err)
 	}
 
-	// Under nodes, once-admin is exposed the same way an app is: TSDProxy
-	// forwards it to the Proxy rather than the container directly, so it
-	// needs a Proxy route on its own tailnet Host too.
-	if tailscaleEnabled {
-		viaProxy, err := a.namespace.Tailscale().RoutesTailnetAppsViaProxy(ctx)
-		if err != nil {
-			a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-			return err
-		}
-		if viaProxy {
-			if err := registerNodesProxyRoute(ctx, a.namespace, "once-admin", "once-admin", resp.ID, ""); err != nil {
-				a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-				return fmt.Errorf("registering once-admin with the proxy: %w", err)
-			}
-		}
+	if err := a.registerTailnetRoute(ctx, resp.ID); err != nil {
+		a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		return err
+	}
+	return nil
+}
+
+// registerTailnetRoute gives once-admin the Proxy route it answers on under
+// nodes, where it is exposed the same way an app is: TSDProxy forwards to the
+// Proxy rather than the container directly. A no-op under services (Docktail
+// advertises the container itself) or with Tailscale off.
+func (a *Admin) registerTailnetRoute(ctx context.Context, containerID string) error {
+	enabled, err := a.namespace.Tailscale().Enabled(ctx)
+	if err != nil {
+		return fmt.Errorf("checking tailscale: %w", err)
+	}
+	if !enabled {
+		return nil
+	}
+	viaProxy, err := a.namespace.Tailscale().RoutesTailnetAppsViaProxy(ctx)
+	if err != nil || !viaProxy {
+		return err
+	}
+	if err := registerNodesProxyRoute(ctx, a.namespace, "once-admin", "once-admin", containerID, ""); err != nil {
+		return fmt.Errorf("registering once-admin with the proxy: %w", err)
 	}
 	return nil
 }

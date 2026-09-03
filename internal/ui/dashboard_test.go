@@ -238,13 +238,14 @@ func TestDashboard_VerboseHintInFooter(t *testing.T) {
 
 func TestDashboard_UnresolvableTailnetURLIsMarkedAndExplained(t *testing.T) {
 	stubLookupHost(t, nil, errors.New("server misbehaving"))
+	stubHostTailnetSuffix(t, "example.com.tailnet.ts.net", true)
 
 	d := tailnetDashboard(t)
 	view := ansi.Strip(d.View())
 
 	assert.Contains(t, view, "https://app-0.example.com.tailnet.ts.net ⚠")
 	assert.Contains(t, view, "app-0.example.com.tailnet.ts.net does not resolve from this machine")
-	assert.Contains(t, view, "try `tailscale set --accept-dns=false`")
+	assert.Contains(t, view, "MagicDNS may be broken")
 }
 
 func TestDashboard_ResolvableTailnetURLIsNotMarked(t *testing.T) {
@@ -276,12 +277,13 @@ func TestDashboard_UncheckedTailnetURLIsNotMarked(t *testing.T) {
 
 func TestDashboard_TailnetWarningNoteShrinksTheViewport(t *testing.T) {
 	stubLookupHost(t, nil, errors.New("server misbehaving"))
+	stubHostTailnetSuffix(t, "example.com.tailnet.ts.net", true)
 
 	plain := testDashboard(1)
 	plain, _ = updateDashboard(plain, tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	warned := tailnetDashboard(t)
-	noteHeight := lipgloss.Height(warned.tailnetWarningNote())
+	noteHeight := lipgloss.Height(warned.tailnetWarningNote()) + 1 // + the copy hint row
 
 	assert.Positive(t, noteHeight)
 	assert.Equal(t, plain.viewport.Height()-noteHeight, warned.viewport.Height())
@@ -290,16 +292,34 @@ func TestDashboard_TailnetWarningNoteShrinksTheViewport(t *testing.T) {
 
 func TestDashboardTailnetDNSWarningsSkipsHostsThatResolve(t *testing.T) {
 	stubLookupHost(t, nil, errors.New("server misbehaving"))
+	stubHostTailnetSuffix(t, "tailnet.ts.net", true)
 
 	settings := docker.TailscaleSettings{DomainSuffix: "tailnet.ts.net"}
-	warnings := tailnetDNSWarnings(context.Background(), []string{"books", "chat"}, settings)
+	warnings := tailnetDNSWarnings(context.Background(), []string{"books", "chat"}, settings, nil)
 
 	assert.Len(t, warnings, 2)
 	assert.Contains(t, warnings["https://books.tailnet.ts.net"], "books.tailnet.ts.net does not resolve")
 	assert.Contains(t, warnings["https://chat.tailnet.ts.net"], "chat.tailnet.ts.net does not resolve")
 
 	stubLookupHost(t, []string{"100.64.0.1"}, nil)
-	assert.Empty(t, tailnetDNSWarnings(context.Background(), []string{"books"}, settings))
+	assert.Empty(t, tailnetDNSWarnings(context.Background(), []string{"books"}, settings, nil))
+}
+
+// TestDashboardTailnetDNSWarningsChecksTheDedupedName pins that the card
+// resolves the name the node actually answers on. Composing books.<suffix>
+// when Tailscale assigned books-1 warns about the wrong host - and the card's
+// link points at the same wrong host.
+func TestDashboardTailnetDNSWarningsChecksTheDedupedName(t *testing.T) {
+	stubLookupHost(t, nil, errors.New("server misbehaving"))
+	stubHostTailnetSuffix(t, "tailnet.ts.net", true)
+
+	settings := docker.TailscaleSettings{DomainSuffix: "tailnet.ts.net"}
+	fqdns := map[string]string{"books": "books-1.tailnet.ts.net"}
+
+	warnings := tailnetDNSWarnings(context.Background(), []string{"books"}, settings, fqdns)
+
+	assert.Contains(t, warnings["https://books-1.tailnet.ts.net"], "books-1.tailnet.ts.net does not resolve")
+	assert.NotContains(t, warnings, "https://books.tailnet.ts.net")
 }
 
 func TestDashboard_OlderTailscaleSetupShowsTheFacadeMessageVerbatim(t *testing.T) {
@@ -324,6 +344,33 @@ func TestDashboardResolvableTailnetHostsSkipsStoppedAndNonTailnetApps(t *testing
 	assert.Equal(t, []string{"app-0.example.com"}, d.resolvableTailnetHosts())
 }
 
+// A service URL is there to be opened, so the row carries the OSC 8 escape
+// that makes it clickable rather than a string to retype into a browser.
+func TestDashboard_TailnetURLRowIsAHyperlink(t *testing.T) {
+	failOnLookup(t)
+
+	d := testDashboard(1)
+	d.apps[0].Settings.Exposure = docker.ExposureTailnet
+	d.buildPanels()
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
+	d, _ = updateDashboard(d, tailscaleInfoMsg{enabled: true, settings: docker.TailscaleSettings{DomainSuffix: "tailnet.ts.net"}})
+
+	assert.Contains(t, d.View(), "\x1b]8;;https://app-0.example.com.tailnet.ts.net")
+}
+
+// A start or stop that fails used to change nothing on screen, which reads as
+// the key having done nothing rather than as the container having refused.
+func TestDashboard_FailedStartStopIsShownAndCopyable(t *testing.T) {
+	d := testDashboard(1)
+	d, _ = updateDashboard(d, tea.WindowSizeMsg{Width: 120, Height: 40})
+	d, _ = updateDashboard(d, startStopFinishedMsg{err: errors.New("container refused to stop")})
+
+	view := ansi.Strip(d.View())
+	assert.Contains(t, view, "container refused to stop")
+	assert.Contains(t, view, "to copy")
+	assert.Equal(t, "container refused to stop", d.CopyableError())
+}
+
 // Helpers
 
 // tailnetDashboard is a sized dashboard with one running tailnet-exposed app
@@ -340,7 +387,7 @@ func tailnetDashboard(t *testing.T) Dashboard {
 	d, _ = updateDashboard(d, tailscaleInfoMsg{
 		enabled:  true,
 		settings: settings,
-		warnings: tailnetDNSWarnings(context.Background(), d.resolvableTailnetHosts(), settings),
+		warnings: tailnetDNSWarnings(context.Background(), d.resolvableTailnetHosts(), settings, nil),
 	})
 	return d
 }

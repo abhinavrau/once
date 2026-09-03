@@ -81,6 +81,12 @@ func (m BackupsForm) ShowingSecret() bool {
 	return m.custody != nil && m.custody.ShowingSecret()
 }
 
+// CopyableError is the failed probe or enable's message, for App's copy key.
+// It reaches App through the screen hosting this overlay.
+func (m BackupsForm) CopyableError() string {
+	return errorText(m.err)
+}
+
 func (m BackupsForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 	if wsm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wsm.Width, wsm.Height
@@ -265,7 +271,7 @@ func (m BackupsForm) runEnable() tea.Cmd {
 func (m BackupsForm) setupView() string {
 	var parts []string
 	if m.err != nil {
-		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Error).Width(backupsFormTextWidth).Render(docker.ErrorMessage(m.err)), "")
+		parts = append(parts, lipgloss.NewStyle().Width(backupsFormTextWidth).Render(errorWithCopyHint(m.err)), "")
 	}
 
 	intro := "Backups are enabled. Enable re-validates the settings below\nwith a probe against each repository."

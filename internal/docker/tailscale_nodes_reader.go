@@ -101,9 +101,12 @@ func (r *tsdproxyReader) SelfStatus(ctx context.Context) (TailscaleSelfStatus, e
 }
 
 // ServeStatus reports every joined-and-running proxy by name (the app's
-// Host), and the "host:port" a live Funnel serves on for any that have one -
-// always the app's own tailnet URL's host and 443, since Funnel is per-app
-// under nodes with no shared port to allocate.
+// Host), the tailnet FQDN each one's node actually answers on, and the
+// "host:port" a live Funnel serves on for any that have one - always the
+// app's own tailnet URL's host and 443, since Funnel is per-app under nodes
+// with no shared port to allocate. The FQDN comes from the proxy's own URL
+// rather than its name plus the suffix, because those differ whenever
+// Tailscale deduped the requested hostname.
 func (r *tsdproxyReader) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
 	proxies, err := r.proxies(ctx)
 	if err != nil {
@@ -112,18 +115,22 @@ func (r *tsdproxyReader) ServeStatus(ctx context.Context) (TailscaleServeStatus,
 
 	var services []string
 	funnels := map[string]string{}
+	fqdns := map[string]string{}
 	for _, p := range proxies {
 		if p.Status != tsdproxyStatusRunning || p.Name == "" {
 			continue
 		}
 		services = append(services, p.Name)
+		host := tailnetURLHost(p.URL)
+		if host == "" {
+			continue
+		}
+		fqdns[p.Name] = host
 		if hasFunnel(p.Ports) {
-			if host, ok := strings.CutPrefix(p.URL, "https://"); ok && host != "" {
-				funnels[p.Name] = host + ":443"
-			}
+			funnels[p.Name] = host + ":443"
 		}
 	}
-	return TailscaleServeStatus{Services: services, Funnels: funnels}, nil
+	return TailscaleServeStatus{Services: services, Funnels: funnels, FQDNs: fqdns}, nil
 }
 
 // ServeEnablementURL is unreached under nodes: TSDProxy needs no per-tailnet
@@ -168,17 +175,27 @@ func hasFunnel(ports []tsdproxyPort) bool {
 	return false
 }
 
-// suffixFromTailnetURL splits a node's own "https://<name>.<suffix>" tailnet
-// URL into its Magic DNS suffix.
-func suffixFromTailnetURL(rawURL string) (string, bool) {
+// tailnetURLHost strips the scheme and trailing slash from a node's own
+// tailnet URL, leaving the FQDN it answers on, or "" when there is none yet
+// (a proxy still joining reports an empty URL).
+func tailnetURLHost(rawURL string) string {
 	host, ok := strings.CutPrefix(rawURL, "https://")
 	if !ok {
 		host, ok = strings.CutPrefix(rawURL, "http://")
 	}
 	if !ok {
+		return ""
+	}
+	return strings.TrimSuffix(host, "/")
+}
+
+// suffixFromTailnetURL splits a node's own "https://<name>.<suffix>" tailnet
+// URL into its Magic DNS suffix.
+func suffixFromTailnetURL(rawURL string) (string, bool) {
+	host := tailnetURLHost(rawURL)
+	if host == "" {
 		return "", false
 	}
-	host = strings.TrimSuffix(host, "/")
 	_, suffix, ok := strings.Cut(host, ".")
 	if !ok || suffix == "" {
 		return "", false

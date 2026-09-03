@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"image/color"
 	"log/slog"
 	"sync"
 	"time"
@@ -20,17 +21,22 @@ import (
 )
 
 var appKeys = struct {
-	Quit key.Binding
+	Quit      key.Binding
+	CopyError key.Binding
 }{
 	Quit: WithHelp(NewKeyBinding("ctrl+c"), "ctrl+c", "quit"),
+	// ctrl+y and not the readline-ish ctrl+e: App sees keys before the screen
+	// does, and ctrl+e is "end of line" in every text field in the app.
+	CopyError: WithHelp(NewKeyBinding("ctrl+y"), "ctrl+y", "copy error"),
 }
 
 const (
-	// quitNoticeDuration is how long the "busy, quit refused" notice stays on
-	// screen before it clears itself.
-	quitNoticeDuration = 2 * time.Second
+	// noticeDuration is how long a transient notice ("busy, quit refused",
+	// "copied") stays on screen before it clears itself.
+	noticeDuration = 2 * time.Second
 
 	quitNoticeText = "Busy - finishing current action; quit when done."
+	copiedText     = "Copied to clipboard."
 )
 
 type (
@@ -38,7 +44,7 @@ type (
 	scrapeTickMsg          struct{}
 	scrapeUserStatsTickMsg struct{}
 	scrapeDoneMsg          struct{}
-	quitNoticeExpiredMsg   struct{}
+	noticeExpiredMsg       struct{}
 
 	NavigateToInstallMsg   struct{}
 	NavigateToDashboardMsg struct {
@@ -82,7 +88,8 @@ type App struct {
 	watchCtx        context.Context
 	watchCancel     context.CancelFunc
 	installImageRef string
-	quitNoticeShown bool
+	notice          string
+	noticeColor     color.Color
 }
 
 func NewApp(ns *docker.Namespace, installImageRef string) *App {
@@ -181,10 +188,17 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		if key.Matches(msg, appKeys.Quit) {
 			if m.screenIsBusy() {
-				return m, m.showQuitNotice()
+				return m, m.showNotice(quitNoticeText, Colors.Warning)
 			}
 			m.shutdown()
 			return m, tea.Quit
+		}
+		// Only claimed while there is something to copy, so the key stays the
+		// screen's own on every other frame.
+		if key.Matches(msg, appKeys.CopyError) {
+			if text := copyableError(m.currentScreen); text != "" {
+				return m, tea.Batch(tea.SetClipboard(text), m.showNotice(copiedText, Colors.Success))
+			}
 		}
 
 	case namespaceChangedMsg:
@@ -258,13 +272,13 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case QuitMsg:
 		if m.screenIsBusy() {
-			return m, m.showQuitNotice()
+			return m, m.showNotice(quitNoticeText, Colors.Warning)
 		}
 		m.shutdown()
 		return m, tea.Quit
 
-	case quitNoticeExpiredMsg:
-		m.quitNoticeShown = false
+	case noticeExpiredMsg:
+		m.notice = ""
 		return m, nil
 	}
 
@@ -277,8 +291,8 @@ func (m *App) View() tea.View {
 	var content string
 	if m.sizeGuard.LargeEnough() {
 		content = mouse.Sweep(m.currentScreen.View())
-		if m.quitNoticeShown {
-			content = m.overlayQuitNotice(content)
+		if m.notice != "" {
+			content = m.overlayNotice(content)
 		}
 	} else {
 		content = m.sizeGuard.View()
@@ -330,24 +344,24 @@ func (m *App) screenIsBusy() bool {
 	return ok && busy.Busy()
 }
 
-// showQuitNotice marks the guarded-quit notice visible and schedules it to
-// clear itself, so a refused quit reads as "busy, try again shortly" rather
-// than a hung TUI.
-func (m *App) showQuitNotice() tea.Cmd {
-	m.quitNoticeShown = true
-	return tea.Tick(quitNoticeDuration, func(time.Time) tea.Msg { return quitNoticeExpiredMsg{} })
+// showNotice makes a transient notice visible and schedules it to clear
+// itself, so a refused quit reads as "busy, try again shortly" rather than a
+// hung TUI, and an invisible clipboard write says it happened.
+func (m *App) showNotice(text string, c color.Color) tea.Cmd {
+	m.notice, m.noticeColor = text, c
+	return tea.Tick(noticeDuration, func(time.Time) tea.Msg { return noticeExpiredMsg{} })
 }
 
-// overlayQuitNotice composites the guarded-quit notice on top of the current
-// screen's rendered content without altering its layout, matching how
-// PopupHelp overlays on top of Install.
-func (m *App) overlayQuitNotice(content string) string {
+// overlayNotice composites the notice on top of the current screen's rendered
+// content without altering its layout, matching how PopupHelp overlays on top
+// of Install.
+func (m *App) overlayNotice(content string) string {
 	notice := lipgloss.NewStyle().
-		Foreground(Colors.Warning).
+		Foreground(m.noticeColor).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Colors.Warning).
+		BorderForeground(m.noticeColor).
 		Padding(0, 1).
-		Render(quitNoticeText)
+		Render(m.notice)
 	return OverlayCenter(content, notice, m.lastSize.Width, m.lastSize.Height)
 }
 

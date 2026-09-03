@@ -113,11 +113,13 @@ func funnelUserError(err error) error {
 // funnelURLForApp returns the app's public Funnel URL from stored settings, or
 // "" if the node hostname isn't known yet (no Funnel has activated).
 func funnelURLForApp(ts *docker.Tailscale, app *docker.Application) string {
-	settings, err := ts.LoadSettings(context.Background())
+	ctx := context.Background()
+	settings, err := ts.LoadSettings(ctx)
 	if err != nil {
 		return ""
 	}
-	return settings.FunnelURL(app.Settings.Host, app.Settings.ActiveFunnelPort())
+	fqdns, _ := ts.NodeFQDNs(ctx)
+	return settings.FunnelURL(app.Settings.Host, app.Settings.ActiveFunnelPort(), fqdns)
 }
 
 // parseFunnelDuration applies the same bounds the Funnel spine applies, so a

@@ -18,7 +18,7 @@ import (
 // lifted from the validated prototype (ADR-0017 amendment). Both are hosted
 // by TailscaleForm; because Once never writes the Tailnet Policy, the paste
 // is the critical path, so copying is a first-class control on each: a
-// visible, clickable button and ctrl+p share one copy path.
+// visible, clickable button next to every snippet.
 
 const (
 	tailscalePolicyEditorURL = "https://login.tailscale.com/admin/acls/file"
@@ -47,8 +47,7 @@ type policyDiffContinueMsg struct{}
 var tagOwnersSkipKey = WithHelp(NewKeyBinding("s"), "s", "skip - tag exists")
 
 // policyControls is the controls every policy screen ends with: one or more
-// visible copy controls (the first sharing its payload and Copied ✓ state
-// with ctrl+p) and a Continue button, focused in that order. Tab and the
+// visible copy controls and a Continue button, focused in that order. Tab and the
 // arrows move focus, enter presses the focused control, and clicks land on
 // the named targets the integration drivers assert.
 type policyControls struct {
@@ -69,9 +68,6 @@ func (c policyControls) Update(msg tea.Msg, payloads []string, continueMsg tea.M
 	count := len(c.copyTargets) + 1
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		if key.Matches(msg, tailscaleCopyKey) {
-			return c.copy(0, payloads[0])
-		}
 		switch msg.String() {
 		case "tab", "right":
 			c.focused = (c.focused + 1) % count
@@ -170,14 +166,6 @@ func (s tagOwnersScreen) Update(msg tea.Msg) (tagOwnersScreen, tea.Cmd) {
 	tag := s.field.Value()
 	payloads := []string{docker.TagOwnersPolicyBlock(tag), docker.TagOwnersPolicyLines(tag)}
 
-	// ctrl+p is a global shortcut on this screen regardless of what is
-	// focused, same as the credential screen's copy shortcut.
-	if msg, ok := msg.(tea.KeyPressMsg); ok && key.Matches(msg, tailscaleCopyKey) {
-		var cmd tea.Cmd
-		s.controls, cmd, _ = s.controls.Update(msg, payloads, tagOwnersContinueMsg{tag: tag})
-		return s, cmd
-	}
-
 	if click, ok := msg.(MouseEvent); ok && click.IsClick && click.Target == fieldTarget("tag") {
 		return s.focusField()
 	}
@@ -238,7 +226,7 @@ func (s tagOwnersScreen) View() string {
 	top = append(top, s.spacer()...)
 
 	// Each snippet carries its own copy control, so either entry shape is one
-	// click away; ctrl+p keeps copying the block, the fresh-policy default.
+	// click away.
 	top = append(top,
 		policyStepStyle().Render("1. Copy this entry"),
 		lipgloss.JoinHorizontal(lipgloss.Center, policySnippetBox(block), " ", s.controls.copyButton(0, "Copy to clipboard")),
@@ -247,7 +235,7 @@ func (s tagOwnersScreen) View() string {
 		policyStepStyle().Render("   OR"),
 		policyMuted("   already have tagOwners? add just this line inside it:"),
 		lipgloss.JoinHorizontal(lipgloss.Center, policySnippetBox(line), " ", s.controls.copyButton(1, "Copy to clipboard")),
-		policyStepStyle().Render("2. Paste it")+policyMuted(" in the editor: ")+policyLink(tailscalePolicyEditorURL),
+		policyStepStyle().Render("2. Paste it")+policyMuted(" in the editor: ")+linkedURL(tailscalePolicyEditorURL),
 	)
 	top = append(top, s.spacer()...)
 	top = append(top,
@@ -413,7 +401,7 @@ func (s policyDiffScreen) View() string {
 		lipgloss.JoinHorizontal(lipgloss.Center,
 			policyStepStyle().Render("1. Copy the merged file"), "  ",
 			s.controls.copyButton(0, "Copy Policy File to Clipboard")),
-		policyStepStyle().Render("2. Open")+policyMuted(" ")+policyLink(tailscalePolicyEditorURL)+policyMuted(" - select all"),
+		policyStepStyle().Render("2. Open")+policyMuted(" ")+linkedURL(tailscalePolicyEditorURL)+policyMuted(" - select all"),
 		policyStepStyle().Render("3. Paste over the whole file")+policyMuted(", save, then Continue"),
 	)
 
@@ -587,10 +575,6 @@ func policyStepStyle() lipgloss.Style {
 
 func policyMuted(s string) string {
 	return lipgloss.NewStyle().Foreground(Colors.Muted).Render(s)
-}
-
-func policyLink(url string) string {
-	return lipgloss.NewStyle().Foreground(Colors.Primary).Underline(true).Hyperlink(url).Render(url)
 }
 
 func policySnippetBox(s string) string {

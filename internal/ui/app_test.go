@@ -26,11 +26,11 @@ func TestApp_QuitIsGuardedWhileScreenIsBusy(t *testing.T) {
 	app := &App{currentScreen: busyTestScreen{busy: true}, watchCancel: func() { shutdownCalled = true }}
 
 	// The returned cmd schedules the notice's self-clearing tea.Tick; it must
-	// not be invoked here since that would block for quitNoticeDuration.
+	// not be invoked here since that would block for noticeDuration.
 	_, cmd := app.Update(keyPressMsg("ctrl+c"))
 	assert.NotNil(t, cmd)
 	assert.False(t, shutdownCalled)
-	assert.True(t, app.quitNoticeShown)
+	assert.Equal(t, quitNoticeText, app.notice)
 }
 
 func TestApp_QuitExitsOnceTheBusyScreenGoesIdle(t *testing.T) {
@@ -70,7 +70,7 @@ func TestApp_QuitMsgIsGuardedWhileScreenIsBusy(t *testing.T) {
 
 	_, cmd := app.Update(QuitMsg{})
 	assert.NotNil(t, cmd)
-	assert.True(t, app.quitNoticeShown)
+	assert.Equal(t, quitNoticeText, app.notice)
 }
 
 // A guarded quit must not read as a hung TUI: swallowing the key silently
@@ -99,7 +99,7 @@ func TestApp_QuitNoticeClearsAfterItExpires(t *testing.T) {
 	app.Update(keyPressMsg("ctrl+c"))
 	require.Contains(t, app.View().Content, "quit when done")
 
-	app.Update(quitNoticeExpiredMsg{})
+	app.Update(noticeExpiredMsg{})
 	assert.NotContains(t, app.View().Content, "quit when done")
 }
 
@@ -118,6 +118,32 @@ func TestApp_QuitDuringInstallActivityIsGuarded(t *testing.T) {
 	assert.NotNil(t, cmd)
 }
 
+// An error is only ever on screen: the alt screen keeps no scrollback and
+// mouse tracking takes selection away, so the copy key is the one way to get
+// the message into an issue or a search box.
+func TestApp_CopyKeyCopiesTheScreensError(t *testing.T) {
+	app := &App{
+		currentScreen: erroringTestScreen{message: "the daemon refused the connection"},
+		lastSize:      tea.WindowSizeMsg{Width: 80, Height: 24},
+	}
+
+	_, cmd := app.Update(keyPressMsg("ctrl+y"))
+	require.NotNil(t, cmd)
+	assert.Contains(t, app.View().Content, "Copied")
+}
+
+// With nothing to copy the key stays the screen's own, rather than being
+// swallowed on every frame that has no error.
+func TestApp_CopyKeyReachesTheScreenWithoutAnError(t *testing.T) {
+	screen := erroringTestScreen{}
+	app := &App{currentScreen: screen, lastSize: tea.WindowSizeMsg{Width: 80, Height: 24}}
+
+	_, cmd := app.Update(keyPressMsg("ctrl+y"))
+	require.NotNil(t, cmd)
+	assert.Equal(t, "ctrl+y", cmd().(string))
+	assert.Empty(t, app.notice)
+}
+
 // Helpers
 
 type idleTestScreen struct{}
@@ -125,6 +151,20 @@ type idleTestScreen struct{}
 func (idleTestScreen) Init() tea.Cmd                       { return nil }
 func (idleTestScreen) Update(tea.Msg) (Component, tea.Cmd) { return idleTestScreen{}, nil }
 func (idleTestScreen) View() string                        { return "" }
+
+// erroringTestScreen reports the key it was handed, so a key App did not
+// claim can be told from one it swallowed.
+type erroringTestScreen struct{ message string }
+
+func (s erroringTestScreen) Init() tea.Cmd { return nil }
+func (s erroringTestScreen) Update(msg tea.Msg) (Component, tea.Cmd) {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		return s, func() tea.Msg { return key.String() }
+	}
+	return s, nil
+}
+func (s erroringTestScreen) View() string          { return "" }
+func (s erroringTestScreen) CopyableError() string { return s.message }
 
 type busyTestScreen struct{ busy bool }
 

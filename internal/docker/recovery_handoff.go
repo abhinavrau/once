@@ -192,7 +192,11 @@ func (n *Namespace) adminTailnetURL(ctx context.Context) string {
 	if err != nil || suffix == "" {
 		return ""
 	}
-	return TailscaleSettings{DomainSuffix: suffix}.TailnetURL(adminServiceName)
+	// once-admin is a node like any other, so it too can hold a deduped name
+	// (once-admin-1); handing the phone the composed one sends it somewhere
+	// that does not resolve.
+	fqdns, _ := n.Tailscale().NodeFQDNs(ctx)
+	return TailscaleSettings{DomainSuffix: suffix}.TailnetURLFor(adminServiceName, fqdns)
 }
 
 // publishRoute mints a certificate for the address the phone dials, copies it

@@ -331,9 +331,10 @@ func (t *tailscaleCommand) statusReport(ctx context.Context, ns *docker.Namespac
 			funnelApps[app.Settings.Host] = app
 		}
 	}
+	fqdns, _ := ns.Tailscale().NodeFQDNs(ctx)
 	for i, s := range statuses {
 		if app := funnelApps[s.Name]; app != nil {
-			statuses[i].FunnelURL = settings.FunnelURL(s.Name, app.Settings.ActiveFunnelPort())
+			statuses[i].FunnelURL = settings.FunnelURL(s.Name, app.Settings.ActiveFunnelPort(), fqdns)
 			statuses[i].FunnelExpiresAt = app.Settings.FunnelExpiresAt
 		}
 	}

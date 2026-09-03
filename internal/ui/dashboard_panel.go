@@ -160,9 +160,9 @@ func (p DashboardPanel) renderTailnetRows() string {
 		return labelStyle.Render(label) + value
 	}
 
-	tailnet := p.tailnetURL
+	tailnet := linkedURL(p.tailnetURL)
 	switch {
-	case tailnet == "":
+	case p.tailnetURL == "":
 		tailnet = "registering…"
 	case p.tailnetWarning != "":
 		// Only a marker fits the row; the dashboard prints the full sentence
@@ -175,7 +175,7 @@ func (p DashboardPanel) renderTailnetRows() string {
 		row("Funnel Status", funnelStatusText(p.app.Settings.FunnelExpiresAt, time.Now())),
 	}
 	if p.funnelURL != "" {
-		rows = append(rows, row("Funnel URL", p.funnelURL))
+		rows = append(rows, row("Funnel URL", linkedURL(p.funnelURL)))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }

@@ -25,7 +25,6 @@ const tailscaleFormTextWidth = 68
 
 var (
 	tailscaleFormCloseKey = WithHelp(NewKeyBinding("esc"), "esc", "close")
-	tailscaleCopyKey      = WithHelp(NewKeyBinding("ctrl+p"), "ctrl+p", "copy policy snippet")
 	tailscaleHelpKey      = WithHelp(NewKeyBinding("f1"), "F1", "help")
 )
 
@@ -63,9 +62,9 @@ const (
 // Tailscale. Enabling runs the same flow as the CLI: probe the pasted OAuth
 // credential, review the Tailnet Policy, and boot the requested tailnet
 // topology. The credential's tag must be defined in the tailnet policy
-// first (the tagOwners screen); ctrl+p copies the required snippet for
-// whichever topology is currently selected, or the Merged Policy after a
-// refused enable.
+// first (the tagOwners screen), which is where the entry to paste is
+// copied from; a refused enable copies the Merged Policy from the diff
+// screen.
 type TailscaleForm struct {
 	namespace *docker.Namespace
 	enabled   bool
@@ -101,6 +100,12 @@ func NewTailscaleForm(ns *docker.Namespace) TailscaleForm {
 		settings, loadErr = ns.Tailscale().LoadSettings(context.Background())
 	}
 	return newTailscaleForm(ns, enabled, settings, loadErr)
+}
+
+// CopyableError is the failed enable's message, for App's copy key. It
+// reaches App through the screen hosting this overlay.
+func (m TailscaleForm) CopyableError() string {
+	return errorText(m.err)
 }
 
 func (m TailscaleForm) Init() tea.Cmd {
@@ -147,9 +152,6 @@ func (m TailscaleForm) Update(msg tea.Msg) (Component, tea.Cmd) {
 		}
 		if m.screen != tailscaleScreenCredential {
 			return m.updateScreen(msg)
-		}
-		if key.Matches(msg, tailscaleCopyKey) {
-			return m, tea.SetClipboard(m.copyPayload())
 		}
 		m.err = nil
 		m.warnings = nil
@@ -272,8 +274,8 @@ func (m TailscaleForm) view() string {
 	// The setup steps are the screen's point, so they are the last thing to
 	// go: when the full view overflows, the form tightens first - inline
 	// radios, no separator or padding rows - and only when even that cannot
-	// make room does the guidance collapse. setupView pads the form to its
-	// tallest field set, so the chosen tier depends on the terminal size
+	// make room does the guidance collapse. setupView reserves the absent
+	// Mode field's rows, so the chosen tier depends on the terminal size
 	// alone and a topology click changes the form's content, never its
 	// layout. TestTailscaleForm_CredentialScreenFitsThe24RowFloor and
 	// TestTailscaleForm_TopologySwitchNeverChangesTheLayoutTier pin it.
@@ -292,18 +294,6 @@ func (m TailscaleForm) view() string {
 
 // Private
 
-// copyPayload is what ctrl+p carries: after a refused enable the fix is the
-// Merged Policy, so that is what the copy control holds; the selected
-// topology's static snippet is the payload in every other state.
-func (m TailscaleForm) copyPayload() string {
-	var refused *docker.PolicyRefusedError
-	if errors.As(m.err, &refused) {
-		return refused.Review.Merged
-	}
-	facts := tailscaleFactsFor(selectedTailscaleTopology(m.form))
-	return facts.PolicySnippet(m.tag)
-}
-
 // helpContent returns the F1 popup's title and body for whichever screen of
 // the flow is currently active.
 func (m TailscaleForm) helpContent() (string, string) {
@@ -321,6 +311,8 @@ func (m TailscaleForm) helpContent() (string, string) {
 const credentialHelpText = `This screen collects the Tailscale OAuth client Once uses to manage this tailnet.
 
 Topology chooses how Once exposes this server: Nodes joins it to the tailnet directly; Services publishes it through tailscaled's Services feature.
+
+Mode appears under the Services topology and picks the tailscaled that publishes them. Sidecar (the default) boots a Once-managed tailscaled container: it needs no setup on the host, at the cost of one extra tailnet device. Host reuses the tailscaled already running on this host, saving that device slot - it must be logged into the credential's tailnet, tagged with your tag, and v1.86 or newer, which enable checks before touching anything.
 
 Client ID and Client Secret come from an OAuth client you create in the Tailscale admin console (Settings -> OAuth clients), scoped to the tag declared on the previous screen.
 `
@@ -360,7 +352,7 @@ func (m TailscaleForm) runEnable(msg tailscaleEnableSubmitMsg) tea.Cmd {
 }
 
 // fits reports whether the credential screen fits the terminal at the given
-// tier. setupView pads the form to its tallest field set, so the measured
+// tier. setupView reserves the absent Mode field's rows, so the measured
 // height is a function of the terminal size alone and the tier cannot change
 // when a topology click reveals or removes the Mode field.
 func (m TailscaleForm) fits(guidance, compact, tight bool) bool {
@@ -373,57 +365,71 @@ func (m TailscaleForm) fits(guidance, compact, tight bool) bool {
 func (m TailscaleForm) setupView(guidance, compact bool) string {
 	var parts []string
 	if m.err != nil {
-		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Error).Width(tailscaleFormTextWidth).Render(docker.ErrorMessage(m.err)))
+		parts = append(parts, lipgloss.NewStyle().Width(tailscaleFormTextWidth).Render(errorWithCopyHint(m.err)))
 		var refused *docker.PolicyRefusedError
 		switch {
 		case errors.As(m.err, &refused):
-			parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Muted).Render("ctrl+p copies the Merged Policy - apply it, then enable again."))
-		case errors.Is(m.err, docker.ErrTagNotInPolicy):
-			parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Muted).Render("ctrl+p copies the required policy snippet."))
+			parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Muted).Render("Continue to review the Merged Policy - apply it, then enable again."))
+		case errors.Is(m.err, docker.ErrTagNotInPolicy) && m.hasTagOwnersScreen:
+			parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Muted).Render("esc returns to the tagOwners screen, where the entry can be copied."))
 		}
 		parts = append(parts, "")
 	} else if len(m.warnings) > 0 {
 		parts = append(parts, lipgloss.NewStyle().Foreground(Colors.Warning).Width(tailscaleFormTextWidth).Render(strings.Join(m.warnings, "\n")), "")
 	}
 
-	if guidance {
-		parts = append(parts, m.guidance(), "")
-	}
-
-	// The form pads to its tallest field set (Mode present, ADR-0007's
-	// Services selector), so a topology click swaps the Mode field with
-	// reserved space instead of moving the box or the buttons.
-	worst := m.form
-	if !formHasItem(worst, "mode") {
-		worst.AppendItems(newTailscaleModeItem(tailscaleFactsFor(docker.TailnetTopologyServices).ModeChoices, ""))
-	}
-	worst.SetCompact(compact)
-
 	form := m.form
 	form.SetCompact(compact)
-	form.SetMinHeight(lipgloss.Height(worst.View()))
+
+	// The Mode field only exists under Services (ADR-0007's selector); when
+	// it is absent, blank rows of its exact height hold its place under
+	// Topology, so a topology click swaps the field with reserved space
+	// instead of moving the fields and buttons below it. Measured before the
+	// prologues go in, so the difference is the Mode block alone.
+	if !formHasItem(form, "mode") {
+		worst := form
+		worst.AppendItems(newTailscaleModeItem(tailscaleFactsFor(docker.TailnetTopologyServices).ModeChoices, ""))
+		form.SetReservedRowsAfter("topology", lipgloss.Height(worst.View())-lipgloss.Height(form.View()))
+	}
+
+	// The setup steps interleave with the fields they explain: step 1 sits
+	// above the Topology radio (Mode rides along under it), steps 2-4 above
+	// the credential fields they lead to. An enabled install gets the
+	// re-enable explainer instead.
+	if guidance {
+		if m.enabled {
+			parts = append(parts, policyMuted("Tailscale is enabled. Enable re-applies the settings below\n(changing the topology, mode, or credentials rebuilds it; so does\nediting the tag on the previous screen)."), "")
+		} else {
+			form.SetItemPrologue("topology", policyStepStyle().Render("1. Select your topology"))
+			form.SetItemPrologue("client-id", m.oauthSteps())
+		}
+	}
+
 	parts = append(parts, form.View())
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-// guidance is the credential screen's intro: numbered setup steps with a
-// scope list that follows the topology selection live (fresh enable), or the
-// re-enable explainer (enabled install).
-func (m TailscaleForm) guidance() string {
-	if m.enabled {
-		return policyMuted("Tailscale is enabled. Enable re-applies the settings below\n(changing the topology, mode, or credentials rebuilds it; so does\nediting the tag on the previous screen).")
-	}
-
+// oauthSteps is the guidance's steps 2-4, rendered above the credential
+// fields: the scope list follows the topology selection live, padded to the
+// tallest topology's row count so a topology click never changes its height.
+func (m TailscaleForm) oauthSteps() string {
 	facts := tailscaleFactsFor(selectedTailscaleTopology(m.form))
 	num := policyStepStyle()
-	scopes := lipgloss.NewStyle().Foreground(Colors.Primary).PaddingLeft(3).Width(tailscaleFormTextWidth).
-		Render(strings.Join(facts.OAuthScopes, ", "))
+
+	rows := tailscaleScopeRows(facts.OAuthScopes)
+	for _, topology := range tailscaleTopologyChoices {
+		for range len(tailscaleScopeRows(tailscaleFactsFor(topology).OAuthScopes)) - len(rows) {
+			rows = append(rows, "")
+		}
+	}
+	// Fixed width: the scope rows are the guidance's widest lines and differ
+	// per topology, so an unpadded block would resize the box on a topology
+	// click.
+	scopes := lipgloss.NewStyle().PaddingLeft(3).Width(tailscaleFormTextWidth).Render(strings.Join(rows, "\n"))
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		num.Render("1. Select your topology")+policyMuted(" - the first field below"),
-		"",
-		num.Render("2. Navigate to")+policyMuted(": ")+policyLink(tailscaleOAuthClientsURL),
+		num.Render("2. Navigate to")+policyMuted(": ")+linkedURL(tailscaleOAuthClientsURL),
 		"",
 		num.Render("3. Create a new OAuth client")+policyMuted(" with these scopes:"),
 		scopes,
@@ -529,15 +535,19 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 	topologyField.SetSelected(max(slices.Index(tailscaleTopologyChoices, topology), 0))
 
 	// Topology leads: the guidance's step 1 selects it, and the scope list
-	// in step 3 follows the selection live (ADR-0017 amendment).
+	// in step 3 follows the selection live (ADR-0017 amendment). Mode sits
+	// directly under it - the two select the topology together, and the
+	// credential fields below belong to the later steps.
 	items := []FormItem{
 		{Key: "topology", Label: "Topology", Field: topologyField},
-		{Key: "client-id", Label: "Client ID", Field: clientIDField, Required: !enabled},
-		{Key: "client-secret", Label: "Client Secret", Field: clientSecretField, Required: !enabled},
 	}
 	if choices := tailscaleFactsFor(topology).ModeChoices; choices != nil {
 		items = append(items, newTailscaleModeItem(choices, settings.Mode))
 	}
+	items = append(items,
+		FormItem{Key: "client-id", Label: "Client ID", Field: clientIDField, Required: !enabled},
+		FormItem{Key: "client-secret", Label: "Client Secret", Field: clientSecretField, Required: !enabled},
+	)
 
 	submitLabel := "Continue"
 	if enabled {
@@ -557,7 +567,7 @@ func newTailscaleForm(ns *docker.Namespace, enabled bool, settings docker.Tailsc
 		facts := tailscaleFactsFor(selectedTailscaleTopology(*f))
 		switch {
 		case facts.ModeChoices != nil && !formHasItem(*f, "mode"):
-			f.AppendItems(newTailscaleModeItem(facts.ModeChoices, ""))
+			f.InsertItemAfter("topology", newTailscaleModeItem(facts.ModeChoices, ""))
 		case facts.ModeChoices == nil && formHasItem(*f, "mode"):
 			f.RemoveItem("mode")
 		}
@@ -607,6 +617,70 @@ func listenTailscaleStatus(ch chan string) tea.Cmd {
 		}
 		return tailscaleStatusMsg(status)
 	}
+}
+
+// tailscaleConsoleScopes maps the facts' API scope identifiers to the rows
+// the admin console's credential form shows, in the console's own order. An
+// empty console label is a companion grant the console checks automatically
+// (per the trust-credentials reference, policy_file requires
+// devices:posture_attributes and devices:core:read), so it is not a row the
+// user selects.
+var tailscaleConsoleScopes = []struct{ scope, console, access string }{
+	{"policy_file:read", "General -> Policy File", "Read"},
+	{"services:write", "General -> Services", "Write"},
+	{"devices:core:write", "Devices -> Core", "Write"},
+	{"auth_keys:write", "Keys -> Auth Keys", "Write"},
+	{"devices:posture_attributes:read", "", ""},
+}
+
+// tailscaleScopeRows renders scopes as the admin console's checklist, two
+// checkboxes per row to keep the guidance short, a white-on-blue check box
+// marking each access level. A blank line separates the rows - adjacent rows
+// would fuse the colored check cells into one solid bar. A scope the table
+// does not know falls back to its raw identifier, so a new fact is never
+// silently hidden.
+func tailscaleScopeRows(scopes []string) []string {
+	var cells []struct{ console, access string }
+	matched := make(map[string]bool)
+	for _, cs := range tailscaleConsoleScopes {
+		if !slices.Contains(scopes, cs.scope) {
+			continue
+		}
+		matched[cs.scope] = true
+		if cs.console != "" {
+			cells = append(cells, struct{ console, access string }{cs.console, cs.access})
+		}
+	}
+
+	// Per-column label widths keep both columns aligned across rows while
+	// staying inside the guidance's 68-column budget.
+	columnWidth := [2]int{}
+	for i, cell := range cells {
+		columnWidth[i%2] = max(columnWidth[i%2], len(cell.console))
+	}
+	check := lipgloss.NewStyle().Background(Colors.Blue).Foreground(Colors.BrightWhite).Render(" ✓ ")
+	render := func(i int) string {
+		label := lipgloss.NewStyle().Foreground(Colors.Primary).Width(columnWidth[i%2] + 1)
+		return label.Render(cells[i].console) + check + " " + cells[i].access
+	}
+
+	var rows []string
+	for i := 0; i < len(cells); i += 2 {
+		if len(rows) > 0 {
+			rows = append(rows, "")
+		}
+		row := render(i)
+		if i+1 < len(cells) {
+			row = lipgloss.NewStyle().Width(columnWidth[0] + 12).Render(row) + render(i + 1)
+		}
+		rows = append(rows, row)
+	}
+	for _, scope := range scopes {
+		if !matched[scope] {
+			rows = append(rows, "", lipgloss.NewStyle().Foreground(Colors.Primary).Render(scope))
+		}
+	}
+	return rows
 }
 
 // tailscaleFactsFor returns topology's facts, falling back to the nodes

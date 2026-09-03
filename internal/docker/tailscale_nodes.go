@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
@@ -105,7 +107,7 @@ func (n *nodesTopology) remove(ctx context.Context, settings TailscaleSettings) 
 	if err := forceRemoveContainer(ctx, n.namespace.client, n.containerName()); err != nil {
 		return err
 	}
-	n.bestEffortDeleteTaggedDevices(ctx, settings)
+	n.bestEffortDeleteTaggedDevices(ctx, settings, "")
 	return nil
 }
 
@@ -229,7 +231,7 @@ func (n *nodesTopology) status(ctx context.Context, settings TailscaleSettings, 
 		}
 		statuses = append(statuses, ServiceStatus{
 			Name:  name,
-			URL:   settings.TailnetURL(name),
+			URL:   settings.TailnetURLFor(name, serve.FQDNs),
 			State: state,
 		})
 	}
@@ -247,7 +249,8 @@ func (n *nodesTopology) funnelPort(self *Application, apps []*Application) (int,
 // by an existing tailnet device, so TSDProxy never falls back to a "-1"
 // alias (ADR-0015). An app redeploying under a Host its own node already
 // holds is not a collision: it is exempted by checking TSDProxy's own live
-// state first.
+// state first. A device carrying Once's own tag with no node backing it is
+// a leftover of a failed or removed deploy and is swept rather than refused.
 func (n *nodesTopology) validateHost(ctx context.Context, settings TailscaleSettings, name string) error {
 	if err := ValidateTailscaleServiceName(name); err != nil {
 		return err
@@ -255,7 +258,7 @@ func (n *nodesTopology) validateHost(ctx context.Context, settings TailscaleSett
 	if controlSeamActive() {
 		return nil
 	}
-	return validateNodesHostAgainstTailnet(ctx, n.reader(settings), newTailscaleAPI(settings), name)
+	return validateNodesHostAgainstTailnet(ctx, n.reader(settings), newTailscaleAPI(settings), name, settings.Tag)
 }
 
 // logsHint names the container whose logs explain a tailnet read that came
@@ -296,6 +299,17 @@ func (n *nodesTopology) create(ctx context.Context, settings TailscaleSettings) 
 	config, err := n.buildConfig(settings)
 	if err != nil {
 		return fmt.Errorf("building tsdproxy config: %w", err)
+	}
+
+	// A data volume that does not exist yet means once-admin's tsnet state
+	// is about to start from scratch, so a tagged once-admin device is an
+	// orphan of a previous enable - and once-admin never passes
+	// validateHost's per-app sweep. Delete it before TSDProxy registers a
+	// fresh node alongside the stale row. Only once-admin: app leftovers
+	// are swept at their own deploys, and a tailnet-wide sweep here would
+	// also take the services sidecar identity a topology switch keeps.
+	if _, err := n.namespace.client.VolumeInspect(ctx, n.dataVolumeName()); errdefs.IsNotFound(err) {
+		n.bestEffortDeleteTaggedDevices(ctx, settings, "once-admin")
 	}
 
 	adminPort := nat.Port(fmt.Sprintf("%d/tcp", tsdproxyAdminContainerPort))
@@ -408,11 +422,13 @@ func (n *nodesTopology) buildConfig(settings TailscaleSettings) ([]byte, error) 
 // credentials, or an unset tag are not errors - this must never fail a
 // topology switch or a teardown that is otherwise done. Skipped entirely on
 // the Control Seam, which has no SaaS devices API.
-func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, settings TailscaleSettings) {
+// hostname narrows the sweep to devices bearing that one name; "" sweeps
+// every tagged device.
+func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, settings TailscaleSettings, hostname string) {
 	if controlSeamActive() || settings.Tag == "" || settings.ClientID == "" || settings.ClientSecret == "" {
 		return
 	}
-	deleteTaggedDevices(ctx, newTailscaleAPI(settings), settings.Tag)
+	deleteTaggedDevices(ctx, newTailscaleAPI(settings), settings.Tag, hostname)
 }
 
 // Helpers
@@ -420,11 +436,18 @@ func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, setti
 // validateNodesHostAgainstTailnet is validateHost's live check, factored out
 // so it is testable against a fake reader and a fake tailscaleAPI without a
 // real TSDProxy or Tailscale API to talk to.
-func validateNodesHostAgainstTailnet(ctx context.Context, reader TailnetReader, api tailscaleAPI, name string) error {
-	if status, err := reader.ServeStatus(ctx); err == nil && slices.Contains(status.Services, name) {
+func validateNodesHostAgainstTailnet(ctx context.Context, reader TailnetReader, api tailscaleAPI, name, tag string) error {
+	status, err := reader.ServeStatus(ctx)
+	if err == nil && slices.Contains(status.Services, name) {
 		return nil
 	}
-	return refuseIfDeviceExists(ctx, api, name)
+	if err != nil {
+		// With TSDProxy unreadable (restarting, relabeling) a colliding
+		// device may be this app's own live node - the sweep must not
+		// revoke it, so a silent reader downgrades to the plain refusal.
+		tag = ""
+	}
+	return refuseIfDeviceExists(ctx, api, name, tag)
 }
 
 // nodesProviderConfig builds the one Tailscale provider TSDProxy's config
@@ -588,18 +611,47 @@ func listTailscaleDevices(ctx context.Context, api tailscaleAPI) ([]tailscaleDev
 // refuseIfDeviceExists is nodes' deploy-time collision guard (ADR-0015): a
 // Host that already names a device in the tailnet is refused, naming the
 // device, rather than letting TSDProxy fall back to a "-1" alias Once's URL
-// model does not expect. Best effort in the other direction - an unreadable
-// devices list must not block a deploy that credentials already proved could
-// mint a key; only a definite collision refuses.
-func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name string) error {
+// model does not expect. A colliding device that carries Once's own tag is
+// the leftover of a failed or removed deploy - the caller already checked
+// TSDProxy's live state, so no running node backs it - and is deleted
+// instead, or the name would stay blocked forever. Best effort in the other
+// direction - an unreadable devices list must not block a deploy that
+// credentials already proved could mint a key; only a definite collision
+// refuses.
+func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name, tag string) error {
 	devices, err := listTailscaleDevices(ctx, api)
 	if err != nil {
 		return nil
 	}
+	var tags []string
+	if tag != "" {
+		tags = policyTags(tag)
+	}
 	for _, device := range devices {
-		if device.Hostname == name {
-			return fmt.Errorf("a tailnet device named %q already exists (node %s); rename this app or remove that device first - TSDProxy would otherwise register it as %q", name, device.NodeID, name+"-1")
+		if device.Hostname != name {
+			continue
 		}
+		if deviceHasAnyTag(device.Tags, tags) {
+			if err := deleteDevice(ctx, api, device.NodeID); err != nil {
+				return fmt.Errorf("a tailnet device named %q is a leftover of a previous %q deploy, but sweeping it failed: %w; remove the device by hand or rename this app", name, name, err)
+			}
+			continue
+		}
+		return fmt.Errorf("a tailnet device named %q already exists (node %s); rename this app or remove that device first - TSDProxy would otherwise register it as %q", name, device.NodeID, name+"-1")
+	}
+	return nil
+}
+
+// deleteDevice deletes one tailnet device row. A device that is already gone
+// counts as deleted - the sweeps this backs are reconciling toward absence,
+// and racing an admin-console removal must not turn success into an error.
+func deleteDevice(ctx context.Context, api tailscaleAPI, nodeID string) error {
+	status, body, err := api.Call(ctx, http.MethodDelete, "/device/"+url.PathEscape(nodeID), nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK && status != http.StatusNotFound {
+		return fmt.Errorf("deleting device %s (HTTP %d): %s", nodeID, status, errorMessage(body))
 	}
 	return nil
 }
@@ -608,17 +660,20 @@ func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name string) er
 // out so it is testable against a fake tailscaleAPI without a real Docker
 // daemon or Tailscale API - remove and destroy's only live behaviour that
 // does not touch the engine.
-func deleteTaggedDevices(ctx context.Context, api tailscaleAPI, tag string) {
+func deleteTaggedDevices(ctx context.Context, api tailscaleAPI, tag, hostname string) {
 	devices, err := listTailscaleDevices(ctx, api)
 	if err != nil {
 		return
 	}
-	tags := strings.Split(tag, ",")
+	tags := policyTags(tag)
 	for _, device := range devices {
+		if hostname != "" && device.Hostname != hostname {
+			continue
+		}
 		if !deviceHasAnyTag(device.Tags, tags) {
 			continue
 		}
-		_, _, _ = api.Call(ctx, http.MethodDelete, "/device/"+url.PathEscape(device.NodeID), nil)
+		_ = deleteDevice(ctx, api, device.NodeID)
 	}
 }
 
@@ -631,38 +686,79 @@ func deviceHasAnyTag(deviceTags, tags []string) bool {
 	return false
 }
 
-// nodesRouteHost joins a node's bare name to the tailnet's Magic DNS suffix.
-// An empty suffix is refused rather than registered bare: TSDProxy always
-// forwards the node's FQDN as the Host, so a bare route matches nothing it
-// ever sends and every tailnet request to the app answers 404 - and nothing
-// re-registers the route once the suffix is finally learned. Failing the
-// deploy surfaces that as the tailnet problem it is, instead of a healthy
-// container no one can reach.
-func nodesRouteHost(host, suffix string) (string, error) {
-	if suffix == "" {
-		return "", fmt.Errorf("the tailnet has not reported its domain yet, so %q has no tailnet host to answer on; check that the node joined (`once tailscale status`) and deploy again", host)
+// waitForNodeFQDN polls TSDProxy until the named app's node reports the
+// tailnet FQDN it answers on. Read, never composed from the name and the
+// Magic DNS suffix: Tailscale hands a deduped "name-1" to a node whose
+// requested hostname is taken - which Once's own leftover-device sweep
+// provokes, since deleting the predecessor does not free the name in time for
+// the replacement - and TSDProxy goes on calling the proxy by the requested
+// name while forwarding the assigned one as the Host. A composed route then
+// matches nothing TSDProxy ever sends, so every tailnet request answers 404
+// against a healthy container, and nothing re-registers the route afterwards.
+// Waited for rather than read once, because a node is routinely still joining
+// when its app's route is registered. A node that never reports within the
+// wait is an error here, which NodeRouteHost - the only caller that registers
+// a route - turns into its composed-Host fallback rather than a failed
+// deploy: TSDProxy drops a proxy from its API entirely while its container is
+// replaced, so a silent node is the routine case on a Roll.
+func waitForNodeFQDN(ctx context.Context, reader TailnetReader, name string, timeout, poll time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		status, err := reader.ServeStatus(ctx)
+		if err == nil {
+			if fqdn := status.FQDNs[name]; fqdn != "" {
+				return fqdn, nil
+			}
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return "", fmt.Errorf("reading the tailnet host %q answers on: %w", name, lastErr)
+			}
+			return "", fmt.Errorf("the node for %q has not reported a tailnet host yet, so there is nothing to route to it; check that it joined (`once tailscale status`) and deploy again", name)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(poll):
+		}
 	}
-	return host + "." + suffix, nil
+}
+
+// nodeRouteHost resolves the Host a nodes route answers on: the FQDN the
+// node reports, else the name composed with the tailnet's Magic DNS suffix.
+// See Tailscale.NodeRouteHost for why the read is preferred but not required.
+func nodeRouteHost(ctx context.Context, reader TailnetReader, name string, fqdnTimeout, suffixTimeout, poll time.Duration) (string, error) {
+	fqdn, fqdnErr := waitForNodeFQDN(ctx, reader, name, fqdnTimeout, poll)
+	if fqdnErr == nil {
+		return fqdn, nil
+	}
+	if ctx.Err() != nil {
+		return "", fqdnErr
+	}
+
+	suffix, err := waitForMagicDNSSuffix(ctx, reader, suffixTimeout, poll)
+	if err != nil || suffix == "" {
+		return "", fmt.Errorf("no tailnet host to route %q on: %w", name, fqdnErr)
+	}
+	slog.Warn("Node reported no tailnet host; routing on the composed name, which is wrong if the node was renamed",
+		"app", name, "host", name+"."+suffix, "reason", fqdnErr)
+	return name + "." + suffix, nil
 }
 
 // registerNodesProxyRoute registers the Proxy route a nodes-topology app (or
-// once-admin) answers on: its own tailnet Host, the app/node's bare name plus
-// the tailnet's Magic DNS suffix. The suffix is waited for rather than read
-// once - under nodes it is only knowable after some node has joined, and the
-// first app's own node is routinely the first to join anywhere, so a single
-// read at deploy time races the join it depends on. TLS is off: TSDProxy
-// already terminated it with the tailnet's own certificate before forwarding
-// here. Shared by application.go and admin.go, the two callers that create a
+// once-admin) answers on: the Host NodeRouteHost resolves, which is the
+// tailnet FQDN its own TSDProxy node reports whenever it has one, since that
+// is what TSDProxy forwards as the Host. TLS is off: TSDProxy already
+// terminated it with the tailnet's own certificate before forwarding here.
+// Shared by application.go and admin.go, the two callers that create a
 // container tailnet apps answer through under nodes. The route answers only a
 // Trusted Source (ADR-0016): tailnet traffic arrives from the TSDProxy node,
 // a container on the once network, so the network's subnets admit it while an
 // outsider spoofing the tailnet Host gets an unknown-Host 404.
 func registerNodesProxyRoute(ctx context.Context, ns *Namespace, appName, host, containerID, healthCheckPath string) error {
-	suffix, err := ns.Tailscale().WaitForDomainSuffix(ctx)
-	if err != nil {
-		return fmt.Errorf("resolving tailnet domain suffix: %w", err)
-	}
-	host, err = nodesRouteHost(host, suffix)
+	host, err := ns.Tailscale().NodeRouteHost(ctx, host)
 	if err != nil {
 		return err
 	}

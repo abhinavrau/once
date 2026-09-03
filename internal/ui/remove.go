@@ -61,6 +61,11 @@ func (m Remove) Busy() bool {
 	return m.removing
 }
 
+// CopyableError is the failed removal's message, for App's copy key.
+func (m Remove) CopyableError() string {
+	return errorText(m.err)
+}
+
 func (m Remove) Init() tea.Cmd {
 	return nil
 }
@@ -142,7 +147,7 @@ func (m Remove) View() string {
 	} else {
 		var errorLine string
 		if m.err != nil {
-			errorLine = lipgloss.NewStyle().Foreground(Colors.Error).Width(m.width).Align(lipgloss.Center).Render(docker.ErrorMessage(m.err))
+			errorLine = lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(errorWithCopyHint(m.err))
 		}
 		contentView = lipgloss.JoinVertical(lipgloss.Center, errorLine, "", m.dataChoice.View(), "", m.confirmation.View())
 	}

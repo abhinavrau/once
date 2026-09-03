@@ -45,13 +45,34 @@ func PublicDNSWarning(ctx context.Context, exposure Exposure, host string) strin
 	return fmt.Sprintf("%s resolves to %s; verify this is this server's address", host, strings.Join(addrs, ", "))
 }
 
+// HostTailnetSuffix reads which tailnet this machine itself is on: the
+// MagicDNS suffix of the host's own tailscaled, and whether one is running at
+// all. It exists so the warning below can tell "wrong machine" apart from
+// "broken MagicDNS" - the app's tailnet is Once's, resolved through its own
+// topology, and never has to be the one the host is on. A running tailscaled
+// whose suffix cannot be read reports on-tailnet with an empty suffix.
+// Injectable like LookupHost so tests classify without a host daemon.
+var HostTailnetSuffix = func(ctx context.Context) (suffix string, onTailnet bool) {
+	if !hostTailscaledPresent() {
+		return "", false
+	}
+	suffix, err := NewHostTailnetReader().MagicDNSSuffix(ctx)
+	if err != nil {
+		return "", true
+	}
+	return suffix, true
+}
+
 // TailnetDNSWarning is the warn-only check behind a tailnet service URL that
-// once is about to show, so a user whose local resolver is wedged learns why
-// the printed URL is dead instead of concluding the deploy failed. It never
-// blocks and never errors. Every cause the warning names stays conditional:
-// this machine is not required to be on the tailnet at all. Callers decide
-// which URLs are worth resolving - a service that is known to be absent should
-// be passed as an empty URL, which skips the lookup.
+// once is about to show, so a user learns why the printed URL is dead here
+// instead of concluding the deploy failed. It never blocks and never errors.
+// The service's registration is already verified through the tailnet's own
+// channels; this check only classifies why this machine cannot open the URL:
+// not on any tailnet, on a different tailnet than Once (both simply name the
+// right device to open it from), or on the same one - the only case where
+// MagicDNS advice applies. Callers decide which URLs are worth resolving - a
+// service that is known to be absent should be passed as an empty URL, which
+// skips the lookup.
 func TailnetDNSWarning(ctx context.Context, serviceURL string) string {
 	if serviceURL == "" {
 		return ""
@@ -69,7 +90,17 @@ func TailnetDNSWarning(ctx context.Context, serviceURL string) string {
 		return ""
 	}
 
-	return fmt.Sprintf("%s does not resolve from this machine. The service may still be registering; or, if this machine is on the tailnet, its MagicDNS may be broken - try `tailscale set --accept-dns=false` then `tailscale set --accept-dns=true`. Other tailnet devices may be unaffected.", host)
+	expected := suffixOf(host)
+	hostSuffix, onTailnet := HostTailnetSuffix(ctx)
+	switch {
+	case expected == "":
+	case !onTailnet:
+		return fmt.Sprintf("%s will not resolve here: this machine is not on a tailnet. Open it from a device on %s.", host, expected)
+	case hostSuffix != "" && !strings.EqualFold(hostSuffix, expected):
+		return fmt.Sprintf("%s will not resolve here: this machine is on tailnet %s, not %s. Open it from a device on %s.", host, hostSuffix, expected, expected)
+	}
+
+	return fmt.Sprintf("%s does not resolve from this machine. The service may still be registering; or, if this machine is on the tailnet, its MagicDNS may be broken. Other tailnet devices may be unaffected.", host)
 }
 
 // Helpers
@@ -80,4 +111,13 @@ func hostnameOf(rawURL string) string {
 		return ""
 	}
 	return parsed.Hostname()
+}
+
+// suffixOf strips a tailnet host's first label, leaving the MagicDNS suffix
+// the name belongs to.
+func suffixOf(host string) string {
+	if _, suffix, found := strings.Cut(host, "."); found {
+		return suffix
+	}
+	return ""
 }

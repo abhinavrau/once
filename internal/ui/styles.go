@@ -188,6 +188,13 @@ func padOrTruncate(s string, width int) string {
 	return s + strings.Repeat(" ", width-w)
 }
 
+// linkedURL renders a URL as an OSC 8 terminal hyperlink, underlined and in
+// the link colour. Every URL the TUI prints goes through here, so one is
+// never a string the reader has to retype into a browser.
+func linkedURL(url string) string {
+	return lipgloss.NewStyle().Foreground(Colors.Primary).Underline(true).Hyperlink(url).Render(url)
+}
+
 func formatValueLine(valueStr, limitLabel string, inner int) string {
 	if limitLabel != "" {
 		limitStr := lipgloss.NewStyle().Foreground(Colors.Border).Render("·" + limitLabel)

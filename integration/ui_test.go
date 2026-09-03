@@ -290,6 +290,66 @@ func TestUITailscaleFormEnablesViaControlSeam(t *testing.T) {
 	assertAppLabels(t, ctx, cli, ns, tailnetApp.Settings.Name, hasDocktailLabels("whoami", ns.Name()))
 }
 
+// TestUIInstallContinuesAfterInlineTailscaleEnable pins the install detour's
+// return leg: submitting an install with Tailnet exposure while Tailscale is
+// disabled opens the enable overlay, and completing the enable continues the
+// install the user already submitted - no second submit, no silently dropped
+// install. The dismissal leg (esc returns to the filled-in form without
+// installing) is pinned by TestUIInstallAndManageApp.
+func TestUIInstallContinuesAfterInlineTailscaleEnable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	ns, err := docker.NewNamespace("once-ts-install-test")
+	require.NoError(t, err)
+	require.NoError(t, ns.EnsureNetwork(ctx))
+	bootProxy(t, ctx, ns, getProxyPorts(t))
+	t.Cleanup(func() { ns.Teardown(context.Background(), true) })
+
+	cp := newControlPlane(t, ctx, ns)
+	useControlSeam(t, ctx, cp)
+	hideHostTailscaled(t)
+	startAdminServer(t, ctx)
+
+	app := ui.NewApp(ns, "")
+	d := newAppDriver(t, app)
+	d.start()
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 50})
+
+	// -- App list → custom image, Tailnet exposure while Tailscale is off --
+	d.send(keyMsg("up"))
+	d.send(keyMsg("enter"))
+	d.waitForView("Image", 5*time.Second)
+	d.fillField("image", whoamiImage)
+	d.click("submit")
+	d.waitForView("Exposure", 5*time.Second)
+	d.selectRadioOption("exposure", "Tailnet")
+	d.click("submit")
+
+	// -- The submit detours into the enable overlay: continue past tagOwners
+	// and enable. Services topology, as in the enable-form test: nodes binds
+	// host port 8180, which a live Once stack on the machine already holds -
+	// and the detour's return leg is the same for every topology. --
+	d.waitForView("tagOwners", 5*time.Second)
+	d.click("continue")
+	d.waitForView("Client ID", 5*time.Second)
+	d.selectRadioOption("topology", "Services")
+	d.fillField("client-id", "unused-with-control-seam")
+	d.fillField("client-secret", "unused-with-control-seam")
+	d.click("submit")
+
+	// -- The enable finishes and the install continues on its own: the app
+	// appears without any further submit --
+	d.waitUntil(func() bool {
+		_ = ns.Refresh(ctx)
+		return ns.ApplicationByHost("whoami") != nil
+	}, 5*time.Minute)
+
+	tailnetApp := ns.ApplicationByHost("whoami")
+	require.Equal(t, docker.ExposureTailnet, tailnetApp.Settings.Exposure)
+	d.waitForView("running", 3*time.Minute)
+}
+
 // TestUIBackupsOverlayEnableFlow drives the dashboard's global Backups
 // overlay (the `b` key) through the full enable sequence: fill the local
 // path, submit, wait out the validation probe, then the custody moment -

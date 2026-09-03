@@ -128,6 +128,12 @@ func (m Settings) Busy() bool {
 	return m.state == settingsStateDeploying || m.state == settingsStateRunningAction
 }
 
+// CopyableError is the failed action's message, for App's copy key: a
+// message worth pasting into an issue is otherwise only on screen.
+func (m Settings) CopyableError() string {
+	return errorText(m.err)
+}
+
 func (m Settings) Init() tea.Cmd {
 	return m.section.Init()
 }
@@ -249,7 +255,7 @@ func (m Settings) View() string {
 	case settingsStateForm:
 		var statusLine string
 		if m.err != nil {
-			statusLine = lipgloss.NewStyle().Foreground(Colors.Error).Width(m.width).Align(lipgloss.Center).Render(docker.ErrorMessage(m.err))
+			statusLine = lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(errorWithCopyHint(m.err))
 		} else if len(m.warnings) > 0 {
 			statusLine = lipgloss.NewStyle().Foreground(Colors.Warning).Width(m.width).Align(lipgloss.Center).Render(strings.Join(m.warnings, "\n"))
 		} else if line := m.section.StatusLine(); line != "" {
