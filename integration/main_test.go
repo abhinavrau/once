@@ -12,21 +12,11 @@ import (
 // live install on the same host holds.
 func TestMain(m *testing.M) {
 	docker.OverrideDefaultPortsForTest(func() docker.ProxySettings {
-		return docker.ProxySettings{
-			HTTPPort:    mustFreePort(),
-			HTTPSPort:   mustFreePort(),
-			MetricsPort: mustFreePort(),
+		ports, err := freeProxyPorts()
+		if err != nil {
+			panic(err)
 		}
+		return ports
 	})
 	os.Exit(m.Run())
-}
-
-// Helpers
-
-func mustFreePort() int {
-	port, err := nextFreePort()
-	if err != nil {
-		panic(err)
-	}
-	return port
 }

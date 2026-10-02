@@ -25,10 +25,8 @@ import (
 // snapshot, refuses to collide with it, restores an older one in its place,
 // and resumes backups to the repo it recovered from.
 //
-// The second install's proxy is booted on free ports rather than left to
-// ns.Setup: the suite cannot bind 80 and 443. Everything else about the
-// destination is what a fresh machine has - no applications, no backup
-// settings, no local repo.
+// The destination is what a fresh machine has - no proxy, no applications, no
+// backup settings, no local repo.
 func TestRestoreVaultwardenFromRepo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
@@ -122,7 +120,6 @@ func TestRestoreVaultwardenFromRepo(t *testing.T) {
 		}
 	})
 	require.NoError(t, dest.EnsureNetwork(ctx))
-	bootProxy(t, ctx, dest, getProxyPorts(t))
 	require.Empty(t, dest.Applications())
 	require.False(t, dest.BackupRepoSettings().Configured(), "a fresh install has no backup configuration at all")
 

@@ -154,7 +154,9 @@ func TestRollSettings(t *testing.T) {
 }
 
 func TestWithDefaultPorts(t *testing.T) {
-	assert.Equal(t, ProxySettings{HTTPPort: 80, HTTPSPort: 443, MetricsPort: 1318}, withDefaultPorts(ProxySettings{}))
+	t.Run("unset ports take the install defaults", func(t *testing.T) {
+		assert.Equal(t, ProxySettings{HTTPPort: 80, HTTPSPort: 443, MetricsPort: 1318}, withDefaultPorts(ProxySettings{}))
+	})
 
 	t.Run("explicit ports win over the defaults", func(t *testing.T) {
 		assert.Equal(t, ProxySettings{HTTPPort: 8080, HTTPSPort: 443, MetricsPort: 9000},

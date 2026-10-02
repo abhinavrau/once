@@ -243,11 +243,81 @@ func (p *Proxy) Deploy(ctx context.Context, opts DeployOptions) error {
 	return p.Exec(ctx, p.deployArgs(opts))
 }
 
-func (p *Proxy) containerName() string {
-	return p.namespace.name + "-proxy"
+func (p *Proxy) LoadState(ctx context.Context) (*State, error) {
+	containerName := p.containerName()
+
+	reader, _, err := p.namespace.client.CopyFromContainer(ctx, containerName, stateFilePath)
+	if err != nil {
+		// Return empty state when the file doesn't exist yet (first boot)
+		if errdefs.IsNotFound(err) {
+			return &State{}, nil
+		}
+		return nil, fmt.Errorf("copying state from container: %w", err)
+	}
+	defer reader.Close()
+
+	tr := tar.NewReader(reader)
+	if _, err := tr.Next(); err != nil {
+		return nil, fmt.Errorf("reading state tar: %w", err)
+	}
+
+	var state State
+	if err := json.NewDecoder(tr).Decode(&state); err != nil {
+		return nil, fmt.Errorf("decoding state: %w", err)
+	}
+
+	return &state, nil
+}
+
+func (p *Proxy) SaveState(ctx context.Context, state *State) error {
+	containerName := p.containerName()
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling state: %w", err)
+	}
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	header := &tar.Header{
+		Name: stateFileName,
+		Mode: 0o644,
+		Size: int64(len(data)),
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		return fmt.Errorf("writing tar header: %w", err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		return fmt.Errorf("writing tar data: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("closing tar writer: %w", err)
+	}
+
+	if err := p.namespace.client.CopyToContainer(ctx, containerName, stateFileDir, &buf, container.CopyToContainerOptions{}); err != nil {
+		return fmt.Errorf("copying state to container: %w", err)
+	}
+
+	return nil
+}
+
+func (p *Proxy) ExecOutput(ctx context.Context, cmd []string) (string, error) {
+	result, err := execInContainer(ctx, p.namespace.client, p.containerName(), cmd)
+	if err != nil {
+		return "", err
+	}
+	if result.ExitCode != 0 {
+		return result.Stdout + result.Stderr, fmt.Errorf("exec failed with exit code %d", result.ExitCode)
+	}
+	return result.Stdout, nil
 }
 
 // Private
+
+func (p *Proxy) containerName() string {
+	return p.namespace.name + "-proxy"
+}
 
 // roll replaces a proxy whose image drifted from the pin, booting it again
 // with the settings the container already carries.
@@ -326,76 +396,6 @@ func (p *Proxy) deployArgs(opts DeployOptions) []string {
 	return args
 }
 
-func (p *Proxy) LoadState(ctx context.Context) (*State, error) {
-	containerName := p.containerName()
-
-	reader, _, err := p.namespace.client.CopyFromContainer(ctx, containerName, stateFilePath)
-	if err != nil {
-		// Return empty state when the file doesn't exist yet (first boot)
-		if errdefs.IsNotFound(err) {
-			return &State{}, nil
-		}
-		return nil, fmt.Errorf("copying state from container: %w", err)
-	}
-	defer reader.Close()
-
-	tr := tar.NewReader(reader)
-	if _, err := tr.Next(); err != nil {
-		return nil, fmt.Errorf("reading state tar: %w", err)
-	}
-
-	var state State
-	if err := json.NewDecoder(tr).Decode(&state); err != nil {
-		return nil, fmt.Errorf("decoding state: %w", err)
-	}
-
-	return &state, nil
-}
-
-func (p *Proxy) SaveState(ctx context.Context, state *State) error {
-	containerName := p.containerName()
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling state: %w", err)
-	}
-
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-
-	header := &tar.Header{
-		Name: stateFileName,
-		Mode: 0o644,
-		Size: int64(len(data)),
-	}
-	if err := tw.WriteHeader(header); err != nil {
-		return fmt.Errorf("writing tar header: %w", err)
-	}
-	if _, err := tw.Write(data); err != nil {
-		return fmt.Errorf("writing tar data: %w", err)
-	}
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("closing tar writer: %w", err)
-	}
-
-	if err := p.namespace.client.CopyToContainer(ctx, containerName, stateFileDir, &buf, container.CopyToContainerOptions{}); err != nil {
-		return fmt.Errorf("copying state to container: %w", err)
-	}
-
-	return nil
-}
-
-func (p *Proxy) ExecOutput(ctx context.Context, cmd []string) (string, error) {
-	result, err := execInContainer(ctx, p.namespace.client, p.containerName(), cmd)
-	if err != nil {
-		return "", err
-	}
-	if result.ExitCode != 0 {
-		return result.Stdout + result.Stderr, fmt.Errorf("exec failed with exit code %d", result.ExitCode)
-	}
-	return result.Stdout, nil
-}
-
 // proxyUID is the uid kamal-proxy runs as inside its own image. Files copied
 // in arrive owned by root otherwise, and kamal-proxy cannot read its own
 // private key - which surfaces only as "unable to load certificate".
@@ -431,6 +431,8 @@ func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]by
 
 // Helpers
 
+// withDefaultPorts only consults defaultPorts when a port is unset, so a
+// proxy that already exists never draws ports it won't bind.
 func withDefaultPorts(settings ProxySettings) ProxySettings {
 	if settings.HTTPPort != 0 && settings.HTTPSPort != 0 && settings.MetricsPort != 0 {
 		return settings

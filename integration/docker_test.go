@@ -1026,8 +1026,6 @@ func TestUpdateHostCollision(t *testing.T) {
 	assert.True(t, ns.HostInUseByAnother("host1.localhost", app2.Settings.Name))
 }
 
-// Helpers
-
 func TestContainerResources(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -1051,6 +1049,8 @@ func TestContainerResources(t *testing.T) {
 
 	assertContainerResources(t, ctx, containerName, 1e9, 1024*1024*1024)
 }
+
+// Helpers
 
 func bootProxy(t *testing.T, ctx context.Context, ns *docker.Namespace, settings docker.ProxySettings) {
 	t.Helper()
@@ -1132,11 +1132,21 @@ func hostLANAddress(t *testing.T) string {
 
 func getProxyPorts(t *testing.T) docker.ProxySettings {
 	t.Helper()
-	return docker.ProxySettings{
-		HTTPPort:    getFreePort(t),
-		HTTPSPort:   getFreePort(t),
-		MetricsPort: getFreePort(t),
+	ports, err := freeProxyPorts()
+	require.NoError(t, err)
+	return ports
+}
+
+func freeProxyPorts() (docker.ProxySettings, error) {
+	var ports [3]int
+	for i := range ports {
+		port, err := nextFreePort()
+		if err != nil {
+			return docker.ProxySettings{}, err
+		}
+		ports[i] = port
 	}
+	return docker.ProxySettings{HTTPPort: ports[0], HTTPSPort: ports[1], MetricsPort: ports[2]}, nil
 }
 
 func assertContainerRunning(t *testing.T, ctx context.Context, name string, expectRunning bool) {
