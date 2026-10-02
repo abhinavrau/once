@@ -59,19 +59,13 @@ const (
 	routeSuffixWaitPoll    = 2 * time.Second
 )
 
-// nodeFQDNWaitTimeout bounds the wait for one app's node to report the FQDN
-// it answers on. Much shorter than routeSuffixWaitTimeout because every Roll
-// pays it before falling back to the composed Host: TSDProxy drops a proxy
-// from its API while the container is replaced, so the wait expiring is the
-// routine case there, not the exceptional one. Long enough for a cold join
-// on a first deploy, which is the case where the assigned name can differ
-// from the requested one and so the one worth waiting out.
-//
-// ponytail: one timeout for both cases. A first registration could afford to
-// wait far longer than a re-registration, but telling them apart needs the
-// route table the Proxy already holds; split it if a slow first join is
-// observed composing the wrong Host.
-const nodeFQDNWaitTimeout = 20 * time.Second
+// nodeJoinWaitTimeout bounds a first registration's wait for its node to
+// report the FQDN it joined under - the only moment a deduped name can be
+// caught. A re-registration never waits (NodeRouteHost). Shorter than
+// routeSuffixWaitTimeout because a Roll whose node TSDProxy was not reporting
+// beforehand registers as a join, and TSDProxy drops a proxy from its API
+// while the container is replaced, so that wait expires rather than succeeds.
+const nodeJoinWaitTimeout = 20 * time.Second
 
 var (
 	ErrFunnelDurationInvalid = errors.New("funnel duration must be positive")
@@ -416,27 +410,45 @@ func (t *Tailscale) NodeFQDNs(ctx context.Context) (map[string]string, error) {
 	return status.FQDNs, nil
 }
 
-// NodeRouteHost is the Host a nodes-topology Proxy route answers on: the
-// tailnet FQDN the named app's node reports, or the name composed with the
-// tailnet's Magic DNS suffix when the node has none to report.
+// NodeRouteHost is the Host a re-registered nodes-topology Proxy route
+// answers on: the tailnet FQDN the named app's already-joined node reports,
+// read once, or the name composed with the tailnet's Magic DNS suffix when
+// the node has none to report.
 //
 // The read is preferred because only it knows a deduped name (campfire-1),
 // which a composed Host gets wrong for the life of the route. It cannot be
 // required, though: TSDProxy drops an app's proxy from its API entirely while
-// the container is being replaced, so a Roll - a Funnel toggle, a settings
-// change - would otherwise block until the wait expired and then fail a
-// deploy whose route was already correct and unchanged.
+// the container is being replaced, so waiting would only make a Roll - a
+// Funnel toggle, a settings change - sit out the wait and then fail a deploy
+// whose route was already correct and unchanged.
 //
-// So the wait is bounded and non-fatal, and the composed Host is the
-// fallback rather than a failure. It is what Once used before nodes could
-// read the assigned name at all, so falling back is never worse than the
-// behaviour it replaced - only less precise, which is why it is logged.
+// So the composed Host is the fallback rather than a failure. It is what Once
+// used before nodes could read the assigned name at all, so falling back is
+// never worse than the behaviour it replaced - only less precise, which is
+// why it is logged, and why the post-proxy-roll sweep re-resolves it.
 func (t *Tailscale) NodeRouteHost(ctx context.Context, name string) (string, error) {
 	_, reader, err := t.session(ctx)
 	if err != nil {
 		return "", err
 	}
-	return nodeRouteHost(ctx, reader, name, nodeFQDNWaitTimeout, routeSuffixWaitTimeout, routeSuffixWaitPoll)
+	return nodeRouteHost(ctx, reader, name, 0, routeSuffixWaitTimeout, routeSuffixWaitPoll)
+}
+
+// JoinNodeRouteHost is NodeRouteHost for a node joining with this
+// registration: it waits for the node's FQDN and refuses, with a
+// nodeRenamedError, a node Magic DNS gave a name other than the requested
+// one. The Services read that diagnoses the holder is skipped on the Control
+// Seam, which has none.
+func (t *Tailscale) JoinNodeRouteHost(ctx context.Context, name string) (string, error) {
+	settings, reader, err := t.session(ctx)
+	if err != nil {
+		return "", err
+	}
+	var api tailscaleAPI
+	if !controlSeamActive() {
+		api = newTailscaleAPI(settings)
+	}
+	return joinNodeRouteHost(ctx, reader, api, name, nodeJoinWaitTimeout, routeSuffixWaitTimeout, routeSuffixWaitPoll)
 }
 
 // WaitForFunnelActive polls the active topology's reader until it reports a

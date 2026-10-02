@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -202,9 +203,10 @@ func TestNodesBuildConfigUsesControlSeamWhenActive(t *testing.T) {
 const probeTagPayload = `{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":false,"preauthorized":true,"tags":["tag:once"]}}},"description":"tsdproxy"}`
 
 const (
-	nodesKeysPath   = "/tailnet/-/keys"
-	nodesKeyPath    = "/tailnet/-/keys/tskey-id"
-	nodesDevicePath = "/tailnet/-/devices"
+	nodesKeysPath     = "/tailnet/-/keys"
+	nodesKeyPath      = "/tailnet/-/keys/tskey-id"
+	nodesDevicePath   = "/tailnet/-/devices"
+	nodesServicesPath = "/tailnet/-/services"
 
 	whoamiServicePath = "/tailnet/-/services/svc:whoami"
 )
@@ -230,6 +232,9 @@ func TestValidateNodesCredentialsOverRealHTTPMatchesTSDProxysWireFormat(t *testi
 	require.NoError(t, err)
 
 	require.NotEmpty(t, s.calls)
+	assert.True(t, slices.ContainsFunc(s.calls, func(c recordedRequest) bool {
+		return c.method == http.MethodGet && c.path == nodesServicesPath && c.payload == ""
+	}), "the services probe must send Docktail's own list request")
 	mint := s.calls[0]
 	assert.Equal(t, http.MethodPost, mint.method)
 	assert.Equal(t, nodesKeysPath, mint.path)
@@ -244,6 +249,7 @@ func nodesProbeAPI(t *testing.T) *fakeTailscaleAPI {
 	api.reply(http.MethodPost, nodesKeysPath, http.StatusOK, `{"id":"tskey-id","key":"tskey-secret"}`)
 	api.reply(http.MethodDelete, nodesKeyPath, http.StatusOK, `{}`)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK, `{"devices":[]}`)
+	api.reply(http.MethodGet, nodesServicesPath, http.StatusOK, `{"vipServices":[]}`)
 	return api
 }
 
@@ -256,6 +262,7 @@ func TestValidateNodesCredentialsSendsTSDProxysExactMintRequest(t *testing.T) {
 	assert.Equal(t, probeTagPayload, api.payload(http.MethodPost, nodesKeysPath))
 	assert.True(t, api.requested(http.MethodDelete, nodesKeyPath), "the probe key must be cleaned up")
 	assert.True(t, api.requested(http.MethodGet, nodesDevicePath), "the devices:core scope must be proven too")
+	assert.True(t, api.requested(http.MethodGet, nodesServicesPath), "the services:read scope must be proven too")
 }
 
 func TestValidateNodesCredentialsRequiresTag(t *testing.T) {
@@ -300,6 +307,22 @@ func TestValidateNodesCredentialsMissingDevicesScope(t *testing.T) {
 	assert.True(t, api.requested(http.MethodDelete, nodesKeyPath), "the key probe still cleans up before the devices check runs")
 }
 
+// TestValidateNodesCredentialsMissingServicesScope pins the enable-time
+// proof of services:read: without it the deploy preflight cannot see a
+// Tailscale Service holding a Host, so the probe refuses and says how to fix
+// a credential whose scopes cannot be edited after creation.
+func TestValidateNodesCredentialsMissingServicesScope(t *testing.T) {
+	api := nodesProbeAPI(t)
+	api.reply(http.MethodGet, nodesServicesPath, http.StatusForbidden, `{"message":"calling actor does not have enough permissions"}`)
+
+	err := validateNodesCredentials(t.Context(), api, TailscaleSettings{Tag: "tag:once"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "services:read")
+	assert.Contains(t, err.Error(), "General -> Services")
+	assert.Contains(t, err.Error(), "new OAuth client")
+}
+
 // validateHost
 
 func TestValidateNodesHostAgainstTailnetRefusesForeignDevice(t *testing.T) {
@@ -308,7 +331,7 @@ func TestValidateNodesHostAgainstTailnetRefusesForeignDevice(t *testing.T) {
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:personal"]}]}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whoami")
@@ -327,7 +350,7 @@ func TestValidateNodesHostAgainstTailnetSweepsOwnLeftoverDevice(t *testing.T) {
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
 	api.reply(http.MethodDelete, "/device/n123", http.StatusOK, "")
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.NoError(t, err)
 	assert.True(t, api.requested(http.MethodDelete, "/device/n123"))
@@ -340,7 +363,7 @@ func TestValidateNodesHostAgainstTailnetRefusesWhenLeftoverDeleteFails(t *testin
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
 	api.reply(http.MethodDelete, "/device/n123", http.StatusForbidden, `{"message":"not permitted"}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sweeping it failed")
@@ -357,7 +380,7 @@ func TestValidateNodesHostAgainstTailnetSweepTreatsGoneDeviceAsSwept(t *testing.
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
 	api.reply(http.MethodDelete, "/device/n123", http.StatusNotFound, `{"message":"device not found"}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	assert.NoError(t, err)
 }
@@ -371,7 +394,7 @@ func TestValidateNodesHostAgainstTailnetNeverSweepsWhenReaderIsSilent(t *testing
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.Error(t, err)
 	assert.False(t, api.requested(http.MethodDelete, "/device/n123"), "a device that may back a live node must never be deleted")
@@ -383,7 +406,7 @@ func TestValidateNodesHostAgainstTailnetAllowsFreeHost(t *testing.T) {
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"someone-elses-laptop","tags":[]}]}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	assert.NoError(t, err)
 }
@@ -396,7 +419,7 @@ func TestValidateNodesHostAgainstTailnetExemptsOwnNode(t *testing.T) {
 	reporter := &recordingReporter{}
 	api := newFakeTailscaleAPI(reporter)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.NoError(t, err)
 	assert.Empty(t, reporter.errors, "the devices list must never be called once the reader says this app already joined")
@@ -407,7 +430,7 @@ func TestValidateNodesHostAgainstTailnetIsBestEffortOnAPIFailure(t *testing.T) {
 	api := newHostCheckAPI(t)
 	api.fail(http.MethodGet, nodesDevicePath, assert.AnError)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	assert.NoError(t, err, "an unreadable devices list must not block a deploy credentials already proved could work")
 }
@@ -417,7 +440,7 @@ func TestValidateNodesHostAgainstTailnetRefusesForeignServiceHoldingTheName(t *t
 	api := newFakeTailscaleAPI(t)
 	api.reply(http.MethodGet, whoamiServicePath, http.StatusOK, `{"name":"svc:whoami","tags":["tag:personal"]}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "svc:whoami")
@@ -434,7 +457,7 @@ func TestValidateNodesHostAgainstTailnetNamesOwnLeftoverService(t *testing.T) {
 	api := newFakeTailscaleAPI(t)
 	api.reply(http.MethodGet, whoamiServicePath, http.StatusOK, `{"name":"svc:whoami","tags":["tag:once"]}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	_, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "svc:whoami")
@@ -442,15 +465,32 @@ func TestValidateNodesHostAgainstTailnetNamesOwnLeftoverService(t *testing.T) {
 	assert.False(t, api.requested(http.MethodDelete, whoamiServicePath), "the Nodes credential only reads Services")
 }
 
-func TestValidateNodesHostAgainstTailnetSkipsTheServiceCheckWithoutTheServicesScope(t *testing.T) {
+// TestValidateNodesHostAgainstTailnetDegradesWithoutTheServicesScope pins
+// the grandfathered-credential path: a credential that cannot read Services
+// still gets the devices check and a deploy that proceeds, and the caller
+// learns the Services check did not run.
+func TestValidateNodesHostAgainstTailnetDegradesWithoutTheServicesScope(t *testing.T) {
 	reader := &FakeTailnetReader{ServeJSON: `{}`}
 	api := newFakeTailscaleAPI(t)
 	api.reply(http.MethodGet, whoamiServicePath, http.StatusForbidden, `{"message":"missing scope"}`)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK, `{"devices":[]}`)
 
-	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+	servicesScopeMissing, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	assert.NoError(t, err)
+	assert.True(t, servicesScopeMissing)
+	assert.True(t, api.requested(http.MethodGet, nodesDevicePath), "the devices check still runs")
+}
+
+func TestValidateNodesHostAgainstTailnetReportsServicesReadOnAFreeHost(t *testing.T) {
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
+	api := newHostCheckAPI(t)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK, `{"devices":[]}`)
+
+	servicesScopeMissing, err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+
+	assert.NoError(t, err)
+	assert.False(t, servicesScopeMissing)
 }
 
 // destroy/remove device cleanup
@@ -727,14 +767,84 @@ func TestWaitForNodeFQDNRefusesANodeThatNeverReports(t *testing.T) {
 	assert.Contains(t, err.Error(), "vaultwarden")
 }
 
+// refuseRenamedNode
+
+const campfireServicePath = "/tailnet/-/services/svc:campfire"
+
+func TestRefuseRenamedNodeIsSilentOnAnExactMatch(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+
+	assert.NoError(t, refuseRenamedNode(t.Context(), api, "campfire", "campfire.tail1234.ts.net"))
+	assert.Zero(t, api.callCount(), "a match needs no diagnosis")
+}
+
+// TestRefuseRenamedNodeIsNotFooledByAPrefix guards the comparison itself: a
+// prefix test would pass campfire-1 off as campfire, and flag a Host that
+// merely prefixes another node's name.
+func TestRefuseRenamedNodeIsNotFooledByAPrefix(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, campfireServicePath, http.StatusNotFound, `{"message":"not found"}`)
+
+	assert.NoError(t, refuseRenamedNode(t.Context(), api, "camp", "camp.tail1234.ts.net"))
+	assert.Error(t, refuseRenamedNode(t.Context(), api, "campfire", "campfire-1.tail1234.ts.net"))
+}
+
+func TestRefuseRenamedNodeNamesBothNamesAndTheRemainingCauses(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, campfireServicePath, http.StatusNotFound, `{"message":"not found"}`)
+
+	err := refuseRenamedNode(t.Context(), api, "campfire", "campfire-1.tail1234.ts.net")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"campfire"`)
+	assert.Contains(t, err.Error(), `"campfire-1"`)
+	assert.Contains(t, err.Error(), "claimed between")
+	assert.NotContains(t, err.Error(), "services:read")
+}
+
+func TestRefuseRenamedNodeNamesTheServiceHoldingTheName(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, campfireServicePath, http.StatusOK, `{"name":"svc:campfire","tags":["tag:personal"]}`)
+
+	err := refuseRenamedNode(t.Context(), api, "campfire", "campfire-1.tail1234.ts.net")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "svc:campfire")
+}
+
+// TestRefuseRenamedNodeBlamesTheMissingServicesScope pins the degraded
+// variant: a credential that cannot read Services left any Service holder
+// unseen, so the message says so and how to replace the credential.
+func TestRefuseRenamedNodeBlamesTheMissingServicesScope(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, campfireServicePath, http.StatusForbidden, `{"message":"missing scope"}`)
+
+	err := refuseRenamedNode(t.Context(), api, "campfire", "campfire-1.tail1234.ts.net")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"campfire-1"`)
+	assert.Contains(t, err.Error(), "services:read")
+	assert.Contains(t, err.Error(), "new OAuth client")
+}
+
+func TestRefuseRenamedNodeSkipsTheServicesReadOnTheControlSeam(t *testing.T) {
+	err := refuseRenamedNode(t.Context(), nil, "campfire", "campfire-1.tail1234.ts.net")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"campfire-1"`)
+	assert.NotContains(t, err.Error(), "services:read")
+}
+
 // nodeRouteHost
 
 // TestNodeRouteHostPrefersTheNameTheNodeReports is the whole point of reading
-// rather than composing: a node holding a deduped name answers only to it.
+// rather than composing: a node holding a deduped name answers only to it,
+// and a re-registration - the post-proxy-roll sweep - reads it without
+// waiting, which is how a route registered on a composed Host heals.
 func TestNodeRouteHostPrefersTheNameTheNodeReports(t *testing.T) {
 	reader := &fqdnReader{name: "campfire", fqdn: "campfire-1.tail1234.ts.net"}
 
-	host, err := nodeRouteHost(t.Context(), reader, "campfire", time.Second, time.Second, time.Millisecond)
+	host, err := nodeRouteHost(t.Context(), reader, "campfire", 0, time.Second, time.Millisecond)
 
 	require.NoError(t, err)
 	assert.Equal(t, "campfire-1.tail1234.ts.net", host)
@@ -755,6 +865,22 @@ func TestNodeRouteHostComposesWhenTheNodeReportsNothing(t *testing.T) {
 	assert.Equal(t, "whoami.tail1234.ts.net", host)
 }
 
+// TestNodeRouteHostWithoutAWaitReadsOnce pins what a re-registration costs:
+// a node whose proxy TSDProxy dropped mid-Roll is read once, not waited on,
+// and the route falls back to the composed Host for the sweep to heal.
+func TestNodeRouteHostWithoutAWaitReadsOnce(t *testing.T) {
+	reader := &fqdnReader{
+		FakeTailnetReader: FakeTailnetReader{StatusJSON: `{"MagicDNSSuffix":"tail1234.ts.net"}`},
+		name:              "whoami", fqdn: "whoami-1.tail1234.ts.net", readsBeforeJoin: 1,
+	}
+
+	host, err := nodeRouteHost(t.Context(), reader, "whoami", 0, time.Second, time.Hour)
+
+	require.NoError(t, err)
+	assert.Equal(t, "whoami.tail1234.ts.net", host)
+	assert.Equal(t, 1, reader.reads)
+}
+
 // A tailnet that reports neither the app's FQDN nor a suffix leaves no Host
 // that could work, so the deploy still fails rather than routing on a name.
 func TestNodeRouteHostRefusesWhenTheTailnetReportsNothingAtAll(t *testing.T) {
@@ -762,6 +888,43 @@ func TestNodeRouteHostRefusesWhenTheTailnetReportsNothingAtAll(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whoami")
+}
+
+// joinNodeRouteHost
+
+func TestJoinNodeRouteHostRefusesANodeThatJoinedUnderAnotherName(t *testing.T) {
+	reader := &fqdnReader{name: "campfire", fqdn: "campfire-1.tail1234.ts.net", readsBeforeJoin: 2}
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, campfireServicePath, http.StatusNotFound, `{"message":"not found"}`)
+
+	_, err := joinNodeRouteHost(t.Context(), reader, api, "campfire", time.Second, time.Second, time.Millisecond)
+
+	var renamed *nodeRenamedError
+	require.ErrorAs(t, err, &renamed)
+	assert.Equal(t, "campfire-1", renamed.joined)
+	assert.Contains(t, err.Error(), `"campfire-1"`)
+}
+
+func TestJoinNodeRouteHostRoutesOnTheRequestedName(t *testing.T) {
+	reader := &fqdnsReader{fqdns: map[string]string{
+		"camp":     "camp.tail1234.ts.net",
+		"campfire": "campfire.tail1234.ts.net",
+	}}
+
+	host, err := joinNodeRouteHost(t.Context(), reader, newFakeTailscaleAPI(t), "camp", time.Second, time.Second, time.Millisecond)
+
+	require.NoError(t, err)
+	assert.Equal(t, "camp.tail1234.ts.net", host)
+}
+
+// fqdnsReader reports every listed proxy as joined under its FQDN.
+type fqdnsReader struct {
+	FakeTailnetReader
+	fqdns map[string]string
+}
+
+func (r *fqdnsReader) ServeStatus(ctx context.Context) (TailscaleServeStatus, error) {
+	return TailscaleServeStatus{FQDNs: r.fqdns}, nil
 }
 
 // joinLateReader reports no Magic DNS suffix until the node it is waiting on

@@ -83,6 +83,10 @@ var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 // undefined or unpermitted tag, while 429s and 5xxs mean something else.
 var ErrTagNotInPolicy = errors.New("define the tag in your tailnet policy (Access Controls -> tagOwners) first")
 
+// errServicesUnreadable marks a Services read the credential's scopes do not
+// allow - a Nodes credential minted before services:read was required.
+var errServicesUnreadable = errors.New("the credential lacks the services:read scope")
+
 // servicesPath roots every Service definition request. The "-" tailnet
 // segment matches Docktail, which defaults TAILSCALE_TAILNET to "-" when Once
 // leaves it unset.
@@ -1303,6 +1307,8 @@ func getTailscaleService(ctx context.Context, api tailscaleAPI, name string) (sv
 	case http.StatusOK:
 	case http.StatusNotFound:
 		return tailscaleService{}, false, nil
+	case http.StatusForbidden:
+		return tailscaleService{}, false, fmt.Errorf("reading Service %s (HTTP %d): %s: %w", name, status, errorMessage(body), errServicesUnreadable)
 	default:
 		return tailscaleService{}, false, fmt.Errorf("reading Service %s (HTTP %d): %s", name, status, errorMessage(body))
 	}

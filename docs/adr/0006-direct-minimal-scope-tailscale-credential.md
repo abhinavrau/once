@@ -9,8 +9,10 @@ setup command line below is now
 
 Amended by [ADR-0015](0015-tailnet-topology-seam-nodes-default.md): the three
 scopes below are the Services topology's. A fresh enable now defaults to the
-Nodes topology, whose credential needs only `auth_keys` and `devices:core`
-(there are no Services to create), and whose policy snippet comes from
+Nodes topology, whose credential needs `auth_keys`, `devices:core`, and
+`services:read` - read only, since there are no Services to create, but the
+deploy preflight must see a Tailscale Service holding an app's Host, which
+would otherwise give its node a `-1` name - and whose policy snippet comes from
 `once tailscale policy --topology nodes`. The decision this ADR records - the
 user creates one tagged runtime credential directly, and the enable-time probe
 is the enforcement - is unchanged; only the scope list varies by topology.
