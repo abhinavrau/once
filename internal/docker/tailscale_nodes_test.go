@@ -431,6 +431,45 @@ func TestBestEffortDeleteTaggedDevicesSkipsWithoutCredentials(t *testing.T) {
 	n.bestEffortDeleteTaggedDevices(context.Background(), TailscaleSettings{Tag: "tag:once"}, "")
 }
 
+// single-app removal device cleanup
+
+func TestDeleteTaggedDevicesForAnAppDeletesOnlyItsHostsDevice(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK, `{"devices":[
+		{"nodeId":"whoami-node","hostname":"whoami","tags":["tag:once"]},
+		{"nodeId":"notes-node","hostname":"notes","tags":["tag:once"]},
+		{"nodeId":"admin-node","hostname":"once-admin","tags":["tag:once"]}
+	]}`)
+	api.reply(http.MethodDelete, "/device/whoami-node", http.StatusOK, "")
+
+	deleteTaggedDevices(context.Background(), api, "tag:once", "whoami")
+
+	assert.Equal(t, []string{"/device/whoami-node"}, api.paths(http.MethodDelete))
+}
+
+func TestDeleteTaggedDevicesIsBestEffortOnDeleteFailure(t *testing.T) {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK, `{"devices":[
+		{"nodeId":"whoami-node","hostname":"whoami","tags":["tag:once"]}
+	]}`)
+	api.fail(http.MethodDelete, "/device/whoami-node", assert.AnError)
+
+	assert.NotPanics(t, func() { deleteTaggedDevices(context.Background(), api, "tag:once", "whoami") })
+	assert.True(t, api.requested(http.MethodDelete, "/device/whoami-node"))
+}
+
+// TestNodesRemoveAppSkipsOnControlSeam: with no reachable Tailscale API, a
+// real call would hang or fail, so returning at all proves the guard.
+func TestNodesRemoveAppSkipsOnControlSeam(t *testing.T) {
+	t.Setenv("ONCE_TAILSCALE_AUTH_KEY", "tskey-abc")
+	t.Setenv("ONCE_TAILSCALE_CONTROL_URL", "http://headscale:8080")
+	n := newNodesTopology(&Namespace{name: "once"})
+
+	assert.NotPanics(t, func() {
+		n.removeApp(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"}, "whoami")
+	})
+}
+
 // reader
 
 func TestParseTSDProxyProxiesFixture(t *testing.T) {

@@ -275,8 +275,12 @@ func (a *Application) Remove(ctx context.Context, removeData bool) error {
 	if err := a.namespace.Proxy().Remove(ctx, a.Settings.Name); err != nil {
 		return fmt.Errorf("removing from proxy: %w", err)
 	}
+	if err := a.Destroy(ctx, removeData); err != nil {
+		return err
+	}
 
-	return a.Destroy(ctx, removeData)
+	a.removeTailnetDevice(ctx)
+	return nil
 }
 
 func (a *Application) Destroy(ctx context.Context, destroyVolumes bool) error {
@@ -313,6 +317,17 @@ func (a *Application) Destroy(ctx context.Context, destroyVolumes bool) error {
 }
 
 // Private
+
+// removeTailnetDevice releases the tailnet identity a tailnet app's topology
+// created for it, best effort, so the app leaves no orphan behind it. Remove
+// only, never Destroy: Destroy also cleans up after a refused deploy or
+// restore, whose Host may name a device this app never owned.
+func (a *Application) removeTailnetDevice(ctx context.Context) {
+	if a.Settings.Exposure != ExposureTailnet {
+		return
+	}
+	a.namespace.Tailscale().RemoveApp(ctx, a.Settings.Host)
+}
 
 // validateTailnetExposure rejects a tailnet deploy that could never work:
 // the host must be a valid Magic DNS label (it is the service/node name),

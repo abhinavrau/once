@@ -65,6 +65,10 @@ type tailnetTopology interface {
 	// cleanup, used by teardown. settings is passed for the same reason as
 	// remove's.
 	destroy(ctx context.Context, settings TailscaleSettings) error
+	// removeApp best-effort releases whatever tailnet identity this topology
+	// created for the app on host, once that app is removed. Never fails: an
+	// app removal that is otherwise done must not be undone by the tailnet.
+	removeApp(ctx context.Context, settings TailscaleSettings, host string)
 	// relabel cheaply rewrites this topology's stored settings label (Docker
 	// labels are immutable on a live container) without disturbing node
 	// identity or other supporting state - the write-through path

@@ -125,6 +125,14 @@ func (n *nodesTopology) destroy(ctx context.Context, settings TailscaleSettings)
 	return nil
 }
 
+// removeApp best-effort deletes the removed app's own tailnet device, narrowed
+// to its Host so no other tagged device is touched - the single-app
+// counterpart of remove's sweep, without which every removal leaves an orphan
+// device holding the Host.
+func (n *nodesTopology) removeApp(ctx context.Context, settings TailscaleSettings, host string) {
+	n.bestEffortDeleteTaggedDevices(ctx, settings, host)
+}
+
 // relabel rewrites once-tsdproxy's settings label and config file by
 // recreating it (Docker labels are immutable on a live container, and
 // TSDProxy's own credentials only ever come from its config file). The data

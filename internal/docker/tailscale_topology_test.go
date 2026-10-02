@@ -44,6 +44,18 @@ func TestTopologyForReturnsBothAdapters(t *testing.T) {
 	assert.IsType(t, &nodesTopology{}, nodes)
 }
 
+// TestServicesRemoveAppTouchesNothing pins that removing an app under
+// Services deletes no device: its apps share one sidecar node, so there is
+// no per-app device to delete. No Docker client and no API: any call would
+// panic.
+func TestServicesRemoveAppTouchesNothing(t *testing.T) {
+	s := newServicesTopology(&Namespace{name: "test"})
+
+	assert.NotPanics(t, func() {
+		s.removeApp(context.Background(), TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"}, "whoami")
+	})
+}
+
 // TestTailscaleTopologyFacts pins that facts are reachable with no namespace
 // at all - frontends call this before any install exists (the enable form's
 // topology selector, the CLI's flag help).

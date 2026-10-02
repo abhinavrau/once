@@ -141,3 +141,14 @@ func TestURL(t *testing.T) {
 		assert.Equal(t, "", app.URL())
 	})
 }
+
+// TestRemoveTailnetDeviceSkipsNonTailnetApps pins that a Local or Public app
+// never reaches the Tailscale facade: the namespace has no Tailscale and no
+// Docker client, so reaching either would panic.
+func TestRemoveTailnetDeviceSkipsNonTailnetApps(t *testing.T) {
+	for _, exposure := range []Exposure{ExposureLocal, ExposurePublic} {
+		app := NewApplication(&Namespace{name: "test"}, ApplicationSettings{Name: "whoami", Host: "whoami", Exposure: exposure})
+
+		assert.NotPanics(t, func() { app.removeTailnetDevice(context.Background()) }, exposure)
+	}
+}

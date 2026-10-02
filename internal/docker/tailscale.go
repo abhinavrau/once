@@ -560,6 +560,17 @@ func (t *Tailscale) Destroy(ctx context.Context) error {
 	return nil
 }
 
+// RemoveApp best-effort releases the tailnet identity the active topology
+// created for a removed app on host. Tailscale not being enabled, or an
+// unreadable settings label, leaves nothing to release.
+func (t *Tailscale) RemoveApp(ctx context.Context, host string) {
+	settings, topology, err := t.sessionTopology(ctx)
+	if err != nil {
+		return
+	}
+	topology.removeApp(ctx, settings, host)
+}
+
 // ValidateHost rejects a name that cannot be exposed under the active
 // topology: Services checks the Magic DNS label shape only; nodes adds a
 // live deploy-time refusal when a device with that hostname already exists

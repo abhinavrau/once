@@ -190,6 +190,10 @@ func (s *servicesTopology) destroy(ctx context.Context, settings TailscaleSettin
 	return s.removeVolume(ctx, s.stateVolumeName())
 }
 
+// removeApp has nothing to release: Services apps share the sidecar's one
+// node, so no device belongs to a single app.
+func (s *servicesTopology) removeApp(context.Context, TailscaleSettings, string) {}
+
 // relabel rewrites once-docktail's settings label by recreating it (Docker
 // labels are immutable on a live container). The sidecar is untouched - used
 // to bake in a newly-learned domain suffix or node host.

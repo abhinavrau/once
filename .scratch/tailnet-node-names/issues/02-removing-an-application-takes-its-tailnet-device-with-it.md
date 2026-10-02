@@ -7,7 +7,7 @@ left with no device for an Application that no longer exists.
 **Blocked by:** None - can start immediately. Independent of ticket 01, which
 covers a different leak (Tailscale Services) behind a different symptom.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## What is actually wrong
 
@@ -34,13 +34,24 @@ which deletes every tagged device. Only the single-Application path leaks.
 
 ## Acceptance criteria
 
-- [ ] Removing a tailnet Application under the Nodes topology deletes its
+- [x] Removing a tailnet Application under the Nodes topology deletes its
       tailnet device, narrowed to that Application's Host so no other tagged
       device is touched.
-- [ ] The delete is best effort. A missing Runtime Credential, an unreachable
+- [x] The delete is best effort. A missing Runtime Credential, an unreachable
       Tailscale API, or an active Control Seam does not fail the removal.
-- [ ] Removing a Local or Public Application, or removing under the Services
+- [x] Removing a Local or Public Application, or removing under the Services
       topology, deletes no device.
-- [ ] Unit coverage against the fake `tailscaleAPI`: the Host's device is
+- [x] Unit coverage against the fake `tailscaleAPI`: the Host's device is
       deleted, a device with a different Host is left alone, and an API error
       still lets the removal report success.
+
+## Comments
+
+Implemented. The release hangs off `Application.Remove` (after `Destroy`
+succeeds), not `Destroy` itself: `Destroy` also cleans up after a refused
+deploy or restore, whose Host may name a tagged device that app never owned
+(e.g. `validateNodesHostAgainstTailnet` refusing while TSDProxy is
+unreadable). Teardown keeps relying on `nodesTopology.remove`'s full sweep.
+Matching is on the devices API `hostname` (the requested name), so a deduped
+`host-1` node is caught too. Wiring through `Remove` has no live coverage:
+the integration harness runs on the Control Seam, which skips the delete.
