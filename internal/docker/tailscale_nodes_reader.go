@@ -58,7 +58,7 @@ func parseTSDProxyProxies(body []byte) ([]tsdproxyProxy, error) {
 // concerns (ADR-0015) - so they return zero values rather than an error.
 type tsdproxyReader struct {
 	locate func(context.Context) (string, error)
-	client  *http.Client
+	client *http.Client
 }
 
 func newTSDProxyReader(locate func(context.Context) (string, error)) *tsdproxyReader {
