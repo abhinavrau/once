@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/go-connections/nat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -27,7 +29,7 @@ func newTSDProxyReaderFromStatus(t *testing.T, status int, body string) *tsdprox
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(server.Close)
-	return newTSDProxyReader(server.URL)
+	return newTSDProxyReader(func(context.Context) (string, error) { return server.URL, nil })
 }
 
 func TestNodesAppLabelsPlain(t *testing.T) {
@@ -119,6 +121,37 @@ func TestNodesPolicySnippetHasNoServicesMachinery(t *testing.T) {
 func TestTopologyRoutesTailnetAppsViaProxy(t *testing.T) {
 	assert.True(t, topologyRoutesTailnetAppsViaProxy(TailnetTopologyNodes))
 	assert.False(t, topologyRoutesTailnetAppsViaProxy(TailnetTopologyServices))
+}
+
+// TestNodesAdminPortIsEphemeralOnLoopback pins the publish that lets a second
+// Once namespace on the same host run its own once-tsdproxy: Docker picks the
+// host port, so no two namespaces ever contend for one.
+func TestNodesAdminPortIsEphemeralOnLoopback(t *testing.T) {
+	bindings := tsdproxyAdminPortBindings()
+
+	assert.Equal(t, nat.PortMap{
+		"8080/tcp": []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: ""}},
+	}, bindings)
+}
+
+func TestTSDProxyAdminURLReadsThePublishedPort(t *testing.T) {
+	url, err := tsdproxyAdminURL(tsdproxyInspect("49153"))
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:49153", url)
+}
+
+func TestTSDProxyAdminURLReadsALegacyFixedPort(t *testing.T) {
+	url, err := tsdproxyAdminURL(tsdproxyInspect("8180"))
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:8180", url)
+}
+
+func TestTSDProxyAdminURLRefusesAnUnpublishedPort(t *testing.T) {
+	_, err := tsdproxyAdminURL(container.InspectResponse{NetworkSettings: &container.NetworkSettings{}})
+	assert.ErrorContains(t, err, "not published")
+
+	_, err = tsdproxyAdminURL(container.InspectResponse{})
+	assert.ErrorContains(t, err, "not published")
 }
 
 // TestNodesBuildConfigTargetsOnceProxy pins the one setting that routes every
@@ -721,4 +754,14 @@ func TestWaitForMagicDNSSuffixGivesUpWhenNothingEverJoins(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Empty(t, suffix)
+}
+
+// Helpers
+
+func tsdproxyInspect(hostPort string) container.InspectResponse {
+	info := container.InspectResponse{NetworkSettings: &container.NetworkSettings{}}
+	info.NetworkSettings.Ports = nat.PortMap{
+		tsdproxyAdminPort(): []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: hostPort}},
+	}
+	return info
 }

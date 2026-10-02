@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,13 +28,9 @@ import (
 const tsdproxyImage = "almeidapaulopt/tsdproxy:2.3.4"
 
 // tsdproxyAdminContainerPort is TSDProxy's own default admin API port
-// (serverconfig.md: http.port defaults to 8080), published to the host on
-// tsdproxyAdminHostPort - loopback only, so only the Once process on this
-// host can reach it, never the tailnet or another container.
-const (
-	tsdproxyAdminContainerPort = 8080
-	tsdproxyAdminHostPort      = 8180
-)
+// (serverconfig.md: http.port defaults to 8080), published on loopback only,
+// on a Docker-picked host port so every namespace on the host gets its own.
+const tsdproxyAdminContainerPort = 8080
 
 // tsdproxyConfigPath is where TSDProxy reads its config file from inside the
 // container (serverconfig.md's default, which Once does not override).
@@ -193,9 +189,10 @@ func (n *nodesTopology) probe(ctx context.Context, settings TailscaleSettings) (
 }
 
 // reader returns the TailnetReader bound to TSDProxy's admin API on its
-// published loopback port.
+// published loopback port, looked up on every read since Docker may pick a
+// different one each time the container starts.
 func (n *nodesTopology) reader(settings TailscaleSettings) TailnetReader {
-	return newTSDProxyReader(fmt.Sprintf("http://127.0.0.1:%d", tsdproxyAdminHostPort))
+	return newTSDProxyReader(n.adminURL)
 }
 
 // verify confirms every expected app has joined and is being served by
@@ -320,14 +317,13 @@ func (n *nodesTopology) create(ctx context.Context, settings TailscaleSettings) 
 		n.bestEffortDeleteTaggedDevices(ctx, settings, "once-admin")
 	}
 
-	adminPort := nat.Port(fmt.Sprintf("%d/tcp", tsdproxyAdminContainerPort))
 	resp, err := n.namespace.client.ContainerCreate(ctx,
 		&container.Config{
 			Image: tsdproxyImage,
 			Labels: map[string]string{
 				labelKey: settings.Marshal(),
 			},
-			ExposedPorts: nat.PortSet{adminPort: struct{}{}},
+			ExposedPorts: nat.PortSet{tsdproxyAdminPort(): struct{}{}},
 		},
 		&container.HostConfig{
 			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyAlways},
@@ -336,9 +332,7 @@ func (n *nodesTopology) create(ctx context.Context, settings TailscaleSettings) 
 			Mounts: []mount.Mount{
 				{Type: mount.TypeVolume, Source: n.dataVolumeName(), Target: nodesDataVolumeTarget},
 			},
-			PortBindings: nat.PortMap{
-				adminPort: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: strconv.Itoa(tsdproxyAdminHostPort)}},
-			},
+			PortBindings: tsdproxyAdminPortBindings(),
 		},
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
@@ -362,6 +356,16 @@ func (n *nodesTopology) create(ctx context.Context, settings TailscaleSettings) 
 		return fmt.Errorf("starting tsdproxy container: %w", err)
 	}
 	return nil
+}
+
+// adminURL is the base URL of TSDProxy's admin API on whatever loopback port
+// Docker published it on.
+func (n *nodesTopology) adminURL(ctx context.Context) (string, error) {
+	info, err := n.namespace.client.ContainerInspect(ctx, n.containerName())
+	if err != nil {
+		return "", fmt.Errorf("inspecting tsdproxy container: %w", err)
+	}
+	return tsdproxyAdminURL(info)
 }
 
 // writeConfig copies tsdproxy.yaml into the container's config directory
@@ -440,6 +444,32 @@ func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, setti
 }
 
 // Helpers
+
+func tsdproxyAdminPort() nat.Port {
+	return nat.Port(fmt.Sprintf("%d/tcp", tsdproxyAdminContainerPort))
+}
+
+// tsdproxyAdminPortBindings publishes the admin API on loopback with an empty
+// HostPort, which has Docker pick a free port.
+func tsdproxyAdminPortBindings() nat.PortMap {
+	return nat.PortMap{
+		tsdproxyAdminPort(): []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: ""}},
+	}
+}
+
+// tsdproxyAdminURL reads the admin API's published loopback port from a
+// once-tsdproxy inspect. It reads whatever port is actually bound, so a
+// container created while the port was fixed at 8180 keeps working as-is.
+func tsdproxyAdminURL(info container.InspectResponse) (string, error) {
+	if info.NetworkSettings != nil {
+		for _, binding := range info.NetworkSettings.Ports[tsdproxyAdminPort()] {
+			if binding.HostPort != "" {
+				return "http://" + net.JoinHostPort("127.0.0.1", binding.HostPort), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("tsdproxy's admin API port %s is not published (is the container running?)", tsdproxyAdminPort())
+}
 
 // validateNodesHostAgainstTailnet is validateHost's live check, factored out
 // so it is testable against a fake reader and a fake tailscaleAPI without a
