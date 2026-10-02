@@ -628,6 +628,7 @@ func listenTailscaleStatus(ch chan string) tea.Cmd {
 var tailscaleConsoleScopes = []struct{ scope, console, access string }{
 	{"policy_file:read", "General -> Policy File", "Read"},
 	{"services:write", "General -> Services", "Write"},
+	{"services:read", "General -> Services", "Read"},
 	{"devices:core:write", "Devices -> Core", "Write"},
 	{"auth_keys:write", "Keys -> Auth Keys", "Write"},
 	{"devices:posture_attributes:read", "", ""},
@@ -671,7 +672,7 @@ func tailscaleScopeRows(scopes []string) []string {
 		}
 		row := render(i)
 		if i+1 < len(cells) {
-			row = lipgloss.NewStyle().Width(columnWidth[0] + 12).Render(row) + render(i + 1)
+			row = lipgloss.NewStyle().Width(columnWidth[0]+12).Render(row) + render(i+1)
 		}
 		rows = append(rows, row)
 	}

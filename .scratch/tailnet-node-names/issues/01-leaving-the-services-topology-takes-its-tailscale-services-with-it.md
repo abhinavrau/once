@@ -96,21 +96,47 @@ occupies the base slot too. A third node asking for `campfire` is given
 
 ## Acceptance criteria
 
-- [ ] Leaving the Services topology deletes every Tailscale Service Once
+- [x] Leaving the Services topology deletes every Tailscale Service Once
       advertised under it. This covers `servicesTopology.remove`, `destroy`,
       and a topology switch away from Services.
-- [ ] The delete is best effort and scoped to Once's own Services. A missing
+- [x] The delete is best effort and scoped to Once's own Services. A missing
       services scope, an unreachable Tailscale API, or an active Control Seam
       does not fail the removal, and a Service Once did not create is never
       touched.
 - [ ] A Services install torn down and re-enabled under Nodes gives every
       Application its own undeduped Host. Verified against a live tailnet.
-- [ ] The `services:write` scope requirement is stated where the user supplies
+- [x] The `services:write` scope requirement is stated where the user supplies
       the Runtime Credential, since removal now needs it and the Nodes
       credential does not carry it today.
-- [ ] Unit coverage against the fake `tailscaleAPI`: Once's Services are
+- [x] Unit coverage against the fake `tailscaleAPI`: Once's Services are
       deleted, an unrelated Service is left alone, and an API error still lets
       the removal report success.
-- [ ] Existing installs are not stranded. Once surfaces a leftover Service that
+- [x] Existing installs are not stranded. Once surfaces a leftover Service that
       is holding an Application's Host, rather than silently joining as `-1`.
       A one-line diagnosis beats a deduped name nobody can explain.
+
+## Comments
+
+Implemented (commit "Leaving the Services topology deletes its Tailscale
+Services"). Not done: the live-tailnet verification - the integration harness
+only drives the headscale Control Seam, which has no Services.
+
+- The topology seam gained `leave`: `remove` plus a best-effort delete of
+  every Tailscale Service carrying Once's tag (Docktail creates each with
+  `DEFAULT_SERVICE_TAGS`). `Disable`, `destroy`, and an Enable that switches
+  topology call it; an Enable that rebuilds within Services only removes, so
+  a credential or mode change does not drop and re-create every Service.
+  Nodes' `leave` is its `remove`, which already sweeps devices.
+- `services:write` is now stated in the Services setup prose as also needed
+  for that delete. The Services credential already carries it, and the
+  switch and teardown use the stored Services credential, so nothing new is
+  required of the Nodes credential to delete.
+- Existing installs: the Nodes deploy preflight reads `svc:<host>` and
+  refuses a Host a Service holds, naming it (and calling it a leftover of
+  Once's services topology when it carries Once's tag). Needs `services:read`
+  on the Nodes credential, now listed in its scopes, not probed at enable -
+  without it the check is skipped. Ticket 03 adds the probe and the
+  degraded-check reporting.
+- Accepted: like the nodes device sweep, "Once's own" means "carries Once's
+  tag", so two installs sharing a tag in one tailnet would sweep each
+  other's Services on leave.

@@ -57,13 +57,18 @@ type tailnetTopology interface {
 	boot(ctx context.Context, settings TailscaleSettings) error
 	// remove tears down this topology's containers, keeping any state volume
 	// that carries node identity (a re-enable must not churn Magic DNS).
-	// settings is the topology being left - nodes uses it to best-effort
+	// settings is the topology being removed - nodes uses it to best-effort
 	// delete the per-app tailnet devices through the Runtime Credential
-	// (ADR-0015); Services ignores it.
+	// (ADR-0015); Services ignores it. Used on its own for a rebuild that
+	// keeps the same topology.
 	remove(ctx context.Context, settings TailscaleSettings) error
-	// destroy removes everything remove does, plus the state volume - full
-	// cleanup, used by teardown. settings is passed for the same reason as
-	// remove's.
+	// leave is remove for an install that stops using this topology - a
+	// switch to the other one, or a disable - plus a best-effort delete of
+	// whatever the topology created in the tailnet that holds a Magic DNS
+	// name: Services' Tailscale Services. Never fails over that delete.
+	leave(ctx context.Context, settings TailscaleSettings) error
+	// destroy removes everything leave does, plus the state volume - full
+	// cleanup, used by teardown.
 	destroy(ctx context.Context, settings TailscaleSettings) error
 	// removeApp best-effort releases whatever tailnet identity this topology
 	// created for the app on host, once that app is removed. Never fails: an

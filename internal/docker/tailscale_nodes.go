@@ -53,8 +53,10 @@ const nodesSetupIntro = `Setup, once per tailnet:
  1. Run 'once tailscale policy --topology nodes' and merge the printed
     snippet into your tailnet policy file (https://login.tailscale.com/admin/acls/file).
  2. In the admin console (Settings -> Trust credentials), create an OAuth
-    client with write access to Auth Keys and Devices Core, tagged with
-    your tag (default tag:once).`
+    client with write access to Auth Keys and Devices Core, and read
+    access to Services, tagged with your tag (default tag:once). Services
+    lets Once spot a Tailscale Service holding an app's name, which would
+    otherwise give its node a "-1" suffix.`
 
 var _ tailnetTopology = (*nodesTopology)(nil)
 
@@ -107,10 +109,16 @@ func (n *nodesTopology) remove(ctx context.Context, settings TailscaleSettings) 
 	return nil
 }
 
-// destroy removes everything remove does, plus the data volume - full
+// leave is remove: nodes holds Magic DNS names only through its devices,
+// which every remove already sweeps.
+func (n *nodesTopology) leave(ctx context.Context, settings TailscaleSettings) error {
+	return n.remove(ctx, settings)
+}
+
+// destroy removes everything leave does, plus the data volume - full
 // cleanup, used by teardown.
 func (n *nodesTopology) destroy(ctx context.Context, settings TailscaleSettings) error {
-	if err := n.remove(ctx, settings); err != nil {
+	if err := n.leave(ctx, settings); err != nil {
 		return err
 	}
 	if err := n.namespace.client.VolumeRemove(ctx, n.dataVolumeName(), true); err != nil {
@@ -276,7 +284,7 @@ func (n *nodesTopology) logsHint() string {
 func (n *nodesTopology) facts() TopologyFacts {
 	return TopologyFacts{
 		DefaultSettings: TailscaleSettings{Tag: "tag:once", Topology: TailnetTopologyNodes},
-		OAuthScopes:     []string{"auth_keys:write", "devices:core:write", "policy_file:read", "devices:posture_attributes:read"},
+		OAuthScopes:     []string{"auth_keys:write", "devices:core:write", "services:read", "policy_file:read", "devices:posture_attributes:read"},
 		PolicySnippet:   NodesPolicySnippet,
 		ModeChoices:     nil,
 		SetupIntro:      nodesSetupIntro,
@@ -437,10 +445,9 @@ func (n *nodesTopology) buildConfig(settings TailscaleSettings) ([]byte, error) 
 // hostname narrows the sweep to devices bearing that one name; "" sweeps
 // every tagged device.
 func (n *nodesTopology) bestEffortDeleteTaggedDevices(ctx context.Context, settings TailscaleSettings, hostname string) {
-	if controlSeamActive() || settings.Tag == "" || settings.ClientID == "" || settings.ClientSecret == "" {
-		return
+	if api, ok := sweepAPI(settings); ok {
+		deleteTaggedDevices(ctx, api, settings.Tag, hostname)
 	}
-	deleteTaggedDevices(ctx, newTailscaleAPI(settings), settings.Tag, hostname)
 }
 
 // Helpers
@@ -475,11 +482,14 @@ func tsdproxyAdminURL(info container.InspectResponse) (string, error) {
 // so it is testable against a fake reader and a fake tailscaleAPI without a
 // real TSDProxy or Tailscale API to talk to.
 func validateNodesHostAgainstTailnet(ctx context.Context, reader TailnetReader, api tailscaleAPI, name, tag string) error {
-	status, err := reader.ServeStatus(ctx)
-	if err == nil && slices.Contains(status.Services, name) {
+	status, readErr := reader.ServeStatus(ctx)
+	if readErr == nil && slices.Contains(status.Services, name) {
 		return nil
 	}
-	if err != nil {
+	if err := refuseIfServiceHoldsName(ctx, api, name, tag); err != nil {
+		return err
+	}
+	if readErr != nil {
 		// With TSDProxy unreadable (restarting, relabeling) a colliding
 		// device may be this app's own live node - the sweep must not
 		// revoke it, so a silent reader downgrades to the plain refusal.
@@ -669,7 +679,7 @@ func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name, tag strin
 		if device.Hostname != name {
 			continue
 		}
-		if deviceHasAnyTag(device.Tags, tags) {
+		if hasAnyTag(device.Tags, tags) {
 			if err := deleteDevice(ctx, api, device.NodeID); err != nil {
 				return fmt.Errorf("a tailnet device named %q is a leftover of a previous %q deploy, but sweeping it failed: %w; remove the device by hand or rename this app", name, name, err)
 			}
@@ -678,6 +688,26 @@ func refuseIfDeviceExists(ctx context.Context, api tailscaleAPI, name, tag strin
 		return fmt.Errorf("a tailnet device named %q already exists (node %s); rename this app or remove that device first - TSDProxy would otherwise register it as %q", name, device.NodeID, name+"-1")
 	}
 	return nil
+}
+
+// refuseIfServiceHoldsName extends the collision guard past devices: a
+// Tailscale Service holds a Magic DNS name too, and never shows in the
+// devices list, so svc:<name> would silently turn this app's node into
+// <name>-1. Refused, naming the Service - one carrying Once's tag is named as
+// a leftover of the services topology, from an install that predates
+// servicesTopology.leave. Best effort like the device check: a credential
+// without the services scope, or an unreachable API, skips it.
+func refuseIfServiceHoldsName(ctx context.Context, api tailscaleAPI, name, tag string) error {
+	svcName := "svc:" + name
+	svc, found, err := getTailscaleService(ctx, api, svcName)
+	if err != nil || !found {
+		return nil
+	}
+	holder := "the Tailscale Service " + svcName
+	if hasAnyTag(svc.Tags, policyTags(tag)) {
+		holder += ", left over from Once's services topology,"
+	}
+	return fmt.Errorf("%s holds the name %q; delete it in the admin console (Services) or rename this app - TSDProxy would otherwise register it as %q", holder, name, name+"-1")
 }
 
 // deleteDevice deletes one tailnet device row. A device that is already gone
@@ -708,16 +738,16 @@ func deleteTaggedDevices(ctx context.Context, api tailscaleAPI, tag, hostname st
 		if hostname != "" && device.Hostname != hostname {
 			continue
 		}
-		if !deviceHasAnyTag(device.Tags, tags) {
+		if !hasAnyTag(device.Tags, tags) {
 			continue
 		}
 		_ = deleteDevice(ctx, api, device.NodeID)
 	}
 }
 
-func deviceHasAnyTag(deviceTags, tags []string) bool {
+func hasAnyTag(have, tags []string) bool {
 	for _, t := range tags {
-		if slices.Contains(deviceTags, t) {
+		if slices.Contains(have, t) {
 			return true
 		}
 	}

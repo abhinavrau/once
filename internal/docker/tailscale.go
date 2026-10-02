@@ -291,7 +291,7 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 		if err != nil {
 			return err
 		}
-		if err := oldTopology.remove(ctx, existing); err != nil {
+		if err := rebuildOrLeave(ctx, oldTopology, existing, settings); err != nil {
 			return err
 		}
 	}
@@ -310,8 +310,9 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 	return t.namespace.RollApplications(ctx)
 }
 
-// Disable removes the active topology's containers, keeping any state volume
-// that carries node identity, so a later re-enable doesn't churn Magic DNS.
+// Disable leaves the active topology: its containers go, and so does what it
+// created in the tailnet, but any state volume that carries node identity is
+// kept, so a later re-enable doesn't churn Magic DNS.
 func (t *Tailscale) Disable(ctx context.Context) error {
 	settings, found, err := t.loadStoredSettings(ctx)
 	if err != nil {
@@ -322,7 +323,7 @@ func (t *Tailscale) Disable(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := topology.remove(ctx, settings); err != nil {
+		if err := topology.leave(ctx, settings); err != nil {
 			return err
 		}
 	}
@@ -658,6 +659,17 @@ func (t *Tailscale) persistSettings(ctx context.Context, settings TailscaleSetti
 }
 
 // Helpers
+
+// rebuildOrLeave tears down the stored topology ahead of an Enable that
+// rebuilds: a rebuild within the same topology only removes it, keeping what
+// it holds in the tailnet for its successor to reuse, while a switch leaves
+// it, so nothing it created goes on holding a name the new topology needs.
+func rebuildOrLeave(ctx context.Context, old tailnetTopology, existing, requested TailscaleSettings) error {
+	if activeTopologyName(existing) == requested.Topology {
+		return old.remove(ctx, existing)
+	}
+	return old.leave(ctx, existing)
+}
 
 // sameTopologyRequest reports whether a fresh enable request matches what is
 // already stored: everything that, if it changed, must rebuild the topology

@@ -83,3 +83,53 @@ func TestLegacyLabelDecodesWithEmptyTopology(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, settings.Topology)
 }
+
+// recordingTopology records which teardown the facade chose; every other
+// method is left to the nil embedded interface, so calling one panics.
+type recordingTopology struct {
+	tailnetTopology
+	called []string
+}
+
+func (r *recordingTopology) remove(ctx context.Context, settings TailscaleSettings) error {
+	r.called = append(r.called, "remove")
+	return nil
+}
+
+func (r *recordingTopology) leave(ctx context.Context, settings TailscaleSettings) error {
+	r.called = append(r.called, "leave")
+	return nil
+}
+
+func TestRebuildOrLeaveKeepsTheTailnetStateOnASameTopologyRebuild(t *testing.T) {
+	old := &recordingTopology{}
+
+	err := rebuildOrLeave(context.Background(), old,
+		TailscaleSettings{Topology: TailnetTopologyServices, ClientID: "old"},
+		TailscaleSettings{Topology: TailnetTopologyServices, ClientID: "new"})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"remove"}, old.called)
+}
+
+func TestRebuildOrLeaveLeavesOnATopologySwitch(t *testing.T) {
+	old := &recordingTopology{}
+
+	err := rebuildOrLeave(context.Background(), old,
+		TailscaleSettings{Topology: TailnetTopologyServices},
+		TailscaleSettings{Topology: TailnetTopologyNodes})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"leave"}, old.called)
+}
+
+func TestRebuildOrLeaveTreatsAPreTopologyLabelAsServices(t *testing.T) {
+	old := &recordingTopology{}
+
+	err := rebuildOrLeave(context.Background(), old,
+		TailscaleSettings{},
+		TailscaleSettings{Topology: TailnetTopologyServices})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"remove"}, old.called)
+}

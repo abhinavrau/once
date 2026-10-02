@@ -103,7 +103,7 @@ func TestNodesFacts(t *testing.T) {
 
 	assert.Equal(t, TailnetTopologyNodes, facts.DefaultSettings.Topology)
 	assert.Equal(t, "tag:once", facts.DefaultSettings.Tag)
-	assert.ElementsMatch(t, []string{"auth_keys:write", "devices:core:write", "policy_file:read", "devices:posture_attributes:read"}, facts.OAuthScopes)
+	assert.ElementsMatch(t, []string{"auth_keys:write", "devices:core:write", "services:read", "policy_file:read", "devices:posture_attributes:read"}, facts.OAuthScopes)
 	assert.Nil(t, facts.ModeChoices, "nodes has no Mode - there is nothing to choose")
 	assert.NotEmpty(t, facts.SetupIntro)
 }
@@ -205,7 +205,17 @@ const (
 	nodesKeysPath   = "/tailnet/-/keys"
 	nodesKeyPath    = "/tailnet/-/keys/tskey-id"
 	nodesDevicePath = "/tailnet/-/devices"
+
+	whoamiServicePath = "/tailnet/-/services/svc:whoami"
 )
+
+// newHostCheckAPI is a fake whose tailnet holds no Service named whoami, for
+// the validateHost tests about devices.
+func newHostCheckAPI(t *testing.T) *fakeTailscaleAPI {
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, whoamiServicePath, http.StatusNotFound, `{"message":"not found"}`)
+	return api
+}
 
 // TestValidateNodesCredentialsOverRealHTTPMatchesTSDProxysWireFormat proves
 // probeTagPayload's byte-compatibility claim against the real transport, not
@@ -294,7 +304,7 @@ func TestValidateNodesCredentialsMissingDevicesScope(t *testing.T) {
 
 func TestValidateNodesHostAgainstTailnetRefusesForeignDevice(t *testing.T) {
 	reader := &FakeTailnetReader{ServeJSON: `{}`}
-	api := newFakeTailscaleAPI(t)
+	api := newHostCheckAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:personal"]}]}`)
 
@@ -312,7 +322,7 @@ func TestValidateNodesHostAgainstTailnetRefusesForeignDevice(t *testing.T) {
 // it is deleted and the deploy proceeds instead of being blocked forever.
 func TestValidateNodesHostAgainstTailnetSweepsOwnLeftoverDevice(t *testing.T) {
 	reader := &FakeTailnetReader{ServeJSON: `{}`}
-	api := newFakeTailscaleAPI(t)
+	api := newHostCheckAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
 	api.reply(http.MethodDelete, "/device/n123", http.StatusOK, "")
@@ -325,7 +335,7 @@ func TestValidateNodesHostAgainstTailnetSweepsOwnLeftoverDevice(t *testing.T) {
 
 func TestValidateNodesHostAgainstTailnetRefusesWhenLeftoverDeleteFails(t *testing.T) {
 	reader := &FakeTailnetReader{ServeJSON: `{}`}
-	api := newFakeTailscaleAPI(t)
+	api := newHostCheckAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
 	api.reply(http.MethodDelete, "/device/n123", http.StatusForbidden, `{"message":"not permitted"}`)
@@ -342,7 +352,7 @@ func TestValidateNodesHostAgainstTailnetRefusesWhenLeftoverDeleteFails(t *testin
 // is what the sweep wants, so it must not refuse over it.
 func TestValidateNodesHostAgainstTailnetSweepTreatsGoneDeviceAsSwept(t *testing.T) {
 	reader := &FakeTailnetReader{ServeJSON: `{}`}
-	api := newFakeTailscaleAPI(t)
+	api := newHostCheckAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
 	api.reply(http.MethodDelete, "/device/n123", http.StatusNotFound, `{"message":"device not found"}`)
@@ -357,7 +367,7 @@ func TestValidateNodesHostAgainstTailnetSweepTreatsGoneDeviceAsSwept(t *testing.
 // own live node, so the sweep must downgrade to the plain refusal.
 func TestValidateNodesHostAgainstTailnetNeverSweepsWhenReaderIsSilent(t *testing.T) {
 	reader := &FakeTailnetReader{ServeErr: assert.AnError}
-	api := newFakeTailscaleAPI(t)
+	api := newHostCheckAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"whoami","tags":["tag:once"]}]}`)
 
@@ -369,7 +379,7 @@ func TestValidateNodesHostAgainstTailnetNeverSweepsWhenReaderIsSilent(t *testing
 
 func TestValidateNodesHostAgainstTailnetAllowsFreeHost(t *testing.T) {
 	reader := &FakeTailnetReader{ServeJSON: `{}`}
-	api := newFakeTailscaleAPI(t)
+	api := newHostCheckAPI(t)
 	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK,
 		`{"devices":[{"nodeId":"n123","hostname":"someone-elses-laptop","tags":[]}]}`)
 
@@ -394,12 +404,53 @@ func TestValidateNodesHostAgainstTailnetExemptsOwnNode(t *testing.T) {
 
 func TestValidateNodesHostAgainstTailnetIsBestEffortOnAPIFailure(t *testing.T) {
 	reader := &FakeTailnetReader{ServeJSON: `{}`}
-	api := newFakeTailscaleAPI(t)
+	api := newHostCheckAPI(t)
 	api.fail(http.MethodGet, nodesDevicePath, assert.AnError)
 
 	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
 
 	assert.NoError(t, err, "an unreadable devices list must not block a deploy credentials already proved could work")
+}
+
+func TestValidateNodesHostAgainstTailnetRefusesForeignServiceHoldingTheName(t *testing.T) {
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, whoamiServicePath, http.StatusOK, `{"name":"svc:whoami","tags":["tag:personal"]}`)
+
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "svc:whoami")
+	assert.Contains(t, err.Error(), "whoami-1")
+	assert.NotContains(t, err.Error(), "left over")
+}
+
+// TestValidateNodesHostAgainstTailnetNamesOwnLeftoverService pins the
+// diagnosis for an install that left the services topology before leaving
+// deleted its Services: the deploy is refused naming the leftover, rather
+// than joining as whoami-1 with nothing to explain why.
+func TestValidateNodesHostAgainstTailnetNamesOwnLeftoverService(t *testing.T) {
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, whoamiServicePath, http.StatusOK, `{"name":"svc:whoami","tags":["tag:once"]}`)
+
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "svc:whoami")
+	assert.Contains(t, err.Error(), "left over from Once's services topology")
+	assert.False(t, api.requested(http.MethodDelete, whoamiServicePath), "the Nodes credential only reads Services")
+}
+
+func TestValidateNodesHostAgainstTailnetSkipsTheServiceCheckWithoutTheServicesScope(t *testing.T) {
+	reader := &FakeTailnetReader{ServeJSON: `{}`}
+	api := newFakeTailscaleAPI(t)
+	api.reply(http.MethodGet, whoamiServicePath, http.StatusForbidden, `{"message":"missing scope"}`)
+	api.reply(http.MethodGet, nodesDevicePath, http.StatusOK, `{"devices":[]}`)
+
+	err := validateNodesHostAgainstTailnet(context.Background(), reader, api, "whoami", "tag:once")
+
+	assert.NoError(t, err)
 }
 
 // destroy/remove device cleanup
