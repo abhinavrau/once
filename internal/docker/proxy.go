@@ -78,6 +78,19 @@ type Proxy struct {
 	image     string
 }
 
+// defaultPorts supplies the ports a proxy binds when its settings leave them
+// unset - a fresh install's first boot.
+var defaultPorts = func() ProxySettings {
+	return ProxySettings{HTTPPort: DefaultHTTPPort, HTTPSPort: DefaultHTTPSPort, MetricsPort: DefaultMetricsPort}
+}
+
+// OverrideDefaultPortsForTest replaces the ports a proxy booted without
+// explicit ones binds, so the integration suite can't take :80/:443 from a
+// live install on the same host.
+func OverrideDefaultPortsForTest(ports func() ProxySettings) {
+	defaultPorts = ports
+}
+
 func NewProxy(ns *Namespace) *Proxy {
 	return &Proxy{namespace: ns}
 }
@@ -103,22 +116,12 @@ func (p *Proxy) PinnedImage() string {
 // the container's settings label and its named volume - the same replacement
 // UpdateSettings performs - so routes, certs and Once's state file survive.
 func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) (bool, error) {
-	if settings.HTTPPort == 0 {
-		settings.HTTPPort = DefaultHTTPPort
-	}
-	if settings.HTTPSPort == 0 {
-		settings.HTTPSPort = DefaultHTTPSPort
-	}
-	if settings.MetricsPort == 0 {
-		settings.MetricsPort = DefaultMetricsPort
-	}
-
 	info, err := p.namespace.client.ContainerInspect(ctx, p.containerName())
 	if err == nil {
 		if info.Config.Image == p.PinnedImage() {
 			return false, p.ensureRunning(ctx, info)
 		}
-		return true, p.roll(ctx, info, settings)
+		return true, p.roll(ctx, info, withDefaultPorts(settings))
 	}
 	if !errdefs.IsNotFound(err) {
 		return false, fmt.Errorf("inspecting proxy container: %w", err)
@@ -128,6 +131,7 @@ func (p *Proxy) Boot(ctx context.Context, settings ProxySettings) (bool, error) 
 		return false, err
 	}
 
+	settings = withDefaultPorts(settings)
 	name := p.containerName()
 	metricsPortTCP := nat.Port(fmt.Sprintf("%d/tcp", settings.MetricsPort))
 
@@ -426,6 +430,23 @@ func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]by
 }
 
 // Helpers
+
+func withDefaultPorts(settings ProxySettings) ProxySettings {
+	if settings.HTTPPort != 0 && settings.HTTPSPort != 0 && settings.MetricsPort != 0 {
+		return settings
+	}
+	defaults := defaultPorts()
+	if settings.HTTPPort == 0 {
+		settings.HTTPPort = defaults.HTTPPort
+	}
+	if settings.HTTPSPort == 0 {
+		settings.HTTPSPort = defaults.HTTPSPort
+	}
+	if settings.MetricsPort == 0 {
+		settings.MetricsPort = defaults.MetricsPort
+	}
+	return settings
+}
 
 // rollSettings picks what a rolled proxy boots with: the settings label the
 // existing container carries - an image roll must not change configuration -

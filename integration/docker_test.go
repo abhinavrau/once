@@ -1076,6 +1076,12 @@ var freePortCounter = int32(20000 + rand.IntN(8000))
 
 func getFreePort(t *testing.T) int {
 	t.Helper()
+	port, err := nextFreePort()
+	require.NoError(t, err)
+	return port
+}
+
+func nextFreePort() (int, error) {
 	for range 100 {
 		port := int(atomic.AddInt32(&freePortCounter, 1))
 		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
@@ -1083,10 +1089,9 @@ func getFreePort(t *testing.T) int {
 			continue
 		}
 		listener.Close()
-		return port
+		return port, nil
 	}
-	require.FailNow(t, "no free port in the test port block")
-	return 0
+	return 0, errors.New("no free port in the test port block")
 }
 
 // hostLANAddress finds a private IPv4 on a real (non-Docker, non-loopback)

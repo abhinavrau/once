@@ -152,3 +152,22 @@ func TestRollSettings(t *testing.T) {
 		assert.ErrorContains(t, err, "unmarshalling proxy settings")
 	})
 }
+
+func TestWithDefaultPorts(t *testing.T) {
+	assert.Equal(t, ProxySettings{HTTPPort: 80, HTTPSPort: 443, MetricsPort: 1318}, withDefaultPorts(ProxySettings{}))
+
+	t.Run("explicit ports win over the defaults", func(t *testing.T) {
+		assert.Equal(t, ProxySettings{HTTPPort: 8080, HTTPSPort: 443, MetricsPort: 9000},
+			withDefaultPorts(ProxySettings{HTTPPort: 8080, MetricsPort: 9000}))
+	})
+
+	t.Run("the test override supplies the defaults", func(t *testing.T) {
+		orig := defaultPorts
+		t.Cleanup(func() { defaultPorts = orig })
+		OverrideDefaultPortsForTest(func() ProxySettings {
+			return ProxySettings{HTTPPort: 20001, HTTPSPort: 20002, MetricsPort: 20003}
+		})
+
+		assert.Equal(t, ProxySettings{HTTPPort: 20001, HTTPSPort: 20002, MetricsPort: 20003}, withDefaultPorts(ProxySettings{}))
+	})
+}
