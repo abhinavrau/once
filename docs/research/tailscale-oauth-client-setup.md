@@ -13,10 +13,10 @@ the most powerful Tailscale credential that ever exists in this design.
 Which scopes it needs depends on the Tailnet Topology (ADR-0015,
 `docs/adr/0015-tailnet-topology-seam-nodes-default.md`):
 
-| Topology | `--topology` | Provider | Console scopes (all **Write**) | API identifiers |
+| Topology | `--topology` | Provider | Console scopes | API identifiers |
 | --- | --- | --- | --- | --- |
-| Nodes (default) | `nodes` | TSDProxy, one tailnet node per app | Keys > Auth Keys, Devices > Core | `auth_keys`, `devices:core` |
-| Services | `services` | Docktail, one shared node advertising a Service per app | Keys > Auth Keys, Devices > Core, Services | `auth_keys`, `devices:core`, `services` |
+| Nodes (default) | `nodes` | TSDProxy, one tailnet node per app | Keys > Auth Keys, Devices > Core (Write); Services (Read) | `auth_keys`, `devices:core`, `services:read` |
+| Services | `services` | Docktail, one shared node advertising a Service per app | Keys > Auth Keys, Devices > Core, Services (all Write) | `auth_keys`, `devices:core`, `services` |
 
 Both are tagged clients carrying your tag (default `tag:once`). The scope
 lists are not prose in this doc alone - they are `TopologyFacts.OAuthScopes`
@@ -27,7 +27,7 @@ enable form render.
 A fresh `once tailscale enable` with no `--topology` resolves to **nodes**; an
 already-enabled install keeps its stored topology. Switching topology later
 means a new policy snippet and (for nodes -> services) a new credential with
-the extra `services` scope, since scopes are fixed at creation.
+`services` write, since scopes are fixed at creation.
 
 ## What the code needs, either topology
 
@@ -107,7 +107,7 @@ scopes and the tag ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)).
    [trust-credentials reference](https://tailscale.com/docs/reference/trust-credentials)):
    - **Keys > Auth Keys** -> `auth_keys` (both topologies)
    - **Devices > Core** -> `devices:core` (both topologies)
-   - **Services** -> `services` (**Services topology only**)
+   - **Services** -> `services` (**Write** for Services, **Read** for Nodes)
 
    The `auth_keys` and `devices:core` write scopes force a tag selection
    ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)); pick your tag
@@ -155,7 +155,12 @@ credentials surface there, before any key is minted.
   host-collision check (so TSDProxy never falls back to a `-1` alias) and by
   the best-effort deletion of per-app devices on teardown.
 
-Nodes needs no `services` scope: it creates no Tailscale Services.
+- `services:read` - `GET /tailnet/-/services/svc:{name}` at deploy time.
+  Nodes creates no Services, but a Service holds a Magic DNS name just like a
+  device, and one left by the services topology turns the app's node into
+  `{name}-1`. The deploy is refused instead, naming the Service. Not probed
+  at enable: without the scope the check is skipped, so a credential created
+  before this requirement keeps working.
 
 ### Services (`validateOAuthCredentials`, `internal/docker/tailscale_services.go`)
 
@@ -201,7 +206,7 @@ drops the indirection.
 - **Copy the secret immediately.** It is displayed exactly once on the
   Credential created page ([kb/1215](https://tailscale.com/kb/1215/oauth-clients)).
 - **Scopes are fixed at creation.** To change scopes - including moving a nodes
-  install to services, which adds `services` - create a new credential and
+  install to services, which needs `services` write - create a new credential and
   revoke the old one on the Trust credentials page
   ([kb/1623](https://tailscale.com/kb/1623/trust-credentials)).
 - **Policy first, credential second.** The console's tag picker only offers
@@ -221,8 +226,13 @@ drops the indirection.
 - **A pre-ADR-0015 install has no stored topology** and reports
   `docker.ErrOlderOnceSetup`; re-running `once tailscale enable` rebuilds it as
   nodes unless `--topology services` is given. An existing Services install's
-  credential already covers nodes' scopes (nodes' are a subset), so no new
-  credential is needed in that direction.
+  credential already covers nodes' scopes, so no new credential is needed in
+  that direction.
+- **Leaving services deletes Once's Services.** Teardown, `disable`, and a
+  switch to nodes best-effort delete every Service carrying Once's tag
+  (`servicesTopology.leave`), through the Services credential's `services`
+  write, so none keeps holding an app's name. A rebuild that stays on
+  services keeps them.
 
 ## Sources
 

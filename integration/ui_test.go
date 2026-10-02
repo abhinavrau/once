@@ -327,9 +327,8 @@ func TestUIInstallContinuesAfterInlineTailscaleEnable(t *testing.T) {
 	d.click("submit")
 
 	// -- The submit detours into the enable overlay: continue past tagOwners
-	// and enable. Services topology, as in the enable-form test: nodes binds
-	// host port 8180, which a live Once stack on the machine already holds -
-	// and the detour's return leg is the same for every topology. --
+	// and enable. Services topology, as in the enable-form test: the detour's
+	// return leg is the same for every topology. --
 	d.waitForView("tagOwners", 5*time.Second)
 	d.click("continue")
 	d.waitForView("Client ID", 5*time.Second)

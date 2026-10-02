@@ -57,12 +57,12 @@ func parseTSDProxyProxies(body []byte) ([]tsdproxyProxy, error) {
 // mode resolution and the Serve-enablement probe are Services-topology
 // concerns (ADR-0015) - so they return zero values rather than an error.
 type tsdproxyReader struct {
-	baseURL string
-	client  *http.Client
+	locate func(context.Context) (string, error)
+	client *http.Client
 }
 
-func newTSDProxyReader(baseURL string) *tsdproxyReader {
-	return &tsdproxyReader{baseURL: baseURL, client: &http.Client{Timeout: tsdproxyReaderTimeout}}
+func newTSDProxyReader(locate func(context.Context) (string, error)) *tsdproxyReader {
+	return &tsdproxyReader{locate: locate, client: &http.Client{Timeout: tsdproxyReaderTimeout}}
 }
 
 // MagicDNSSuffix reads the tailnet's Magic DNS suffix from the first joined
@@ -143,7 +143,11 @@ func (r *tsdproxyReader) ServeEnablementURL(ctx context.Context) (string, error)
 // Private
 
 func (r *tsdproxyReader) proxies(ctx context.Context) ([]tsdproxyProxy, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/api/v1/proxies", nil)
+	baseURL, err := r.locate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("locating tsdproxy's admin API: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v1/proxies", nil)
 	if err != nil {
 		return nil, err
 	}

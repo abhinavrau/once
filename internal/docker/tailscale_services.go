@@ -83,6 +83,15 @@ var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 // undefined or unpermitted tag, while 429s and 5xxs mean something else.
 var ErrTagNotInPolicy = errors.New("define the tag in your tailnet policy (Access Controls -> tagOwners) first")
 
+// errServicesUnreadable marks a Services read the credential's scopes do not
+// allow - a Nodes credential minted before services:read was required.
+var errServicesUnreadable = errors.New("the credential lacks the services:read scope")
+
+// servicesPath roots every Service definition request. The "-" tailnet
+// segment matches Docktail, which defaults TAILSCALE_TAILNET to "-" when Once
+// leaves it unset.
+const servicesPath = "/tailnet/-/services"
+
 const (
 	// probeServiceName is the throwaway Service definition created and deleted by
 	// the enable-time probe. probeServiceComment marks it as Once's, so a leftover
@@ -107,7 +116,9 @@ const servicesSetupIntro = `Setup, once per tailnet:
     tailnet policy file (https://login.tailscale.com/admin/acls/file).
  2. In the admin console (Settings -> Trust credentials), create an OAuth
     client with write access to Auth Keys, Devices Core, and Services,
-    tagged with your tag (default tag:once).`
+    tagged with your tag (default tag:once). Services write also lets Once
+    delete its Services when it leaves this topology, so none goes on
+    holding an app's name.`
 
 // servicesTopology is the Services topology's adapter (ADR-0002 behind the
 // seam): one shared tailnet node, driven by once-docktail, advertises a
@@ -169,8 +180,8 @@ func (s *servicesTopology) boot(ctx context.Context, settings TailscaleSettings)
 
 // remove removes once-docktail, the Once-managed sidecar, and the transient
 // socket volume, keeping the sidecar's state volume (node identity). settings
-// is unused: Services has no per-app device to best-effort delete when it is
-// left, unlike nodes.
+// is unused: a rebuild keeps the Services, which the new once-docktail goes
+// on advertising.
 func (s *servicesTopology) remove(ctx context.Context, settings TailscaleSettings) error {
 	if err := s.removeContainer(ctx, s.containerName()); err != nil {
 		return err
@@ -181,14 +192,30 @@ func (s *servicesTopology) remove(ctx context.Context, settings TailscaleSetting
 	return s.removeVolume(ctx, s.socketVolumeName())
 }
 
-// destroy removes everything remove does, plus the sidecar's state volume -
+// leave removes the containers, then best-effort deletes the Tailscale
+// Services Docktail advertised: a leftover svc:campfire holds the Magic DNS
+// name "campfire" forever, so a later Nodes deploy joins as campfire-1. It
+// runs after once-docktail is gone, so nothing re-creates what it deletes.
+func (s *servicesTopology) leave(ctx context.Context, settings TailscaleSettings) error {
+	if err := s.remove(ctx, settings); err != nil {
+		return err
+	}
+	s.bestEffortDeleteTaggedServices(ctx, settings)
+	return nil
+}
+
+// destroy removes everything leave does, plus the sidecar's state volume -
 // full cleanup, used by teardown.
 func (s *servicesTopology) destroy(ctx context.Context, settings TailscaleSettings) error {
-	if err := s.remove(ctx, settings); err != nil {
+	if err := s.leave(ctx, settings); err != nil {
 		return err
 	}
 	return s.removeVolume(ctx, s.stateVolumeName())
 }
+
+// removeApp has nothing to release: Services apps share the sidecar's one
+// node, so no device belongs to a single app.
+func (s *servicesTopology) removeApp(context.Context, TailscaleSettings, string) {}
 
 // relabel rewrites once-docktail's settings label by recreating it (Docker
 // labels are immutable on a live container). The sidecar is untouched - used
@@ -605,7 +632,26 @@ func (s *servicesTopology) removeVolume(ctx context.Context, name string) error 
 	return nil
 }
 
+// bestEffortDeleteTaggedServices deletes every Tailscale Service carrying
+// settings.Tag, the tag Docktail creates each one with (DEFAULT_SERVICE_TAGS).
+// Best effort, like the nodes device sweep: it never fails the removal.
+func (s *servicesTopology) bestEffortDeleteTaggedServices(ctx context.Context, settings TailscaleSettings) {
+	if api, ok := sweepAPI(settings); ok {
+		deleteTaggedServices(ctx, api, settings.Tag)
+	}
+}
+
 // Helpers
+
+// sweepAPI returns the Runtime Credential's API for a best-effort sweep on
+// leaving a topology, or false where there is nothing to sweep with: on the
+// Control Seam (no SaaS API), or without a tag or credentials to scope it.
+func sweepAPI(settings TailscaleSettings) (tailscaleAPI, bool) {
+	if controlSeamActive() || settings.Tag == "" || settings.ClientID == "" || settings.ClientSecret == "" {
+		return nil, false
+	}
+	return newTailscaleAPI(settings), true
+}
 
 // validateTailscaleCredentials is the enable-time pre-flight: it proves the
 // OAuth credentials work before any container is booted. Skipped on the hidden
@@ -802,7 +848,7 @@ const (
 // request Docktail's listServiceHosts sends. approvalLevel is one of
 // not-approved, approved:auto, approved:manual.
 func serviceApprovalState(ctx context.Context, api tailscaleAPI, name string) (approvalState, error) {
-	status, body, err := api.Call(ctx, http.MethodGet, "/tailnet/-/services/svc:"+name+"/devices", nil)
+	status, body, err := api.Call(ctx, http.MethodGet, servicePath("svc:"+name)+"/devices", nil)
 	if err != nil {
 		return serviceUnknown, err
 	}
@@ -1156,10 +1202,8 @@ func deleteProbeKey(ctx context.Context, api tailscaleAPI, keyID string) error {
 // sends at runtime: check whether the Service exists (SyncServiceDefinition),
 // create it (putService), list its advertising devices (listServiceHosts), and
 // delete it (deleteService). The create is also where an undefined tag surfaces.
-// The "-" tailnet path segment matches Docktail, which defaults
-// TAILSCALE_TAILNET to "-" when Once leaves it unset.
 func probeServiceDefinition(ctx context.Context, api tailscaleAPI, tag string) error {
-	svcPath := "/tailnet/-/services/" + probeServiceName
+	svcPath := servicePath(probeServiceName)
 
 	status, body, err := api.Call(ctx, http.MethodGet, svcPath, nil)
 	if err != nil {
@@ -1207,7 +1251,7 @@ func probeServiceDefinition(ctx context.Context, api tailscaleAPI, tag string) e
 
 	// The Service now exists; clean it up whether or not the devices check passes.
 	devErr := probeServiceDevices(ctx, api, svcPath)
-	_ = deleteProbeService(ctx, api, svcPath)
+	_ = deleteTailscaleService(ctx, api, probeServiceName)
 	return devErr
 }
 
@@ -1225,16 +1269,88 @@ func probeServiceDevices(ctx context.Context, api tailscaleAPI, svcPath string) 
 	return nil
 }
 
-func deleteProbeService(ctx context.Context, api tailscaleAPI, svcPath string) error {
-	status, body, err := api.Call(ctx, http.MethodDelete, svcPath, nil)
+// tailscaleService is the subset of a Tailscale Service definition Once
+// reads: its "svc:"-prefixed name and the tags Docktail created it with
+// (DEFAULT_SERVICE_TAGS, which create sets to the install's tag).
+type tailscaleService struct {
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
+}
+
+// listTailscaleServices lists every Service definition in the tailnet, the
+// same request Docktail's listServices sends.
+func listTailscaleServices(ctx context.Context, api tailscaleAPI) ([]tailscaleService, error) {
+	status, body, err := api.Call(ctx, http.MethodGet, servicesPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("listing the tailnet's Services (HTTP %d): %s", status, errorMessage(body))
+	}
+	var resp struct {
+		VIPServices []tailscaleService `json:"vipServices"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decoding the tailnet Services list: %w", err)
+	}
+	return resp.VIPServices, nil
+}
+
+// getTailscaleService fetches one Service definition by its "svc:"-prefixed
+// name; found is false when the tailnet has no Service by that name.
+func getTailscaleService(ctx context.Context, api tailscaleAPI, name string) (svc tailscaleService, found bool, err error) {
+	status, body, err := api.Call(ctx, http.MethodGet, servicePath(name), nil)
+	if err != nil {
+		return tailscaleService{}, false, err
+	}
+	switch status {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return tailscaleService{}, false, nil
+	case http.StatusForbidden:
+		return tailscaleService{}, false, fmt.Errorf("reading Service %s (HTTP %d): %s: %w", name, status, errorMessage(body), errServicesUnreadable)
+	default:
+		return tailscaleService{}, false, fmt.Errorf("reading Service %s (HTTP %d): %s", name, status, errorMessage(body))
+	}
+	if err := json.Unmarshal(body, &svc); err != nil {
+		return tailscaleService{}, false, fmt.Errorf("decoding Service %s: %w", name, err)
+	}
+	return svc, true, nil
+}
+
+// deleteTailscaleService deletes one Service definition. Docktail's
+// deleteService treats 404 as success, and so does Once: the goal is absence.
+func deleteTailscaleService(ctx context.Context, api tailscaleAPI, name string) error {
+	status, body, err := api.Call(ctx, http.MethodDelete, servicePath(name), nil)
 	if err != nil {
 		return err
 	}
-	// Docktail's deleteService treats 404 as success; so does the probe.
 	if status != http.StatusOK && status != http.StatusNotFound {
-		return fmt.Errorf("deleting the probe Service (HTTP %d): %s", status, errorMessage(body))
+		return fmt.Errorf("deleting Service %s (HTTP %d): %s", name, status, errorMessage(body))
 	}
 	return nil
+}
+
+// deleteTaggedServices is bestEffortDeleteTaggedServices' live sweep,
+// factored out so it is testable against a fake tailscaleAPI: every Service
+// carrying the install's tag is deleted, every other one is left alone.
+// Errors are swallowed - a sweep that cannot finish must not fail the
+// removal it trails.
+func deleteTaggedServices(ctx context.Context, api tailscaleAPI, tag string) {
+	services, err := listTailscaleServices(ctx, api)
+	if err != nil {
+		return
+	}
+	tags := policyTags(tag)
+	for _, svc := range services {
+		if hasAnyTag(svc.Tags, tags) {
+			_ = deleteTailscaleService(ctx, api, svc.Name)
+		}
+	}
+}
+
+func servicePath(name string) string {
+	return servicesPath + "/" + name
 }
 
 func servicesScopeError(status int, body []byte) error {

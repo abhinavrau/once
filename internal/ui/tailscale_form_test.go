@@ -56,7 +56,7 @@ func TestTailscaleForm_EnableFormDefaultsToNodesWithNoModeField(t *testing.T) {
 	assert.Contains(t, guidanceView, "General -> Policy File ✓ Read", "scopes render as the admin console's checklist")
 	assert.Contains(t, guidanceView, "Devices -> Core ✓ Write")
 	assert.Contains(t, guidanceView, "Keys -> Auth Keys ✓ Write")
-	assert.NotContains(t, guidanceView, "General -> Services", "nodes needs no services scope")
+	assert.Contains(t, guidanceView, "General -> Services ✓ Read", "nodes reads Services to spot one holding an app's name")
 	assert.NotContains(t, guidanceView, "posture", "companion grants are checked by the console, not the user")
 }
 

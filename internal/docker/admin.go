@@ -87,7 +87,7 @@ func (a *Admin) Boot(ctx context.Context) error {
 		// rejoins under a name Tailscale deduped (once-admin-1) leaves the
 		// old route answering 404 with nothing to correct it. Boot runs on
 		// every Setup, so the drift heals on the next Once command.
-		return a.registerTailnetRoute(ctx, info.ID)
+		return a.registerTailnetRoute(ctx, info.ID, false)
 	}
 	if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspecting once-admin container: %w", err)
@@ -110,7 +110,7 @@ func (a *Admin) ReregisterRoute(ctx context.Context) error {
 		}
 		return fmt.Errorf("inspecting once-admin container: %w", err)
 	}
-	return a.registerTailnetRoute(ctx, info.ID)
+	return a.registerTailnetRoute(ctx, info.ID, false)
 }
 
 // Destroy stops and removes once-admin.
@@ -183,7 +183,7 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 		return fmt.Errorf("starting once-admin container: %w", err)
 	}
 
-	if err := a.registerTailnetRoute(ctx, resp.ID); err != nil {
+	if err := a.registerTailnetRoute(ctx, resp.ID, true); err != nil {
 		a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return err
 	}
@@ -193,8 +193,10 @@ func (a *Admin) create(ctx context.Context, hostSocket, hostConf string) error {
 // registerTailnetRoute gives once-admin the Proxy route it answers on under
 // nodes, where it is exposed the same way an app is: TSDProxy forwards to the
 // Proxy rather than the container directly. A no-op under services (Docktail
-// advertises the container itself) or with Tailscale off.
-func (a *Admin) registerTailnetRoute(ctx context.Context, containerID string) error {
+// advertises the container itself) or with Tailscale off. joining is true
+// when the container was just created, so its node joins with this
+// registration and gets the same deduped-name refusal an app's does.
+func (a *Admin) registerTailnetRoute(ctx context.Context, containerID string, joining bool) error {
 	enabled, err := a.namespace.Tailscale().Enabled(ctx)
 	if err != nil {
 		return fmt.Errorf("checking tailscale: %w", err)
@@ -206,7 +208,13 @@ func (a *Admin) registerTailnetRoute(ctx context.Context, containerID string) er
 	if err != nil || !viaProxy {
 		return err
 	}
-	if err := registerNodesProxyRoute(ctx, a.namespace, "once-admin", "once-admin", containerID, ""); err != nil {
+	var joined string
+	if !joining {
+		if joined, err = a.namespace.Tailscale().NodeRouteHost(ctx, "once-admin"); err != nil {
+			return fmt.Errorf("resolving once-admin's tailnet host: %w", err)
+		}
+	}
+	if err := registerNodesProxyRoute(ctx, a.namespace, "once-admin", "once-admin", containerID, "", joined); err != nil {
 		return fmt.Errorf("registering once-admin with the proxy: %w", err)
 	}
 	return nil

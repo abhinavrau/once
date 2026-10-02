@@ -275,8 +275,12 @@ func (a *Application) Remove(ctx context.Context, removeData bool) error {
 	if err := a.namespace.Proxy().Remove(ctx, a.Settings.Name); err != nil {
 		return fmt.Errorf("removing from proxy: %w", err)
 	}
+	if err := a.Destroy(ctx, removeData); err != nil {
+		return err
+	}
 
-	return a.Destroy(ctx, removeData)
+	a.removeTailnetDevice(ctx)
+	return nil
 }
 
 func (a *Application) Destroy(ctx context.Context, destroyVolumes bool) error {
@@ -313,6 +317,17 @@ func (a *Application) Destroy(ctx context.Context, destroyVolumes bool) error {
 }
 
 // Private
+
+// removeTailnetDevice releases the tailnet identity a tailnet app's topology
+// created for it, best effort, so the app leaves no orphan behind it. Remove
+// only, never Destroy: Destroy also cleans up after a refused deploy or
+// restore, whose Host may name a device this app never owned.
+func (a *Application) removeTailnetDevice(ctx context.Context) {
+	if a.Settings.Exposure != ExposureTailnet {
+		return
+	}
+	a.namespace.Tailscale().RemoveApp(ctx, a.Settings.Host)
+}
 
 // validateTailnetExposure rejects a tailnet deploy that could never work:
 // the host must be a valid Magic DNS label (it is the service/node name),
@@ -429,6 +444,7 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 	if err != nil {
 		return fmt.Errorf("resolving tailnet labels: %w", err)
 	}
+	joined := a.joinedNodeFQDN(ctx, exposedOnTailnet)
 
 	env := a.Settings.BuildEnv(vol.Settings, a.resolvedURL(ctx, tailscaleEnabled))
 
@@ -462,7 +478,7 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 		return fmt.Errorf("starting container: %w", err)
 	}
 
-	if err := a.registerRouting(ctx, resp.ID, tailscaleEnabled); err != nil {
+	if err := a.registerRouting(ctx, resp.ID, tailscaleEnabled, joined); err != nil {
 		a.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return err
 	}
@@ -487,7 +503,7 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 // advertises the app directly and any proxy route left over from a previous
 // exposure is torn down instead. Exactly one path exists per exposure/
 // topology combination - never both.
-func (a *Application) registerRouting(ctx context.Context, containerID string, tailscaleEnabled bool) error {
+func (a *Application) registerRouting(ctx context.Context, containerID string, tailscaleEnabled bool, joined string) error {
 	if a.Settings.Exposure == ExposureTailnet {
 		if tailscaleEnabled {
 			viaProxy, err := a.namespace.Tailscale().RoutesTailnetAppsViaProxy(ctx)
@@ -495,7 +511,7 @@ func (a *Application) registerRouting(ctx context.Context, containerID string, t
 				return err
 			}
 			if viaProxy {
-				return a.registerNodesRoute(ctx, containerID)
+				return a.registerNodesRoute(ctx, containerID, joined)
 			}
 		}
 		if err := a.namespace.Proxy().Remove(ctx, a.Settings.Name); err != nil {
@@ -510,6 +526,8 @@ func (a *Application) registerRouting(ctx context.Context, containerID string, t
 // reregisterRoute re-issues the app's Proxy route at its currently running
 // container, through the same registration a deploy uses. The caller has
 // already decided the app's route lives on the Proxy (reregisterTargets).
+// A tailnet route is re-resolved on the FQDN its running node reports, so a
+// route registered on a composed Host heals onto the name the node holds.
 func (a *Application) reregisterRoute(ctx context.Context) error {
 	name, err := a.ContainerName(ctx)
 	if err != nil {
@@ -521,7 +539,11 @@ func (a *Application) reregisterRoute(ctx context.Context) error {
 	}
 
 	if a.Settings.Exposure == ExposureTailnet {
-		return a.registerNodesRoute(ctx, info.ID)
+		joined, err := a.namespace.Tailscale().NodeRouteHost(ctx, a.Settings.Host)
+		if err != nil {
+			return err
+		}
+		return a.registerNodesRoute(ctx, info.ID, joined)
 	}
 	return a.registerProxyRoute(ctx, info.ID)
 }
@@ -557,11 +579,25 @@ func (a *Application) registerProxyRoute(ctx context.Context, containerID string
 	return nil
 }
 
+// joinedNodeFQDN is the FQDN the app's node already answers on, read once
+// before its container is replaced - TSDProxy drops the proxy from its API
+// mid-swap, so this is a Roll's one chance to see the name its node holds.
+// Empty means the node joins with this deploy (or TSDProxy is not reporting
+// it), so the registration waits for the name and refuses a deduped one.
+func (a *Application) joinedNodeFQDN(ctx context.Context, exposedOnTailnet bool) string {
+	if !exposedOnTailnet {
+		return ""
+	}
+	fqdns, _ := a.namespace.Tailscale().NodeFQDNs(ctx)
+	return fqdns[a.Settings.Host]
+}
+
 // registerNodesRoute registers the Proxy route a nodes-topology tailnet app
 // answers on: its own tailnet Host ({app}.{suffix}), TLS off since TSDProxy
-// already terminated it with the tailnet's own certificate.
-func (a *Application) registerNodesRoute(ctx context.Context, containerID string) error {
-	if err := registerNodesProxyRoute(ctx, a.namespace, a.Settings.Name, a.Settings.Host, containerID, a.Settings.Profile.HealthCheckPath()); err != nil {
+// already terminated it with the tailnet's own certificate. joined is as
+// registerNodesProxyRoute takes it.
+func (a *Application) registerNodesRoute(ctx context.Context, containerID, joined string) error {
+	if err := registerNodesProxyRoute(ctx, a.namespace, a.Settings.Name, a.Settings.Host, containerID, a.Settings.Profile.HealthCheckPath(), joined); err != nil {
 		if strings.Contains(err.Error(), "target not healthy") || strings.Contains(err.Error(), "deploy timed out") {
 			slog.Error("Application failed to start", "app", a.Settings.Name, "error", err)
 			return ErrAppNotStarted

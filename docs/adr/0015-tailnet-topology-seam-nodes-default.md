@@ -27,7 +27,8 @@ always written explicitly, chosen by `--topology` at enable and by a selector
 in the TUI. `nodes` is the default for a fresh enable. Changing topology on a
 live install rebuilds the topology and rolls every tailnet app, exactly as
 changed credentials do; leaving `nodes` best-effort deletes the per-app devices
-through the Runtime Credential.
+through the Runtime Credential, and leaving `services` best-effort deletes the
+Tailscale Services it advertised, since each one holds a Magic DNS name.
 
 The seam is private and sits under the `Tailscale` facade, which stays
 concrete and deep: settings on the label, enabled-by-existence, rebuild-on-
