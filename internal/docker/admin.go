@@ -88,7 +88,7 @@ func (a *Admin) Boot(ctx context.Context) error {
 		// naming whatever tailnet host its node held then - and a node that
 		// rejoins under a name Tailscale deduped (once-admin-1) leaves the
 		// old route answering 404 with nothing to correct it. Boot runs on
-		// every Setup, so the drift heals on the next Once command.
+		// Tailscale enable and recovery handoff, so the drift heals there.
 		return a.registerTailnetRoute(ctx, info.ID, false)
 	}
 	if err != nil && !errdefs.IsNotFound(err) {
