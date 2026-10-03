@@ -12,12 +12,67 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestIsRelease(t *testing.T) {
+	for _, v := range []string{"v0.1.10", "v1.2.3", "v10.0.0"} {
+		assert.True(t, IsRelease(v), v)
+	}
+	for _, v := range []string{"dev", "", "v0.1.10-341-g52589e2", "v0.1.10-dirty", "v0.1.10-341-g52589e2-dirty", "52589e2", "0.1.10", "v1.2", "v1.2.3.4", "v01.2.3", "v1.2.3-rc1"} {
+		assert.False(t, IsRelease(v), v)
+	}
+}
+
 func TestUpdateBinary_AlreadyLatest(t *testing.T) {
 	srv := releaseServer(t, "v1.0.0", nil)
 	u := newUpdater("v1.0.0", srv.URL, srv.Client())
 
-	err := u.UpdateBinary()
+	updated, err := u.UpdateBinary()
 	require.NoError(t, err)
+	assert.False(t, updated)
+}
+
+func TestUpdateBinary_NeverDowngrades(t *testing.T) {
+	srv := releaseServer(t, "v0.1.9", nil)
+	u := newUpdater("v0.1.10", srv.URL, srv.Client())
+
+	updated, err := u.UpdateBinary()
+	require.NoError(t, err)
+	assert.False(t, updated)
+}
+
+func TestUpdateBinary_UpdatesToNumericallyNewerRelease(t *testing.T) {
+	srv := releaseServer(t, "v0.1.10", nil)
+	u := newUpdater("v0.1.9", srv.URL, srv.Client())
+
+	// Reaching the asset lookup means v0.1.10 was judged newer than v0.1.9.
+	_, err := u.UpdateBinary()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no release asset found")
+}
+
+func TestUpdateBinary_RefusesNonReleaseBuild(t *testing.T) {
+	for _, v := range []string{"dev", "v0.1.10-341-g52589e2", "v0.1.10-dirty"} {
+		var called bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+		}))
+		t.Cleanup(srv.Close)
+
+		u := newUpdater(v, srv.URL, srv.Client())
+		updated, err := u.UpdateBinary()
+		require.ErrorIs(t, err, ErrNonReleaseBuild, v)
+		assert.False(t, updated)
+		assert.False(t, called, v)
+	}
+}
+
+func TestUpdateBinary_RejectsNonReleaseLatestTag(t *testing.T) {
+	srv := releaseServer(t, "nightly", nil)
+	u := newUpdater("v1.0.0", srv.URL, srv.Client())
+
+	updated, err := u.UpdateBinary()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nightly")
+	assert.False(t, updated)
 }
 
 func TestUpdateBinary_NewerVersion(t *testing.T) {
@@ -53,23 +108,11 @@ func TestUpdateBinary_NewerVersion(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
-func TestUpdateBinary_AssetNotFound(t *testing.T) {
-	srv := releaseServer(t, "v2.0.0", []asset{{Name: "once-windows-amd64", URL: "http://example.com"}})
-	u := newUpdater("v1.0.0", srv.URL, srv.Client())
-
-	// Patch GOOS/GOARCH by checking the error contains the platform string
-	err := u.UpdateBinary()
-	// The test platform may or may not be windows-amd64; either way we get an error
-	// because the asset list only has windows-amd64 and we're (most likely) not on that.
-	// We'll confirm an error when the current platform doesn't match.
-	_ = err // may or may not error depending on test platform; tested via unit below
-}
-
 func TestUpdateBinary_AssetNotFoundError(t *testing.T) {
 	srv := releaseServer(t, "v2.0.0", nil) // no assets at all
 	u := newUpdater("v1.0.0", srv.URL, srv.Client())
 
-	err := u.UpdateBinary()
+	_, err := u.UpdateBinary()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no release asset found")
 }
@@ -81,7 +124,7 @@ func TestUpdateBinary_APIError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	u := newUpdater("v1.0.0", srv.URL, srv.Client())
-	err := u.UpdateBinary()
+	_, err := u.UpdateBinary()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected status 500")
 }
@@ -139,7 +182,8 @@ func TestGitHubToken_SentAsHeader(t *testing.T) {
 	u := newUpdater("v1.0.0", srv.URL, srv.Client())
 	u.githubToken = "test-token"
 
-	require.NoError(t, u.UpdateBinary())
+	_, err := u.UpdateBinary()
+	require.NoError(t, err)
 	assert.Equal(t, "token test-token", gotHeader)
 }
 

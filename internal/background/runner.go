@@ -33,7 +33,8 @@ func NewRunner(namespace string) *Runner {
 }
 
 func (r *Runner) Run(ctx context.Context) error {
-	slog.Info("Starting background runner", "namespace", r.namespace, "check_interval", CheckInterval)
+	slog.Info("Starting background runner", "namespace", r.namespace, "check_interval", CheckInterval,
+		"version", version.Version, "self_update", selfUpdateEnabled(version.Version))
 
 	scraper := userstats.NewScraper(r.namespace)
 	go scraper.Run(ctx)
@@ -137,7 +138,7 @@ func (r *Runner) checkFunnelExpiry(ctx context.Context, app *docker.Application)
 }
 
 func (r *Runner) checkSelfUpdate(ctx context.Context, ns *docker.Namespace, state *docker.State) bool {
-	if os.Getenv("ONCE_NO_SELF_UPDATE") != "" {
+	if !selfUpdateEnabled(version.Version) {
 		return false
 	}
 
@@ -147,19 +148,23 @@ func (r *Runner) checkSelfUpdate(ctx context.Context, ns *docker.Namespace, stat
 
 	slog.Info("Checking for once update")
 
-	err := version.NewUpdater().UpdateBinary()
+	updated, err := version.NewUpdater().UpdateBinary()
 	state.RecordSelfUpdate(err)
 	if saveErr := ns.SaveState(ctx, state); saveErr != nil {
 		slog.Error("Failed to save state after self-update check", "error", saveErr)
 	}
 
-	if err != nil {
+	switch {
+	case err != nil:
 		slog.Error("Self-update failed", "error", err)
 		return false
+	case !updated:
+		slog.Info("Once is up to date", "version", version.Version)
+		return false
+	default:
+		slog.Info("Self-update complete, restarting")
+		return true
 	}
-
-	slog.Info("Self-update complete, restarting")
-	return true
 }
 
 func (r *Runner) runBackups(ctx context.Context, ns *docker.Namespace, state *docker.State) {
@@ -189,6 +194,12 @@ func (r *Runner) checkUpdate(ctx context.Context, app *docker.Application, state
 }
 
 // Helpers
+
+// selfUpdateEnabled leaves locally-built binaries alone: replacing them with
+// the upstream release would silently discard the developer's build.
+func selfUpdateEnabled(currentVersion string) bool {
+	return os.Getenv("ONCE_NO_SELF_UPDATE") == "" && version.IsRelease(currentVersion)
+}
 
 // superviseAdminServer runs the admin socket server, restarting it with bounded
 // backoff whenever it returns while ctx is still live. Without this a transient

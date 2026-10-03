@@ -95,3 +95,14 @@ func TestWakeInterval(t *testing.T) {
 	past := now.Add(-time.Minute)
 	assert.Equal(t, time.Duration(0), wakeInterval(now, []time.Time{past}, CheckInterval))
 }
+
+func TestSelfUpdateEnabled(t *testing.T) {
+	t.Setenv("ONCE_NO_SELF_UPDATE", "")
+	assert.True(t, selfUpdateEnabled("v0.1.10"))
+	assert.False(t, selfUpdateEnabled("dev"))
+	assert.False(t, selfUpdateEnabled("v0.1.10-341-g52589e2"))
+	assert.False(t, selfUpdateEnabled("v0.1.10-dirty"))
+
+	t.Setenv("ONCE_NO_SELF_UPDATE", "1")
+	assert.False(t, selfUpdateEnabled("v0.1.10"))
+}

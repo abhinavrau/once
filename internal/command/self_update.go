@@ -17,7 +17,8 @@ func newSelfUpdateCommand() *selfUpdateCommand {
 		Short: "Update once to the latest version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return version.NewUpdater().UpdateBinary()
+			_, err := version.NewUpdater().UpdateBinary()
+			return err
 		},
 	}
 	return u
