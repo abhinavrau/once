@@ -178,6 +178,12 @@ func (s *servicesTopology) boot(ctx context.Context, settings TailscaleSettings)
 	return s.create(ctx, settings)
 }
 
+// heal has nothing to bring up to date: no Services container changed shape
+// since it was introduced.
+func (s *servicesTopology) heal(context.Context, TailscaleSettings) error {
+	return nil
+}
+
 // remove removes once-docktail, the Once-managed sidecar, and the transient
 // socket volume, keeping the sidecar's state volume (node identity). settings
 // is unused: a rebuild keeps the Services, which the new once-docktail goes

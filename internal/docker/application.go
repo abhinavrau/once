@@ -74,23 +74,20 @@ func NewApplication(ns *Namespace, settings ApplicationSettings) *Application {
 	}
 }
 
+// ContainerName names the app's active App Container, never a stray sibling a
+// killed Deploy left behind.
 func (a *Application) ContainerName(ctx context.Context) (string, error) {
-	containers, err := a.namespace.client.ContainerList(ctx, container.ListOptions{All: true})
+	byApp, err := a.namespace.appContainers(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	for _, c := range containers {
-		if len(c.Names) == 0 {
-			continue
-		}
-		name := strings.TrimPrefix(c.Names[0], "/")
-		if a.namespace.containerAppName(name) == a.Settings.Name {
-			return name, nil
-		}
+	containers := byApp[a.Settings.Name]
+	if len(containers) == 0 {
+		return "", fmt.Errorf("no container found for app %s", a.Settings.Name)
 	}
-
-	return "", fmt.Errorf("no container found for app %s", a.Settings.Name)
+	active, _ := activeContainers(ctx, map[string][]container.Summary{a.Settings.Name: containers}, a.namespace.proxy)
+	return containerName(active[a.Settings.Name]), nil
 }
 
 func (a *Application) Volume(ctx context.Context) (*ApplicationVolume, error) {
@@ -318,6 +315,41 @@ func (a *Application) Destroy(ctx context.Context, destroyVolumes bool) error {
 
 // Private
 
+// exposedOnTailnet reports whether this app is on the tailnet: only
+// tailnet-exposed apps carry tailnet labels, advertised under the Host. Off
+// the tailnet there is no Funnel either.
+func (a *Application) exposedOnTailnet(tailscaleEnabled bool) bool {
+	return tailscaleEnabled && a.Settings.Exposure == ExposureTailnet
+}
+
+// tailnetLabels are the labels the active topology gives this app's
+// container, nil off the tailnet.
+func (a *Application) tailnetLabels(ctx context.Context, tailscaleEnabled bool) (map[string]string, error) {
+	return a.namespace.Tailscale().AppLabels(ctx, a.exposedOnTailnet(tailscaleEnabled), a.Settings.Host, a.namespace.name, a.Settings.ActiveFunnelPort())
+}
+
+// carriesCurrentTailnetLabels reports whether the active container already
+// carries every tailnet label a deploy would give it now.
+func (a *Application) carriesCurrentTailnetLabels(ctx context.Context) (bool, error) {
+	enabled, err := a.namespace.Tailscale().Enabled(ctx)
+	if err != nil {
+		return false, err
+	}
+	want, err := a.tailnetLabels(ctx, enabled)
+	if err != nil || len(want) == 0 {
+		return true, err
+	}
+	name, err := a.ContainerName(ctx)
+	if err != nil {
+		return false, err
+	}
+	info, err := a.namespace.client.ContainerInspect(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return carriesTailnetLabels(info.Config.Labels, want), nil
+}
+
 // removeTailnetDevice releases the tailnet identity a tailnet app's topology
 // created for it, best effort, so the app leaves no orphan behind it. Remove
 // only, never Destroy: Destroy also cleans up after a refused deploy or
@@ -437,14 +469,11 @@ func (a *Application) deployWithVolume(ctx context.Context, vol *ApplicationVolu
 	if err != nil {
 		return fmt.Errorf("checking tailscale: %w", err)
 	}
-	// Only tailnet-exposed apps carry tailnet labels, advertised under the
-	// Host. Off the tailnet there is no Funnel either.
-	exposedOnTailnet := tailscaleEnabled && a.Settings.Exposure == ExposureTailnet
-	tsLabels, err := a.namespace.Tailscale().AppLabels(ctx, exposedOnTailnet, a.Settings.Host, a.namespace.name, a.Settings.ActiveFunnelPort())
+	tsLabels, err := a.tailnetLabels(ctx, tailscaleEnabled)
 	if err != nil {
 		return fmt.Errorf("resolving tailnet labels: %w", err)
 	}
-	joined := a.joinedNodeFQDN(ctx, exposedOnTailnet)
+	joined := a.joinedNodeFQDN(ctx, a.exposedOnTailnet(tailscaleEnabled))
 
 	env := a.Settings.BuildEnv(vol.Settings, a.resolvedURL(ctx, tailscaleEnabled))
 
@@ -633,17 +662,13 @@ func (a *Application) verifyHTTP(ctx context.Context) error {
 }
 
 func (a *Application) removeContainersExcept(ctx context.Context, keep string) error {
-	containers, err := a.namespace.client.ContainerList(ctx, container.ListOptions{All: true})
+	byApp, err := a.namespace.appContainers(ctx)
 	if err != nil {
 		return err
 	}
 
-	for _, c := range containers {
-		if len(c.Names) == 0 {
-			continue
-		}
-		name := strings.TrimPrefix(c.Names[0], "/")
-		if a.namespace.containerAppName(name) == a.Settings.Name && name != keep {
+	for _, c := range byApp[a.Settings.Name] {
+		if containerName(c) != keep {
 			if err := a.namespace.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
 				return err
 			}

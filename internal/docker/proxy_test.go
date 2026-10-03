@@ -8,6 +8,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParseRouteTargets(t *testing.T) {
+	// Trimmed kamal-proxy.state, as kamal-proxy writes it.
+	state := `[{"name":"blog","options":{"hosts":["a.localhost","b.localhost"]},"target_options":{},"active_targets":["6ac5e14a7ea6:80"],"rollout_targets":null},` +
+		`{"name":"wiki","options":{"hosts":["wiki.localhost"]},"target_options":{},"active_targets":["c7238eb94210"],"rollout_targets":null},` +
+		`{"name":"idle","options":{},"target_options":{},"active_targets":[],"rollout_targets":null}]` + "\n"
+
+	targets, err := parseRouteTargets([]byte(state))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"blog": "6ac5e14a7ea6", "wiki": "c7238eb94210"}, targets)
+
+	_, err = parseRouteTargets(nil)
+	assert.Error(t, err, "a state file caught mid-write is unreadable, not empty")
+}
+
 func TestProxyContainerName(t *testing.T) {
 	ns := &Namespace{name: "once"}
 	proxy := NewProxy(ns)

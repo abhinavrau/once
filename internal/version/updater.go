@@ -3,6 +3,7 @@ package version
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,8 @@ const (
 	httpTimeout       = 30 * time.Second
 	updateTempFile    = ".once-update-tmp"
 )
+
+var ErrNonReleaseBuild = errors.New("not a release build")
 
 type Updater struct {
 	currentVersion string
@@ -39,15 +42,32 @@ func newUpdater(currentVersion, apiURL string, client *http.Client) *Updater {
 	}
 }
 
-func (u *Updater) UpdateBinary() error {
-	rel, err := u.fetchRelease()
-	if err != nil {
-		return err
+// UpdateBinary replaces the running binary with the latest release when that
+// release is strictly newer, reporting whether it did. A non-release build is
+// never replaced: it returns ErrNonReleaseBuild without contacting GitHub.
+func (u *Updater) UpdateBinary() (bool, error) {
+	current, ok := parseRelease(u.currentVersion)
+	if !ok {
+		return false, fmt.Errorf("%w (%s); rebuild or install a release to update", ErrNonReleaseBuild, u.currentVersion)
 	}
 
-	if rel.TagName == u.currentVersion {
+	rel, err := u.fetchRelease()
+	if err != nil {
+		return false, err
+	}
+
+	latest, ok := parseRelease(rel.TagName)
+	if !ok {
+		return false, fmt.Errorf("latest release has unrecognized tag %q", rel.TagName)
+	}
+
+	switch compareReleases(latest, current) {
+	case 0:
 		fmt.Printf("You already have the latest version (%s)\n", u.currentVersion)
-		return nil
+		return false, nil
+	case -1:
+		fmt.Printf("Your version (%s) is newer than the latest release (%s)\n", u.currentVersion, rel.TagName)
+		return false, nil
 	}
 
 	assetName := fmt.Sprintf("once-%s-%s", runtime.GOOS, runtime.GOARCH)
@@ -59,27 +79,27 @@ func (u *Updater) UpdateBinary() error {
 		}
 	}
 	if downloadURL == "" {
-		return fmt.Errorf("no release asset found for %s", assetName)
+		return false, fmt.Errorf("no release asset found for %s", assetName)
 	}
 
 	fmt.Printf("Updating once from %s to %s...\n", u.currentVersion, rel.TagName)
 
 	execPath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("finding executable path: %w", err)
+		return false, fmt.Errorf("finding executable path: %w", err)
 	}
 
 	tmpFile := filepath.Join(filepath.Dir(execPath), updateTempFile)
 	if err := u.downloadBinary(downloadURL, tmpFile); err != nil {
-		return err
+		return false, err
 	}
 
 	if err := u.replaceBinary(execPath, tmpFile); err != nil {
-		return err
+		return false, err
 	}
 
 	fmt.Println("Update complete.")
-	return nil
+	return true, nil
 }
 
 // Private

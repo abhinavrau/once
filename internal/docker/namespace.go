@@ -81,7 +81,7 @@ func RestoreNamespace(ctx context.Context, name string) (*Namespace, error) {
 		return nil, err
 	}
 
-	if err := ns.restoreState(ctx, ns.client); err != nil {
+	if err := ns.restoreState(ctx, ns.client, ns.proxy); err != nil {
 		return nil, err
 	}
 
@@ -443,7 +443,7 @@ func (n *Namespace) Teardown(ctx context.Context, destroyVolumes bool) error {
 
 func (n *Namespace) Refresh(ctx context.Context) error {
 	n.applications = nil
-	return n.restoreState(ctx, n.client)
+	return n.restoreState(ctx, n.client, n.proxy)
 }
 
 // RollApplications recreates every running app container (zero-downtime) so they
@@ -581,6 +581,36 @@ func (n *Namespace) containerAppName(containerName string) string {
 
 // Private
 
+// rollStaleTailnetApps rolls every running app whose container lacks a
+// tailnet label the active topology would give it now - one deployed by an
+// older Once (ADR-0018) - leaving current ones untouched. Being driven by the
+// labels themselves, a heal interrupted partway converges on its next run.
+// One app's failure is reported and does not stop the others.
+func (n *Namespace) rollStaleTailnetApps(ctx context.Context) error {
+	if err := n.Refresh(ctx); err != nil {
+		return err
+	}
+	var errs []error
+	for _, app := range n.applications {
+		if !app.Running {
+			continue
+		}
+		current, err := app.carriesCurrentTailnetLabels(ctx)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("checking %s's tailnet labels: %w", app.Settings.Name, err))
+			continue
+		}
+		if current {
+			continue
+		}
+		slog.Info("Rolling app onto current tailnet labels", "app", app.Settings.Name)
+		if err := app.Roll(ctx, nil); err != nil {
+			errs = append(errs, fmt.Errorf("rolling %s: %w", app.Settings.Name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // reregisterNonPublicRoutes re-issues the Proxy route of every running app
 // whose route lives on the Proxy and is not Public, immediately after an
 // image-pin roll, so the routes carry whatever options the current Once emits
@@ -682,11 +712,6 @@ func (n *Namespace) exposedTailscaleServices() []string {
 	return names
 }
 
-type appCandidate struct {
-	app     *Application
-	created int64
-}
-
 // restoreClient is the engine surface the restore path reads: the namespace's
 // containers, and the start time of each running app container.
 type restoreClient interface {
@@ -694,7 +719,7 @@ type restoreClient interface {
 	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
 }
 
-func (n *Namespace) restoreState(ctx context.Context, client restoreClient) error {
+func (n *Namespace) restoreState(ctx context.Context, client restoreClient, routes routeTargetReader) error {
 	containers, err := client.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return err
@@ -703,8 +728,8 @@ func (n *Namespace) restoreState(ctx context.Context, client restoreClient) erro
 	proxyPrefix := n.name + "-proxy"
 	appPrefix := n.name + "-app-"
 
-	// Use a map to deduplicate apps by name, preferring the most recently created container
-	appsByName := make(map[string]appCandidate)
+	containersByApp := make(map[string][]container.Summary)
+	settingsByID := make(map[string]ApplicationSettings)
 
 	for _, c := range containers {
 		for _, name := range c.Names {
@@ -729,33 +754,38 @@ func (n *Namespace) restoreState(ctx context.Context, client restoreClient) erro
 					if err != nil {
 						return err
 					}
-					app := NewApplication(n, settings)
-					app.Running = c.State == "running"
-					if app.Running {
-						info, err := client.ContainerInspect(ctx, c.ID)
-						if err == nil && info.State != nil {
-							if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
-								app.RunningSince = t
-							}
-						}
-					}
-
-					existing, found := appsByName[settings.Name]
-					if !found || c.Created > existing.created {
-						appsByName[settings.Name] = appCandidate{app: app, created: c.Created}
-					}
+					containersByApp[settings.Name] = append(containersByApp[settings.Name], c)
+					settingsByID[c.ID] = settings
 				}
 				break
 			}
 		}
 	}
 
-	for _, candidate := range appsByName {
-		n.applications = append(n.applications, candidate.app)
+	active, err := activeContainers(ctx, containersByApp, routes)
+	if err != nil {
+		slog.Warn("Could not read proxy routes; taking each app's oldest container as active", "error", err)
+	}
+	for _, c := range active {
+		n.applications = append(n.applications, n.restoreApplication(ctx, client, c, settingsByID[c.ID]))
 	}
 
 	n.sortApplications()
 	return nil
+}
+
+func (n *Namespace) restoreApplication(ctx context.Context, client restoreClient, active container.Summary, settings ApplicationSettings) *Application {
+	app := NewApplication(n, settings)
+	app.Running = active.State == "running"
+	if app.Running {
+		info, err := client.ContainerInspect(ctx, active.ID)
+		if err == nil && info.State != nil {
+			if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
+				app.RunningSince = t
+			}
+		}
+	}
+	return app
 }
 
 func (n *Namespace) sortApplications() {

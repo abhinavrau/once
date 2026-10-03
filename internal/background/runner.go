@@ -2,6 +2,7 @@ package background
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,6 +23,13 @@ const (
 	adminRestartMaxBackoff = 30 * time.Second
 )
 
+// Bounds for retrying the startup heal: soon while Docker comes up, rarely
+// once a failure looks persistent.
+const (
+	healRetryInterval    = 30 * time.Second
+	healMaxRetryInterval = time.Hour
+)
+
 type Runner struct {
 	namespace string
 }
@@ -33,7 +41,8 @@ func NewRunner(namespace string) *Runner {
 }
 
 func (r *Runner) Run(ctx context.Context) error {
-	slog.Info("Starting background runner", "namespace", r.namespace, "check_interval", CheckInterval)
+	slog.Info("Starting background runner", "namespace", r.namespace, "check_interval", CheckInterval,
+		"version", version.Version, "self_update", selfUpdateEnabled(version.Version))
 
 	scraper := userstats.NewScraper(r.namespace)
 	go scraper.Run(ctx)
@@ -41,6 +50,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	go superviseAdminServer(ctx, func(ctx context.Context) error {
 		return NewAdminServer().Run(ctx)
 	})
+	go r.heal(ctx)
+
+	if ctx.Err() == nil {
+		r.removeStrayContainersAtStart(ctx)
+	}
 
 	for {
 		select {
@@ -68,6 +82,46 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // Private
 
+// heal migrates the tailnet topology and once-admin left by an older Once, so
+// an upgrade heals when the daemon restarts rather than on the user's next
+// Tailscale enable. Docker may not be ready yet at boot, so a failure is
+// retried, backing off so an app whose roll keeps failing is not rolled
+// every few seconds for good.
+func (r *Runner) heal(ctx context.Context) {
+	backoff := healRetryInterval
+	for {
+		err := r.tryHeal(ctx)
+		if err == nil {
+			return
+		}
+		slog.Error("Healing the install failed; retrying", "error", err, "backoff", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, healMaxRetryInterval)
+	}
+}
+
+// tryHeal heals the tailnet topology before once-admin, whose labels depend
+// on it; once-admin is healed even when the topology is not, so neither
+// strands the other.
+func (r *Runner) tryHeal(ctx context.Context) error {
+	ns, err := docker.RestoreNamespace(ctx, r.namespace)
+	if err != nil {
+		return fmt.Errorf("restoring namespace: %w", err)
+	}
+	var errs []error
+	if err := ns.Tailscale().Heal(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("healing tailscale: %w", err))
+	}
+	if err := ns.Admin().Heal(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("healing once-admin: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
 func (r *Runner) check(ctx context.Context) (bool, error) {
 	ns, err := docker.RestoreNamespace(ctx, r.namespace)
 	if err != nil {
@@ -78,6 +132,8 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("loading state: %w", err)
 	}
+
+	r.removeStrayContainers(ctx, ns)
 
 	if r.checkSelfUpdate(ctx, ns, state) {
 		return true, nil
@@ -103,7 +159,7 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 // nextWake returns how long to sleep before the next check: the regular
 // interval, shortened to the soonest pending Funnel expiry so a forgotten
 // Funnel closes on time. Falls back to the regular interval if state can't be
-// loaded — the next tick will retry. An already-passed expiry yields a zero
+// loaded - the next tick will retry. An already-passed expiry yields a zero
 // wait, so a Funnel that expired while the daemon was down is torn down on the
 // next check.
 func (r *Runner) nextWake(ctx context.Context) time.Duration {
@@ -122,6 +178,24 @@ func (r *Runner) nextWake(ctx context.Context) time.Duration {
 	return wakeInterval(time.Now(), expiries, CheckInterval)
 }
 
+// removeStrayContainersAtStart cleans up after a Deploy the previous daemon
+// was killed in the middle of. Every check sweeps again, catching strays
+// still too young to remove at start.
+func (r *Runner) removeStrayContainersAtStart(ctx context.Context) {
+	ns, err := docker.RestoreNamespace(ctx, r.namespace)
+	if err != nil {
+		slog.Error("Stray container sweep failed", "error", err)
+		return
+	}
+	r.removeStrayContainers(ctx, ns)
+}
+
+func (r *Runner) removeStrayContainers(ctx context.Context, ns *docker.Namespace) {
+	if err := ns.RemoveStrayContainers(ctx, time.Now()); err != nil {
+		slog.Error("Stray container sweep failed", "error", err)
+	}
+}
+
 func (r *Runner) checkFunnelExpiry(ctx context.Context, app *docker.Application) {
 	if !app.Settings.FunnelExpired(time.Now()) {
 		return
@@ -137,7 +211,7 @@ func (r *Runner) checkFunnelExpiry(ctx context.Context, app *docker.Application)
 }
 
 func (r *Runner) checkSelfUpdate(ctx context.Context, ns *docker.Namespace, state *docker.State) bool {
-	if os.Getenv("ONCE_NO_SELF_UPDATE") != "" {
+	if !selfUpdateEnabled(version.Version) {
 		return false
 	}
 
@@ -147,19 +221,23 @@ func (r *Runner) checkSelfUpdate(ctx context.Context, ns *docker.Namespace, stat
 
 	slog.Info("Checking for once update")
 
-	err := version.NewUpdater().UpdateBinary()
+	updated, err := version.NewUpdater().UpdateBinary()
 	state.RecordSelfUpdate(err)
 	if saveErr := ns.SaveState(ctx, state); saveErr != nil {
 		slog.Error("Failed to save state after self-update check", "error", saveErr)
 	}
 
-	if err != nil {
+	switch {
+	case err != nil:
 		slog.Error("Self-update failed", "error", err)
 		return false
+	case !updated:
+		slog.Info("Once is up to date", "version", version.Version)
+		return false
+	default:
+		slog.Info("Self-update complete, restarting")
+		return true
 	}
-
-	slog.Info("Self-update complete, restarting")
-	return true
 }
 
 func (r *Runner) runBackups(ctx context.Context, ns *docker.Namespace, state *docker.State) {
@@ -189,6 +267,12 @@ func (r *Runner) checkUpdate(ctx context.Context, app *docker.Application, state
 }
 
 // Helpers
+
+// selfUpdateEnabled leaves locally-built binaries alone: replacing them with
+// the upstream release would silently discard the developer's build.
+func selfUpdateEnabled(currentVersion string) bool {
+	return os.Getenv("ONCE_NO_SELF_UPDATE") == "" && version.IsRelease(currentVersion)
+}
 
 // superviseAdminServer runs the admin socket server, restarting it with bounded
 // backoff whenever it returns while ctx is still live. Without this a transient

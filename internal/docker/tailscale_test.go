@@ -11,6 +11,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestCarriesTailnetLabels is how an app or once-admin from an older Once is
+// spotted: it lacks a label the active topology would give it now (ADR-0018's
+// tsdproxy.proxyprovider), so it is rolled. Labels it carries beyond those are
+// the app's own business.
+func TestCarriesTailnetLabels(t *testing.T) {
+	want := map[string]string{"tsdproxy.enable": "true", "tsdproxy.proxyprovider": "once"}
+
+	assert.True(t, carriesTailnetLabels(map[string]string{"tsdproxy.enable": "true", "tsdproxy.proxyprovider": "once", "once": "{}"}, want))
+	assert.False(t, carriesTailnetLabels(map[string]string{"tsdproxy.enable": "true"}, want))
+	assert.False(t, carriesTailnetLabels(map[string]string{"tsdproxy.enable": "true", "tsdproxy.proxyprovider": "default"}, want))
+	assert.True(t, carriesTailnetLabels(map[string]string{"once": "{}"}, nil))
+}
+
 func TestTailscaleSettingsRoundTrip(t *testing.T) {
 	settings := TailscaleSettings{
 		ClientID:     "id-123",

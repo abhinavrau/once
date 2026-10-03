@@ -24,6 +24,8 @@ const (
 	stateFileDir  = "/home/kamal-proxy/.config/kamal-proxy"
 	stateFileName = "once-state.json"
 	stateFilePath = stateFileDir + "/" + stateFileName
+
+	kamalProxyStatePath = stateFileDir + "/kamal-proxy.state"
 )
 
 const (
@@ -243,26 +245,31 @@ func (p *Proxy) Deploy(ctx context.Context, opts DeployOptions) error {
 	return p.Exec(ctx, p.deployArgs(opts))
 }
 
-func (p *Proxy) LoadState(ctx context.Context) (*State, error) {
-	containerName := p.containerName()
-
-	reader, _, err := p.namespace.client.CopyFromContainer(ctx, containerName, stateFilePath)
-	if err != nil {
-		// Return empty state when the file doesn't exist yet (first boot)
-		if errdefs.IsNotFound(err) {
-			return &State{}, nil
-		}
-		return nil, fmt.Errorf("copying state from container: %w", err)
+// RouteTargets maps each routed app name to the short container ID its route
+// targets, as kamal-proxy persists it on every deploy and remove. An install
+// with no Proxy, or one that never routed anything, routes nothing.
+func (p *Proxy) RouteTargets(ctx context.Context) (map[string]string, error) {
+	data, err := p.readFile(ctx, kamalProxyStatePath)
+	if errdefs.IsNotFound(err) {
+		return nil, nil
 	}
-	defer reader.Close()
+	if err != nil {
+		return nil, err
+	}
+	return parseRouteTargets(data)
+}
 
-	tr := tar.NewReader(reader)
-	if _, err := tr.Next(); err != nil {
-		return nil, fmt.Errorf("reading state tar: %w", err)
+func (p *Proxy) LoadState(ctx context.Context) (*State, error) {
+	data, err := p.readFile(ctx, stateFilePath)
+	if errdefs.IsNotFound(err) {
+		return &State{}, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	var state State
-	if err := json.NewDecoder(tr).Decode(&state); err != nil {
+	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("decoding state: %w", err)
 	}
 
@@ -429,7 +436,57 @@ func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]by
 	return p.namespace.client.CopyToContainer(ctx, p.containerName(), dir, &buf, container.CopyToContainerOptions{})
 }
 
+// readFile passes through not-found for a missing container or file.
+func (p *Proxy) readFile(ctx context.Context, path string) ([]byte, error) {
+	return readContainerFile(ctx, p.namespace.client, p.containerName(), path)
+}
+
 // Helpers
+
+type containerFileReader interface {
+	CopyFromContainer(ctx context.Context, containerID, srcPath string) (io.ReadCloser, container.PathStat, error)
+}
+
+// readContainerFile reads one file out of a container through the archive
+// API, passing through not-found for a missing container or file.
+func readContainerFile(ctx context.Context, client containerFileReader, containerName, path string) ([]byte, error) {
+	reader, _, err := client.CopyFromContainer(ctx, containerName, path)
+	if errdefs.IsNotFound(err) {
+		return nil, err
+	}
+	if err != nil {
+		return nil, fmt.Errorf("copying %s from %s: %w", path, containerName, err)
+	}
+	defer reader.Close()
+
+	tr := tar.NewReader(reader)
+	if _, err := tr.Next(); err != nil {
+		return nil, fmt.Errorf("reading %s tar: %w", path, err)
+	}
+	return io.ReadAll(tr)
+}
+
+// parseRouteTargets reads kamal-proxy's routing state, whose targets are
+// container short IDs, sometimes with a port. Once routes each service to a
+// single target.
+func parseRouteTargets(data []byte) (map[string]string, error) {
+	var services []struct {
+		Name          string   `json:"name"`
+		ActiveTargets []string `json:"active_targets"`
+	}
+	if err := json.Unmarshal(data, &services); err != nil {
+		return nil, fmt.Errorf("decoding proxy routing state: %w", err)
+	}
+
+	targets := make(map[string]string, len(services))
+	for _, service := range services {
+		if len(service.ActiveTargets) > 0 {
+			target, _, _ := strings.Cut(service.ActiveTargets[0], ":")
+			targets[service.Name] = target
+		}
+	}
+	return targets, nil
+}
 
 // withDefaultPorts only consults defaultPorts when a port is unset, so a
 // proxy that already exists never draws ports it won't bind.

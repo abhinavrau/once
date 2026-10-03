@@ -15,7 +15,11 @@ The small set of per-app deployment facts Once cannot derive from the image - ba
 _Avoid_: manifest, app config - a Profile is four facts, not a configuration subsystem.
 
 **App Container**:
-The Docker container running an Application, named `{namespace}-app-{appName}-{randomID}`. More than one may run briefly for the same Application during a zero-downtime roll.
+The Docker container running an Application, named `{namespace}-app-{appName}-{randomID}`. More than one may run briefly for the same Application during a zero-downtime roll, and a Deploy killed mid-way leaves its new one behind.
+
+**Active App Container**:
+The one App Container an Application is read from and acted on: the one its Proxy route targets, else (no route, or the Proxy cannot be read) its oldest. Any other is a **stray** once older than a Deploy can take, and the background daemon removes it.
+_Avoid_: newest container, current container.
 
 **Random ID**:
 The random 6-character hex suffix on an app container's name that lets a replacement container boot alongside the old one without a naming collision. It is generated before the container exists, so it is unrelated to Docker's container ID.
