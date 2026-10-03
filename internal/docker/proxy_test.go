@@ -9,13 +9,17 @@ import (
 )
 
 func TestParseRouteTargets(t *testing.T) {
-	// Verbatim `kamal-proxy list` output: colored even without a TTY.
-	output := "\x1b[3;94mService\x1b[0m  \x1b[3;94mHost\x1b[0m                     \x1b[3;94mPath\x1b[0m  \x1b[3;94mTarget\x1b[0m             \x1b[3;94mState\x1b[0m    \x1b[3;94mTLS\x1b[0m  \x1b[3;94mCert\x1b[0m  \n" +
-		"\x1b[1;34mblog\x1b[0m     \x1b[ma.localhost,b.localhost\x1b[0m  \x1b[m/\x1b[0m     \x1b[m6ac5e14a7ea6:80\x1b[0m  \x1b[mrunning\x1b[0m  \x1b[mno\x1b[0m   \x1b[m-\x1b[0m     \n" +
-		"\x1b[1;34mwiki\x1b[0m     \x1b[mwiki.localhost\x1b[0m  \x1b[m/\x1b[0m     \x1b[mc7238eb94210\x1b[0m  \x1b[mrunning\x1b[0m  \x1b[mno\x1b[0m   \x1b[m-\x1b[0m     \n"
+	// Trimmed kamal-proxy.state, as kamal-proxy writes it.
+	state := `[{"name":"blog","options":{"hosts":["a.localhost","b.localhost"]},"target_options":{},"active_targets":["6ac5e14a7ea6:80"],"rollout_targets":null},` +
+		`{"name":"wiki","options":{"hosts":["wiki.localhost"]},"target_options":{},"active_targets":["c7238eb94210"],"rollout_targets":null},` +
+		`{"name":"idle","options":{},"target_options":{},"active_targets":[],"rollout_targets":null}]` + "\n"
 
-	assert.Equal(t, map[string]string{"blog": "6ac5e14a7ea6", "wiki": "c7238eb94210"}, parseRouteTargets(output))
-	assert.Empty(t, parseRouteTargets(""))
+	targets, err := parseRouteTargets([]byte(state))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"blog": "6ac5e14a7ea6", "wiki": "c7238eb94210"}, targets)
+
+	_, err = parseRouteTargets(nil)
+	assert.Error(t, err, "a state file caught mid-write is unreadable, not empty")
 }
 
 func TestProxyContainerName(t *testing.T) {

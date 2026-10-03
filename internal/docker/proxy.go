@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/containerd/errdefs"
@@ -26,6 +24,8 @@ const (
 	stateFileDir  = "/home/kamal-proxy/.config/kamal-proxy"
 	stateFileName = "once-state.json"
 	stateFilePath = stateFileDir + "/" + stateFileName
+
+	kamalProxyStatePath = stateFileDir + "/kamal-proxy.state"
 )
 
 const (
@@ -246,38 +246,30 @@ func (p *Proxy) Deploy(ctx context.Context, opts DeployOptions) error {
 }
 
 // RouteTargets maps each routed app name to the short container ID its route
-// targets. An install with no Proxy routes nothing.
+// targets, as kamal-proxy persists it on every deploy and remove. An install
+// with no Proxy, or one that never routed anything, routes nothing.
 func (p *Proxy) RouteTargets(ctx context.Context) (map[string]string, error) {
-	output, err := p.ExecOutput(ctx, []string{"kamal-proxy", "list"})
+	data, err := p.readFile(ctx, kamalProxyStatePath)
 	if errdefs.IsNotFound(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return parseRouteTargets(output), nil
+	return parseRouteTargets(data)
 }
 
 func (p *Proxy) LoadState(ctx context.Context) (*State, error) {
-	containerName := p.containerName()
-
-	reader, _, err := p.namespace.client.CopyFromContainer(ctx, containerName, stateFilePath)
-	if err != nil {
-		// Return empty state when the file doesn't exist yet (first boot)
-		if errdefs.IsNotFound(err) {
-			return &State{}, nil
-		}
-		return nil, fmt.Errorf("copying state from container: %w", err)
+	data, err := p.readFile(ctx, stateFilePath)
+	if errdefs.IsNotFound(err) {
+		return &State{}, nil
 	}
-	defer reader.Close()
-
-	tr := tar.NewReader(reader)
-	if _, err := tr.Next(); err != nil {
-		return nil, fmt.Errorf("reading state tar: %w", err)
+	if err != nil {
+		return nil, err
 	}
 
 	var state State
-	if err := json.NewDecoder(tr).Decode(&state); err != nil {
+	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("decoding state: %w", err)
 	}
 
@@ -444,29 +436,46 @@ func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]by
 	return p.namespace.client.CopyToContainer(ctx, p.containerName(), dir, &buf, container.CopyToContainerOptions{})
 }
 
+// readFile passes through not-found for a missing container or file.
+func (p *Proxy) readFile(ctx context.Context, path string) ([]byte, error) {
+	reader, _, err := p.namespace.client.CopyFromContainer(ctx, p.containerName(), path)
+	if errdefs.IsNotFound(err) {
+		return nil, err
+	}
+	if err != nil {
+		return nil, fmt.Errorf("copying %s from proxy: %w", path, err)
+	}
+	defer reader.Close()
+
+	tr := tar.NewReader(reader)
+	if _, err := tr.Next(); err != nil {
+		return nil, fmt.Errorf("reading %s tar: %w", path, err)
+	}
+	return io.ReadAll(tr)
+}
+
 // Helpers
 
-var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-// parseRouteTargets reads the `kamal-proxy list` table, which colors its
-// cells even without a TTY. No cell contains spaces, and a target is a
-// container's short ID, sometimes with a port.
-func parseRouteTargets(output string) map[string]string {
-	lines := strings.Split(ansiEscape.ReplaceAllString(output, ""), "\n")
-	targetColumn := slices.Index(strings.Fields(lines[0]), "Target")
-	if targetColumn < 0 {
-		return nil
+// parseRouteTargets reads kamal-proxy's routing state, whose targets are
+// container short IDs, sometimes with a port. Once routes each service to a
+// single target.
+func parseRouteTargets(data []byte) (map[string]string, error) {
+	var services []struct {
+		Name          string   `json:"name"`
+		ActiveTargets []string `json:"active_targets"`
+	}
+	if err := json.Unmarshal(data, &services); err != nil {
+		return nil, fmt.Errorf("decoding proxy routing state: %w", err)
 	}
 
-	targets := make(map[string]string)
-	for _, line := range lines[1:] {
-		fields := strings.Fields(line)
-		if len(fields) > targetColumn {
-			target, _, _ := strings.Cut(fields[targetColumn], ":")
-			targets[fields[0]] = target
+	targets := make(map[string]string, len(services))
+	for _, service := range services {
+		if len(service.ActiveTargets) > 0 {
+			target, _, _ := strings.Cut(service.ActiveTargets[0], ":")
+			targets[service.Name] = target
 		}
 	}
-	return targets
+	return targets, nil
 }
 
 // withDefaultPorts only consults defaultPorts when a port is unset, so a
