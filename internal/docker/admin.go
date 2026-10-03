@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -79,7 +80,13 @@ func (a *Admin) Boot(ctx context.Context) error {
 	}
 
 	info, err := a.namespace.client.ContainerInspect(ctx, a.containerName())
-	if err == nil && a.mountsCurrent(info) {
+	current := false
+	if err == nil {
+		if current, err = a.current(ctx, info); err != nil {
+			return err
+		}
+	}
+	if current {
 		if err := a.ensureRunning(ctx, info); err != nil {
 			return err
 		}
@@ -97,10 +104,11 @@ func (a *Admin) Boot(ctx context.Context) error {
 	return a.recreate(ctx, err == nil)
 }
 
-// Heal migrates a once-admin created by an older Once, which bind-mounted the
-// socket and nginx config as individual files, to the socket-directory mount,
-// and clears what those file binds left in the runtime dir. The daemon runs it
-// at startup so an upgraded install heals without a Once command. An install
+// Heal migrates a once-admin created by an older Once - which bind-mounted the
+// socket and nginx config as individual files, or lacks a tailnet label the
+// active topology now writes (ADR-0018) - to the current shape, and clears
+// what those file binds left in the runtime dir. The daemon runs it at
+// startup so an upgraded install heals without a Once command. An install
 // without once-admin, or with a current one, is left alone.
 func (a *Admin) Heal(ctx context.Context) error {
 	info, err := a.namespace.client.ContainerInspect(ctx, a.containerName())
@@ -108,9 +116,15 @@ func (a *Admin) Heal(ctx context.Context) error {
 	case errdefs.IsNotFound(err):
 	case err != nil:
 		return fmt.Errorf("inspecting once-admin container: %w", err)
-	case !a.mountsCurrent(info):
-		if err := a.recreate(ctx, true); err != nil {
+	default:
+		current, err := a.current(ctx, info)
+		if err != nil {
 			return err
+		}
+		if !current {
+			if err := a.recreate(ctx, true); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -161,6 +175,40 @@ func (a *Admin) mountsCurrent(info container.InspectResponse) bool {
 	return info.HostConfig != nil && slices.Equal(info.HostConfig.Binds, a.binds())
 }
 
+// current reports whether once-admin needs no recreate: its mounts and its
+// tailnet labels are what a create would give it now. A setup from before
+// ADR-0015 cannot say which labels it wants until an enable rebuilds it, so
+// its labels count as current.
+func (a *Admin) current(ctx context.Context, info container.InspectResponse) (bool, error) {
+	if !a.mountsCurrent(info) {
+		return false, nil
+	}
+	want, err := a.tailnetLabels(ctx)
+	if errors.Is(err, ErrOlderOnceSetup) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return carriesTailnetLabels(info.Config.Labels, want), nil
+}
+
+// tailnetLabels are once-admin's tailnet labels. once-admin is booted both by
+// the Tailscale enable lifecycle (which exposes it on the tailnet too) and by
+// the recovery handoff path (which never touches Tailscale), so they depend
+// on whether Tailscale actually is enabled here, not on which caller booted it.
+func (a *Admin) tailnetLabels(ctx context.Context) (map[string]string, error) {
+	tailscaleEnabled, err := a.namespace.Tailscale().Enabled(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("checking tailscale: %w", err)
+	}
+	labels, err := a.namespace.Tailscale().AppLabels(ctx, tailscaleEnabled, "once-admin", a.namespace.name, 0)
+	if err != nil {
+		return nil, fmt.Errorf("resolving once-admin's tailnet labels: %w", err)
+	}
+	return labels, nil
+}
+
 func (a *Admin) ensureRunning(ctx context.Context, info container.InspectResponse) error {
 	if !info.State.Running {
 		if err := a.namespace.client.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
@@ -184,18 +232,9 @@ func (a *Admin) recreate(ctx context.Context, replacing bool) error {
 }
 
 func (a *Admin) create(ctx context.Context, joining bool) error {
-	// once-admin is booted both by the Tailscale enable lifecycle (which
-	// exposes it as a tailnet service too) and by the recovery handoff path
-	// (which never touches Tailscale), so its tailnet labels depend on
-	// whether Tailscale actually is enabled here, not on which caller booted
-	// it.
-	tailscaleEnabled, err := a.namespace.Tailscale().Enabled(ctx)
+	labels, err := a.tailnetLabels(ctx)
 	if err != nil {
-		return fmt.Errorf("checking tailscale: %w", err)
-	}
-	labels, err := a.namespace.Tailscale().AppLabels(ctx, tailscaleEnabled, "once-admin", a.namespace.name, 0)
-	if err != nil {
-		return fmt.Errorf("resolving once-admin's tailnet labels: %w", err)
+		return err
 	}
 
 	resp, err := a.namespace.client.ContainerCreate(ctx,

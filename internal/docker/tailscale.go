@@ -249,7 +249,8 @@ func NewTailscale(ns *Namespace) *Tailscale {
 // resolved: settings.Topology and settings.Mode carry the effective values,
 // not a request - Namespace.EnableTailscale does that resolution). Re-running
 // with unchanged credentials, tag, mode, and topology just ensures everything
-// is running (the supporting-container doctrine) and does not roll apps;
+// is running (the supporting-container doctrine) and rolls only apps whose
+// tailnet labels an older Once wrote differently;
 // anything in that set changing rebuilds the topology from scratch (each
 // topology's state volume is kept, since boot/remove never touch it) and
 // rolls every running app so it picks up the new topology's labels
@@ -270,7 +271,7 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 			return err
 		}
 		t.Settings = &existing
-		return nil
+		return t.namespace.rollStaleTailnetApps(ctx)
 	}
 
 	if found {
@@ -302,6 +303,27 @@ func (t *Tailscale) Enable(ctx context.Context, settings TailscaleSettings) erro
 	// Retrofit running apps so they appear on the tailnet immediately, not
 	// just on their next deploy.
 	return t.namespace.RollApplications(ctx)
+}
+
+// Heal brings an install set up by an older Once up to this one's shape at
+// daemon startup, rather than on the user's next `once tailscale enable`: the
+// active topology's own containers first, then every running app whose
+// tailnet labels it would now write differently is rolled (ADR-0018). An
+// install without Tailscale, or one from before ADR-0015 that only an enable
+// can rebuild, is left alone.
+func (t *Tailscale) Heal(ctx context.Context) error {
+	settings, found, err := t.loadStoredSettings(ctx)
+	if err != nil || !found || settings.Topology == "" {
+		return err
+	}
+	topology, err := t.topologyFor(settings.Topology)
+	if err != nil {
+		return err
+	}
+	if err := topology.heal(ctx, settings); err != nil {
+		return err
+	}
+	return t.namespace.rollStaleTailnetApps(ctx)
 }
 
 // Disable leaves the active topology: its containers go, and so does what it
@@ -703,6 +725,17 @@ func activeTopologyName(settings TailscaleSettings) string {
 		return TailnetTopologyServices
 	}
 	return settings.Topology
+}
+
+// carriesTailnetLabels reports whether a container already carries every
+// tailnet label the active topology would give it now.
+func carriesTailnetLabels(have, want map[string]string) bool {
+	for k, v := range want {
+		if have[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // controlSeam is the only reader of the hidden headscale control seam's env

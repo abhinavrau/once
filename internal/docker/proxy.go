@@ -438,12 +438,24 @@ func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]by
 
 // readFile passes through not-found for a missing container or file.
 func (p *Proxy) readFile(ctx context.Context, path string) ([]byte, error) {
-	reader, _, err := p.namespace.client.CopyFromContainer(ctx, p.containerName(), path)
+	return readContainerFile(ctx, p.namespace.client, p.containerName(), path)
+}
+
+// Helpers
+
+type containerFileReader interface {
+	CopyFromContainer(ctx context.Context, containerID, srcPath string) (io.ReadCloser, container.PathStat, error)
+}
+
+// readContainerFile reads one file out of a container through the archive
+// API, passing through not-found for a missing container or file.
+func readContainerFile(ctx context.Context, client containerFileReader, containerName, path string) ([]byte, error) {
+	reader, _, err := client.CopyFromContainer(ctx, containerName, path)
 	if errdefs.IsNotFound(err) {
 		return nil, err
 	}
 	if err != nil {
-		return nil, fmt.Errorf("copying %s from proxy: %w", path, err)
+		return nil, fmt.Errorf("copying %s from %s: %w", path, containerName, err)
 	}
 	defer reader.Close()
 
@@ -453,8 +465,6 @@ func (p *Proxy) readFile(ctx context.Context, path string) ([]byte, error) {
 	}
 	return io.ReadAll(tr)
 }
-
-// Helpers
 
 // parseRouteTargets reads kamal-proxy's routing state, whose targets are
 // container short IDs, sometimes with a port. Once routes each service to a

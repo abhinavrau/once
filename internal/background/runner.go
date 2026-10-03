@@ -2,6 +2,7 @@ package background
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,7 +21,13 @@ const CheckInterval = 5 * time.Minute
 const (
 	adminRestartMinBackoff = 250 * time.Millisecond
 	adminRestartMaxBackoff = 30 * time.Second
-	adminHealRetryInterval = 30 * time.Second
+)
+
+// Bounds for retrying the startup heal: soon while Docker comes up, rarely
+// once a failure looks persistent.
+const (
+	healRetryInterval    = 30 * time.Second
+	healMaxRetryInterval = time.Hour
 )
 
 type Runner struct {
@@ -43,7 +50,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	go superviseAdminServer(ctx, func(ctx context.Context) error {
 		return NewAdminServer().Run(ctx)
 	})
-	go r.healAdmin(ctx)
+	go r.heal(ctx)
 
 	if ctx.Err() == nil {
 		r.removeStrayContainersAtStart(ctx)
@@ -75,30 +82,44 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // Private
 
-// healAdmin migrates a once-admin left by an older Once, so an upgrade heals
-// when the daemon restarts rather than on the user's next Tailscale enable.
-// Docker may not be ready yet at boot, so a failure is retried.
-func (r *Runner) healAdmin(ctx context.Context) {
+// heal migrates the tailnet topology and once-admin left by an older Once, so
+// an upgrade heals when the daemon restarts rather than on the user's next
+// Tailscale enable. Docker may not be ready yet at boot, so a failure is
+// retried, backing off so an app whose roll keeps failing is not rolled
+// every few seconds for good.
+func (r *Runner) heal(ctx context.Context) {
+	backoff := healRetryInterval
 	for {
-		err := r.tryHealAdmin(ctx)
+		err := r.tryHeal(ctx)
 		if err == nil {
 			return
 		}
-		slog.Error("Healing once-admin failed; retrying", "error", err, "backoff", adminHealRetryInterval)
+		slog.Error("Healing the install failed; retrying", "error", err, "backoff", backoff)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(adminHealRetryInterval):
+		case <-time.After(backoff):
 		}
+		backoff = min(backoff*2, healMaxRetryInterval)
 	}
 }
 
-func (r *Runner) tryHealAdmin(ctx context.Context) error {
+// tryHeal heals the tailnet topology before once-admin, whose labels depend
+// on it; once-admin is healed even when the topology is not, so neither
+// strands the other.
+func (r *Runner) tryHeal(ctx context.Context) error {
 	ns, err := docker.RestoreNamespace(ctx, r.namespace)
 	if err != nil {
 		return fmt.Errorf("restoring namespace: %w", err)
 	}
-	return ns.Admin().Heal(ctx)
+	var errs []error
+	if err := ns.Tailscale().Heal(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("healing tailscale: %w", err))
+	}
+	if err := ns.Admin().Heal(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("healing once-admin: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func (r *Runner) check(ctx context.Context) (bool, error) {

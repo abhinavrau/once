@@ -41,6 +41,24 @@ const tsdproxyConfigPath = "/config"
 // TailscaleProxyProviderConfig.DataDir's default.
 const nodesDataVolumeTarget = "/data"
 
+// tsdproxyUnclaimedProvider is the provider TSDProxy falls back to for a
+// container naming none - another namespace's from before ADR-0018, or one
+// that is not Once's at all. TSDProxy v2.3.4 refuses to start with a default
+// that names no provider, so it exists, but can never serve: its OAuth client
+// has no tags, so minting a key fails before any request leaves TSDProxy (an
+// app's tsdproxy.tags label would at most get a 401), and the proxy manager
+// resolves that key before it closes any existing proxy of the same name.
+// The underscore keeps it from ever equalling a namespace name.
+const tsdproxyUnclaimedProvider = "other_namespace"
+
+// unclaimedProviderConfig carries placeholder OAuth credentials because only
+// the OAuth path fails to resolve a key: a provider with no credentials at all
+// resolves an empty key and waits for an interactive login instead.
+var unclaimedProviderConfig = tsdproxyTailscaleProviderConfig{
+	ClientID:     "unclaimed",
+	ClientSecret: "unclaimed",
+}
+
 // nodesFunnelPort is the public port every nodes-topology Funnel serves on.
 // Unlike Services, which shares one node's ports across apps and so must
 // allocate one per app, every nodes app is its own node: Funnel is a
@@ -81,15 +99,22 @@ func newNodesTopology(ns *Namespace) *nodesTopology {
 }
 
 // boot idempotently ensures once-tsdproxy is running with settings written
-// into its config file and its own label.
+// into its config file and its own label. One whose config would let it serve
+// other namespaces' containers - booted before ADR-0018, or created by a boot
+// interrupted before its config was written - is rebuilt.
 func (n *nodesTopology) boot(ctx context.Context, settings TailscaleSettings) error {
 	info, err := n.namespace.client.ContainerInspect(ctx, n.containerName())
 	switch {
 	case err == nil:
+		isolates, err := n.isolates(ctx, info.ID)
+		if err != nil {
+			return err
+		}
+		if !isolates {
+			return n.relabel(ctx, settings)
+		}
 		if !info.State.Running {
-			if err := n.namespace.client.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
-				return fmt.Errorf("starting tsdproxy container: %w", err)
-			}
+			return n.start(ctx, info.ID)
 		}
 		return nil
 	case !errdefs.IsNotFound(err):
@@ -100,6 +125,19 @@ func (n *nodesTopology) boot(ctx context.Context, settings TailscaleSettings) er
 		return err
 	}
 	return n.create(ctx, settings)
+}
+
+// heal is boot for an install that already runs once-tsdproxy, so the daemon
+// brings one booted by an older Once up to date at startup without creating
+// one an install does not have.
+func (n *nodesTopology) heal(ctx context.Context, settings TailscaleSettings) error {
+	if _, err := n.namespace.client.ContainerInspect(ctx, n.containerName()); err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("inspecting tsdproxy container: %w", err)
+	}
+	return n.boot(ctx, settings)
 }
 
 // remove tears down once-tsdproxy, keeping its data volume (every app's tsnet
@@ -179,9 +217,10 @@ func (n *nodesTopology) appLabels(host, network string, funnelPort int) map[stri
 		port += ", tailscale_funnel"
 	}
 	return map[string]string{
-		"tsdproxy.enable": "true",
-		"tsdproxy.name":   host,
-		"tsdproxy.port.1": port,
+		"tsdproxy.enable":        "true",
+		"tsdproxy.name":          host,
+		"tsdproxy.port.1":        port,
+		"tsdproxy.proxyprovider": n.providerName(),
 	}
 }
 
@@ -308,6 +347,13 @@ func (n *nodesTopology) containerName() string {
 	return n.namespace.name + "-tsdproxy"
 }
 
+// providerName is the one Tailscale provider this namespace's TSDProxy
+// defines, and the one every app it serves names (ADR-0018). It is also the
+// directory under the data volume holding each node's tsnet state.
+func (n *nodesTopology) providerName() string {
+	return n.namespace.name
+}
+
 func (n *nodesTopology) dataVolumeName() string {
 	return n.namespace.name + "-tsdproxy-data"
 }
@@ -370,11 +416,39 @@ func (n *nodesTopology) create(ctx context.Context, settings TailscaleSettings) 
 		return err
 	}
 
-	if err := n.namespace.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if err := n.start(ctx, resp.ID); err != nil {
 		n.namespace.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		return err
+	}
+	return nil
+}
+
+// start starts once-tsdproxy, first carrying any pre-ADR-0018 node state over
+// to this namespace's provider. Every start does, not just create's, so a
+// container left created-but-unstarted by an interrupted boot still gets it.
+func (n *nodesTopology) start(ctx context.Context, containerID string) error {
+	if err := linkLegacyNodeState(ctx, n.namespace.client, containerID, n.providerName()); err != nil {
+		return err
+	}
+	if err := n.namespace.client.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("starting tsdproxy container: %w", err)
 	}
 	return nil
+}
+
+// isolates reads back the config once-tsdproxy runs with and reports whether
+// it keeps TSDProxy to this namespace's apps. A missing or unparseable config
+// does not, so the caller rebuilds rather than trusting it; a failed read is
+// an error, so a passing Docker hiccup never rebuilds a healthy TSDProxy.
+func (n *nodesTopology) isolates(ctx context.Context, containerID string) (bool, error) {
+	raw, err := readContainerFile(ctx, n.namespace.client, containerID, tsdproxyConfigPath+"/tsdproxy.yaml")
+	if errdefs.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading tsdproxy config: %w", err)
+	}
+	return n.configIsolates(raw), nil
 }
 
 // adminURL is the base URL of TSDProxy's admin API on whatever loopback port
@@ -423,19 +497,25 @@ func (n *nodesTopology) writeConfig(ctx context.Context, containerID string, con
 // as TSDProxy's own auto-Docker-detected default, so a future TSDProxy
 // version changing that default cannot silently lock Once out of its own
 // admin API.
+//
+// TSDProxy watches every container on the Docker host, so the config also
+// keeps it off other namespaces' containers (ADR-0018): its one usable
+// provider is this namespace's, which only this namespace's apps name, and
+// both defaults point at tsdproxyUnclaimedProvider.
 func (n *nodesTopology) buildConfig(settings TailscaleSettings) ([]byte, error) {
 	cfg := tsdproxyConfigFile{
-		DefaultProxyProvider: "default",
+		DefaultProxyProvider: tsdproxyUnclaimedProvider,
 		Docker: map[string]tsdproxyDockerProviderConfig{
 			"local": {
 				Host:                 "unix:///var/run/docker.sock",
 				TargetHostname:       n.namespace.name + "-proxy",
-				DefaultProxyProvider: "default",
+				DefaultProxyProvider: tsdproxyUnclaimedProvider,
 			},
 		},
 		Tailscale: tsdproxyTailscaleSection{
 			Providers: map[string]tsdproxyTailscaleProviderConfig{
-				"default": nodesProviderConfig(settings),
+				n.providerName():          nodesProviderConfig(settings),
+				tsdproxyUnclaimedProvider: unclaimedProviderConfig,
 			},
 			DataDir: nodesDataVolumeTarget + "/",
 		},
@@ -443,6 +523,20 @@ func (n *nodesTopology) buildConfig(settings TailscaleSettings) ([]byte, error) 
 		AdminAllowLocalhost: true,
 	}
 	return yaml.Marshal(cfg)
+}
+
+// configIsolates reports whether a tsdproxy.yaml keeps TSDProxy to this
+// namespace's apps. A TSDProxy Once booted before ADR-0018, whose single
+// "default" provider serves every unlabelled container on the host, does not.
+func (n *nodesTopology) configIsolates(raw []byte) bool {
+	var cfg tsdproxyConfigFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return false
+	}
+	_, ownProvider := cfg.Tailscale.Providers[n.providerName()]
+	return ownProvider &&
+		cfg.DefaultProxyProvider == tsdproxyUnclaimedProvider &&
+		cfg.Docker["local"].DefaultProxyProvider == tsdproxyUnclaimedProvider
 }
 
 // bestEffortDeleteTaggedDevices deletes every tailnet device carrying

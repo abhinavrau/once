@@ -581,6 +581,36 @@ func (n *Namespace) containerAppName(containerName string) string {
 
 // Private
 
+// rollStaleTailnetApps rolls every running app whose container lacks a
+// tailnet label the active topology would give it now - one deployed by an
+// older Once (ADR-0018) - leaving current ones untouched. Being driven by the
+// labels themselves, a heal interrupted partway converges on its next run.
+// One app's failure is reported and does not stop the others.
+func (n *Namespace) rollStaleTailnetApps(ctx context.Context) error {
+	if err := n.Refresh(ctx); err != nil {
+		return err
+	}
+	var errs []error
+	for _, app := range n.applications {
+		if !app.Running {
+			continue
+		}
+		current, err := app.carriesCurrentTailnetLabels(ctx)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("checking %s's tailnet labels: %w", app.Settings.Name, err))
+			continue
+		}
+		if current {
+			continue
+		}
+		slog.Info("Rolling app onto current tailnet labels", "app", app.Settings.Name)
+		if err := app.Roll(ctx, nil); err != nil {
+			errs = append(errs, fmt.Errorf("rolling %s: %w", app.Settings.Name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // reregisterNonPublicRoutes re-issues the Proxy route of every running app
 // whose route lives on the Proxy and is not Public, immediately after an
 // image-pin roll, so the routes carry whatever options the current Once emits

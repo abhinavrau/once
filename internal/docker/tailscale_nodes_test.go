@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -39,10 +40,20 @@ func TestNodesAppLabelsPlain(t *testing.T) {
 	labels := n.appLabels("whoami", "once", 0)
 
 	assert.Equal(t, map[string]string{
-		"tsdproxy.enable": "true",
-		"tsdproxy.name":   "whoami",
-		"tsdproxy.port.1": "443/https:80/http, no_autodetect",
+		"tsdproxy.enable":        "true",
+		"tsdproxy.name":          "whoami",
+		"tsdproxy.port.1":        "443/https:80/http, no_autodetect",
+		"tsdproxy.proxyprovider": "once",
 	}, labels)
+}
+
+// TestNodesAppLabelsNameTheNamespacesProvider pins the isolation between
+// namespaces sharing a Docker host: every TSDProxy sees every container, so
+// each app names the provider only its own namespace's TSDProxy defines.
+func TestNodesAppLabelsNameTheNamespacesProvider(t *testing.T) {
+	n := newNodesTopology(&Namespace{name: "staging"})
+
+	assert.Equal(t, "staging", n.appLabels("whoami", "staging", 0)["tsdproxy.proxyprovider"])
 }
 
 // TestNodesAppLabelsPlainHTTPOnControlSeam pins the headscale-only variant:
@@ -171,11 +182,72 @@ func TestNodesBuildConfigTargetsOnceProxy(t *testing.T) {
 	assert.True(t, cfg.AdminAllowLocalhost)
 	assert.Equal(t, tsdproxyAdminContainerPort, cfg.HTTP.Port)
 
-	provider := cfg.Tailscale.Providers["default"]
+	provider := cfg.Tailscale.Providers["once"]
 	assert.Equal(t, "id", provider.ClientID)
 	assert.Equal(t, "secret", provider.ClientSecret)
 	assert.Equal(t, "tag:once", provider.Tags)
 	assert.Empty(t, provider.AuthKey, "OAuth and the control seam's auth key must never both be written")
+}
+
+// TestNodesBuildConfigServesOnlyItsOwnNamespace pins how TSDProxy v2.3.4 is
+// made to ignore every container it does not own: a container naming a
+// provider the config lacks is refused (proxymanager's getProxyProvider), and
+// one naming none falls to the defaults, which point at a provider whose
+// OAuth client can never mint a key - refused before any existing proxy of the
+// same name is closed. TSDProxy refuses to start with a default naming no
+// provider at all, hence a real but unusable one.
+func TestNodesBuildConfigServesOnlyItsOwnNamespace(t *testing.T) {
+	n := newNodesTopology(&Namespace{name: "staging"})
+
+	raw, err := n.buildConfig(TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"})
+	require.NoError(t, err)
+
+	var cfg tsdproxyConfigFile
+	require.NoError(t, yaml.Unmarshal(raw, &cfg))
+
+	assert.ElementsMatch(t, []string{"staging", "other_namespace"}, slices.Collect(maps.Keys(cfg.Tailscale.Providers)))
+	assert.Equal(t, "other_namespace", cfg.DefaultProxyProvider)
+	assert.Equal(t, "other_namespace", cfg.Docker["local"].DefaultProxyProvider)
+
+	unclaimed := cfg.Tailscale.Providers["other_namespace"]
+	assert.NotEmpty(t, unclaimed.ClientID, "only the OAuth path fails to resolve a key; an empty one asks for interactive login instead")
+	assert.NotEmpty(t, unclaimed.ClientSecret)
+	assert.Empty(t, unclaimed.Tags, "without tags the OAuth mint fails locally, before any call to Tailscale")
+	assert.Empty(t, unclaimed.AuthKey)
+}
+
+func TestNodesConfigIsolatesRecognizesItsOwnConfig(t *testing.T) {
+	n := newNodesTopology(&Namespace{name: "staging"})
+	raw, err := n.buildConfig(TailscaleSettings{ClientID: "id", ClientSecret: "secret", Tag: "tag:once"})
+	require.NoError(t, err)
+
+	assert.True(t, n.configIsolates(raw))
+	assert.False(t, newNodesTopology(&Namespace{name: "once"}).configIsolates(raw))
+}
+
+// TestNodesConfigIsolatesRejectsAPreIsolationConfig is the config every
+// TSDProxy Once booted before ADR-0018 still runs: one provider named
+// "default" that every unlabelled container on the host falls back to.
+func TestNodesConfigIsolatesRejectsAPreIsolationConfig(t *testing.T) {
+	n := newNodesTopology(&Namespace{name: "once"})
+	legacy := `defaultProxyProvider: default
+docker:
+  local:
+    host: unix:///var/run/docker.sock
+    targetHostname: once-proxy
+    defaultProxyProvider: default
+tailscale:
+  providers:
+    default:
+      clientId: id
+      clientSecret: secret
+      tags: tag:once
+  dataDir: /data/
+`
+
+	assert.False(t, n.configIsolates([]byte(legacy)))
+	assert.False(t, n.configIsolates(nil))
+	assert.False(t, n.configIsolates([]byte("not: [yaml")))
 }
 
 func TestNodesBuildConfigUsesControlSeamWhenActive(t *testing.T) {
@@ -189,7 +261,7 @@ func TestNodesBuildConfigUsesControlSeamWhenActive(t *testing.T) {
 	var cfg tsdproxyConfigFile
 	require.NoError(t, yaml.Unmarshal(raw, &cfg))
 
-	provider := cfg.Tailscale.Providers["default"]
+	provider := cfg.Tailscale.Providers["once"]
 	assert.Equal(t, "tskey-abc", provider.AuthKey)
 	assert.Equal(t, "http://headscale:8080", provider.ControlURL)
 	assert.Empty(t, provider.ClientID, "the control seam must never carry OAuth credentials into the config file")

@@ -55,6 +55,10 @@ type tailnetTopology interface {
 	// it. Callers that need rebuild-on-change semantics (the facade's Enable)
 	// call remove first.
 	boot(ctx context.Context, settings TailscaleSettings) error
+	// heal brings the topology's containers, if this install has them, up
+	// to this Once's shape; the daemon runs it at startup so an upgrade
+	// takes effect without a Once command.
+	heal(ctx context.Context, settings TailscaleSettings) error
 	// remove tears down this topology's containers, keeping any state volume
 	// that carries node identity (a re-enable must not churn Magic DNS).
 	// settings is the topology being removed - nodes uses it to best-effort
