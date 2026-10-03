@@ -224,19 +224,35 @@ func plantHostTailscaledSocket(t *testing.T) string {
 	return hostDir
 }
 
-// startAdminServer runs the daemon's admin socket server in-process and waits
-// for its socket, so the once-admin container the enable lifecycle boots has a
-// real socket to bind-mount.
+// startAdminServer runs the daemon's admin socket server in-process against a
+// fresh runtime dir, so the once-admin container the enable lifecycle boots
+// has a real socket to proxy to.
 func startAdminServer(t *testing.T, ctx context.Context) {
 	t.Helper()
 	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", t.TempDir())
-	adminCtx, stopAdmin := context.WithCancel(ctx)
-	t.Cleanup(stopAdmin)
-	go func() { _ = background.NewAdminServer().Run(adminCtx) }()
+	runAdminServer(t, ctx)
+}
+
+// runAdminServer runs the daemon's admin socket server in-process until the
+// returned stop is called or the test ends, and waits for its socket.
+func runAdminServer(t *testing.T, ctx context.Context) (stop func()) {
+	t.Helper()
+	adminCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = background.NewAdminServer().Run(adminCtx)
+	}()
+	stop = func() {
+		cancel()
+		<-done
+	}
+	t.Cleanup(stop)
 	require.Eventually(t, func() bool {
 		_, err := net.Dial("unix", docker.AdminSocketPath())
 		return err == nil
 	}, 5*time.Second, 50*time.Millisecond, "admin socket never became available")
+	return stop
 }
 
 // plantModelessDocktail replaces the once-docktail container with a stopped

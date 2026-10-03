@@ -20,6 +20,7 @@ const CheckInterval = 5 * time.Minute
 const (
 	adminRestartMinBackoff = 250 * time.Millisecond
 	adminRestartMaxBackoff = 30 * time.Second
+	adminHealRetryInterval = 30 * time.Second
 )
 
 type Runner struct {
@@ -42,6 +43,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	go superviseAdminServer(ctx, func(ctx context.Context) error {
 		return NewAdminServer().Run(ctx)
 	})
+	go r.healAdmin(ctx)
 
 	if ctx.Err() == nil {
 		r.removeStrayContainersAtStart(ctx)
@@ -72,6 +74,32 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 // Private
+
+// healAdmin migrates a once-admin left by an older Once, so an upgrade heals
+// when the daemon restarts rather than on the user's next Tailscale enable.
+// Docker may not be ready yet at boot, so a failure is retried.
+func (r *Runner) healAdmin(ctx context.Context) {
+	for {
+		err := r.tryHealAdmin(ctx)
+		if err == nil {
+			return
+		}
+		slog.Error("Healing once-admin failed; retrying", "error", err, "backoff", adminHealRetryInterval)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(adminHealRetryInterval):
+		}
+	}
+}
+
+func (r *Runner) tryHealAdmin(ctx context.Context) error {
+	ns, err := docker.RestoreNamespace(ctx, r.namespace)
+	if err != nil {
+		return fmt.Errorf("restoring namespace: %w", err)
+	}
+	return ns.Admin().Heal(ctx)
+}
 
 func (r *Runner) check(ctx context.Context) (bool, error) {
 	ns, err := docker.RestoreNamespace(ctx, r.namespace)
@@ -110,7 +138,7 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 // nextWake returns how long to sleep before the next check: the regular
 // interval, shortened to the soonest pending Funnel expiry so a forgotten
 // Funnel closes on time. Falls back to the regular interval if state can't be
-// loaded — the next tick will retry. An already-passed expiry yields a zero
+// loaded - the next tick will retry. An already-passed expiry yields a zero
 // wait, so a Funnel that expired while the daemon was down is torn down on the
 // next check.
 func (r *Runner) nextWake(ctx context.Context) time.Duration {

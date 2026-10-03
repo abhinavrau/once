@@ -5,7 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"path/filepath"
+	"os"
 	"testing"
 	"time"
 
@@ -19,9 +19,9 @@ import (
 // startAdminServerForTest runs the daemon's admin server against a temporary
 // runtime dir and returns a client that speaks HTTP over its Unix socket, the
 // way the once-admin container's nginx does.
-func startAdminServerForTest(t *testing.T, dir string) *http.Client {
+func startAdminServerForTest(t *testing.T) *http.Client {
 	t.Helper()
-	socket := filepath.Join(dir, "once-admin.sock")
+	socket := docker.AdminSocketPath()
 
 	srv := NewAdminServer()
 	go func() { _ = srv.Run(t.Context()) }()
@@ -44,7 +44,7 @@ func TestAdminServerServesHealthOverUnixSocket(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", dir)
 
-	client := startAdminServerForTest(t, dir)
+	client := startAdminServerForTest(t)
 
 	resp, err := client.Get("http://once-admin/up")
 	require.NoError(t, err)
@@ -53,9 +53,22 @@ func TestAdminServerServesHealthOverUnixSocket(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "ok")
+}
 
-	// The config the once-admin container mounts must have been written.
-	assert.FileExists(t, filepath.Join(dir, "once-admin-nginx.conf"))
+// TestAdminServerClaimsADirectoryAtItsSocketPath covers the host a reboot left
+// with an empty directory where the socket goes, the debris dockerd's bind
+// auto-creation leaves: the daemon clears it rather than crash-looping.
+func TestAdminServerClaimsADirectoryAtItsSocketPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", dir)
+	require.NoError(t, os.MkdirAll(docker.AdminSocketPath(), 0o755))
+
+	client := startAdminServerForTest(t)
+
+	resp, err := client.Get("http://once-admin/up")
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 // TestAdminServerServesTheRecoveryHandoff is the seam between the two
@@ -65,7 +78,7 @@ func TestAdminServerServesTheRecoveryHandoff(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", dir)
 
-	client := startAdminServerForTest(t, dir)
+	client := startAdminServerForTest(t)
 	password := "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567"
 
 	// No handoff is live: the routes are dark rather than absent.
@@ -101,7 +114,7 @@ func TestAdminServerServesTheRecoveryHandoff(t *testing.T) {
 func TestAdminServerRemovesSocketOnShutdown(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("ONCE_ADMIN_RUNTIME_DIR", dir)
-	socket := filepath.Join(dir, "once-admin.sock")
+	socket := docker.AdminSocketPath()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	srv := NewAdminServer()

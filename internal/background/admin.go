@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/basecamp/once/internal/docker"
 	"github.com/basecamp/once/internal/handoff"
@@ -18,24 +19,24 @@ import (
 // placeholder/health endpoint.
 type AdminServer struct {
 	socketPath string
-	confPath   string
 }
 
 func NewAdminServer() *AdminServer {
-	return &AdminServer{
-		socketPath: docker.AdminSocketPath(),
-		confPath:   docker.AdminNginxConfPath(),
-	}
+	return &AdminServer{socketPath: docker.AdminSocketPath()}
 }
 
-// Run writes the nginx config the once-admin container mounts, then serves until
-// the context is cancelled, removing the socket on the way out.
+// Run serves on the socket in the directory once-admin bind-mounts until the
+// context is cancelled, removing the socket on the way out.
 func (a *AdminServer) Run(ctx context.Context) error {
-	if err := os.WriteFile(a.confPath, []byte(docker.AdminNginxConfig()), 0o644); err != nil {
-		return fmt.Errorf("writing once-admin nginx config: %w", err)
+	// The directory already exists when dockerd created it for a once-admin
+	// that started first, and it must be kept rather than replaced: the
+	// container's mount holds that very directory.
+	if err := os.MkdirAll(filepath.Dir(a.socketPath), 0o755); err != nil {
+		return fmt.Errorf("creating once-admin socket directory: %w", err)
 	}
 
-	// Clear a socket left behind by an unclean shutdown so Listen can rebind.
+	// Clear a socket left behind by an unclean shutdown, or an empty directory
+	// left in its place, so Listen can rebind.
 	_ = os.Remove(a.socketPath)
 
 	ln, err := net.Listen("unix", a.socketPath)
@@ -43,7 +44,7 @@ func (a *AdminServer) Run(ctx context.Context) error {
 		return fmt.Errorf("listening on once-admin socket: %w", err)
 	}
 
-	// ponytail: world-rw socket — nginx workers in the once-admin container run
+	// ponytail: world-rw socket - nginx workers in the once-admin container run
 	// as a different uid and must be able to connect to the bind-mounted socket.
 	if err := os.Chmod(a.socketPath, 0o666); err != nil {
 		return fmt.Errorf("chmod once-admin socket: %w", err)
