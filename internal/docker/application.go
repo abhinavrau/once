@@ -74,23 +74,20 @@ func NewApplication(ns *Namespace, settings ApplicationSettings) *Application {
 	}
 }
 
+// ContainerName names the app's active App Container, never a stray sibling a
+// killed Deploy left behind.
 func (a *Application) ContainerName(ctx context.Context) (string, error) {
-	containers, err := a.namespace.client.ContainerList(ctx, container.ListOptions{All: true})
+	byApp, err := a.namespace.appContainers(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	for _, c := range containers {
-		if len(c.Names) == 0 {
-			continue
-		}
-		name := strings.TrimPrefix(c.Names[0], "/")
-		if a.namespace.containerAppName(name) == a.Settings.Name {
-			return name, nil
-		}
+	containers := byApp[a.Settings.Name]
+	if len(containers) == 0 {
+		return "", fmt.Errorf("no container found for app %s", a.Settings.Name)
 	}
-
-	return "", fmt.Errorf("no container found for app %s", a.Settings.Name)
+	active, _ := activeContainers(ctx, map[string][]container.Summary{a.Settings.Name: containers}, a.namespace.proxy)
+	return containerName(active[a.Settings.Name]), nil
 }
 
 func (a *Application) Volume(ctx context.Context) (*ApplicationVolume, error) {
@@ -633,17 +630,13 @@ func (a *Application) verifyHTTP(ctx context.Context) error {
 }
 
 func (a *Application) removeContainersExcept(ctx context.Context, keep string) error {
-	containers, err := a.namespace.client.ContainerList(ctx, container.ListOptions{All: true})
+	byApp, err := a.namespace.appContainers(ctx)
 	if err != nil {
 		return err
 	}
 
-	for _, c := range containers {
-		if len(c.Names) == 0 {
-			continue
-		}
-		name := strings.TrimPrefix(c.Names[0], "/")
-		if a.namespace.containerAppName(name) == a.Settings.Name && name != keep {
+	for _, c := range byApp[a.Settings.Name] {
+		if containerName(c) != keep {
 			if err := a.namespace.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
 				return err
 			}

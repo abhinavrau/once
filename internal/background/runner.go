@@ -43,6 +43,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		return NewAdminServer().Run(ctx)
 	})
 
+	if ctx.Err() == nil {
+		r.removeStrayContainersAtStart(ctx)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -79,6 +83,8 @@ func (r *Runner) check(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("loading state: %w", err)
 	}
+
+	r.removeStrayContainers(ctx, ns)
 
 	if r.checkSelfUpdate(ctx, ns, state) {
 		return true, nil
@@ -121,6 +127,24 @@ func (r *Runner) nextWake(ctx context.Context) time.Duration {
 	}
 
 	return wakeInterval(time.Now(), expiries, CheckInterval)
+}
+
+// removeStrayContainersAtStart cleans up after a Deploy the previous daemon
+// was killed in the middle of. Every check sweeps again, catching strays
+// still too young to remove at start.
+func (r *Runner) removeStrayContainersAtStart(ctx context.Context) {
+	ns, err := docker.RestoreNamespace(ctx, r.namespace)
+	if err != nil {
+		slog.Error("Stray container sweep failed", "error", err)
+		return
+	}
+	r.removeStrayContainers(ctx, ns)
+}
+
+func (r *Runner) removeStrayContainers(ctx context.Context, ns *docker.Namespace) {
+	if err := ns.RemoveStrayContainers(ctx, time.Now()); err != nil {
+		slog.Error("Stray container sweep failed", "error", err)
+	}
 }
 
 func (r *Runner) checkFunnelExpiry(ctx context.Context, app *docker.Application) {

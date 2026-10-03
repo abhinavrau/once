@@ -332,7 +332,7 @@ func TestRestoreStateDecodesApplicationLabels(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ns.restoreState(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}))
 
 	require.Len(t, ns.Applications(), 2)
 
@@ -347,32 +347,52 @@ func TestRestoreStateDecodesApplicationLabels(t *testing.T) {
 	assert.False(t, wiki.Running)
 }
 
-func TestRestoreStateKeepsNewestContainerPerApp(t *testing.T) {
+func TestRestoreStateKeepsActiveContainerPerApp(t *testing.T) {
 	older := appSettings("blog")
 	older.Image = "blog:1"
 	newer := appSettings("blog")
 	newer.Image = "blog:2"
 
-	restore := func(t *testing.T, containers ...container.Summary) *Application {
+	restore := func(t *testing.T, routes *fakeRouteTargets, containers ...container.Summary) *Application {
 		ns := newRestoreTestNamespace()
-		require.NoError(t, ns.restoreState(context.Background(), &mockRestoreClient{containers: containers}))
+		require.NoError(t, ns.restoreState(context.Background(), &mockRestoreClient{containers: containers}, routes))
 		require.Len(t, ns.Applications(), 1)
 		return ns.Application("blog")
 	}
+	routedTo := func(target string) *fakeRouteTargets {
+		return &fakeRouteTargets{targets: map[string]string{"blog": target}}
+	}
 
-	oldContainer := appSummary("id-old", "once-app-blog-a1b2c3", 100, "exited", older)
-	newContainer := appSummary("id-new", "once-app-blog-d4e5f6", 200, "running", newer)
+	oldRunning := appSummary("aaaaaaaaaaaa-old", "once-app-blog-a1b2c3", 100, "running", older)
+	newLooping := appSummary("bbbbbbbbbbbb-new", "once-app-blog-d4e5f6", 200, "restarting", newer)
+	newRunning := appSummary("bbbbbbbbbbbb-new", "once-app-blog-d4e5f6", 200, "running", newer)
 
-	t.Run("newest listed last", func(t *testing.T) {
-		app := restore(t, oldContainer, newContainer)
-		assert.Equal(t, "blog:2", app.Settings.Image)
-		assert.True(t, app.Running)
+	t.Run("a restart-looping stray never masks the container the Proxy routes to", func(t *testing.T) {
+		for _, app := range []*Application{
+			restore(t, routedTo("aaaaaaaaaaaa"), oldRunning, newLooping),
+			restore(t, routedTo("aaaaaaaaaaaa"), newLooping, oldRunning),
+		} {
+			assert.Equal(t, "blog:1", app.Settings.Image)
+			assert.True(t, app.Running)
+		}
 	})
 
-	t.Run("newest listed first", func(t *testing.T) {
-		app := restore(t, newContainer, oldContainer)
+	t.Run("a newer container the Proxy was switched to is the active one", func(t *testing.T) {
+		app := restore(t, routedTo("bbbbbbbbbbbb"), oldRunning, newRunning)
 		assert.Equal(t, "blog:2", app.Settings.Image)
-		assert.True(t, app.Running)
+	})
+
+	t.Run("a stopped app reads as stopped beside a running stray", func(t *testing.T) {
+		oldStopped := oldRunning
+		oldStopped.State = "exited"
+		app := restore(t, routedTo("aaaaaaaaaaaa"), oldStopped, newRunning)
+		assert.Equal(t, "blog:1", app.Settings.Image)
+		assert.False(t, app.Running)
+	})
+
+	t.Run("the oldest container when the Proxy cannot be read", func(t *testing.T) {
+		app := restore(t, &fakeRouteTargets{err: errors.New("proxy down")}, newRunning, oldRunning)
+		assert.Equal(t, "blog:1", app.Settings.Image)
 	})
 }
 
@@ -385,7 +405,7 @@ func TestRestoreStateDecodesProxyLabel(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ns.restoreState(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}))
 
 	require.NotNil(t, ns.Proxy().Settings)
 	assert.Equal(t, settings, *ns.Proxy().Settings)
@@ -400,7 +420,7 @@ func TestRestoreStateLeavesProxySettingsUnsetWithoutLabel(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ns.restoreState(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}))
 
 	assert.Nil(t, ns.Proxy().Settings)
 	// The app proves the restore did walk the list past the unlabelled proxy.
@@ -411,7 +431,7 @@ func TestRestoreStateFailsWhenListingContainersFails(t *testing.T) {
 	ns := newRestoreTestNamespace()
 	client := &mockRestoreClient{listErr: errors.New("daemon unreachable")}
 
-	assert.ErrorContains(t, ns.restoreState(context.Background(), client), "daemon unreachable")
+	assert.ErrorContains(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}), "daemon unreachable")
 }
 
 func TestRestoreStateCapturesRunningSince(t *testing.T) {
@@ -425,7 +445,7 @@ func TestRestoreStateCapturesRunningSince(t *testing.T) {
 		startedAt: map[string]string{"id-blog": startedAt.Format(time.RFC3339Nano)},
 	}
 
-	require.NoError(t, ns.restoreState(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}))
 
 	assert.Equal(t, startedAt, ns.Application("blog").RunningSince)
 	assert.True(t, ns.Application("wiki").RunningSince.IsZero())
@@ -444,7 +464,7 @@ func TestRestoreStateKeepsRunningAppWhenInspectFails(t *testing.T) {
 		inspectErr: map[string]error{"id-blog": errors.New("no such container")},
 	}
 
-	require.NoError(t, ns.restoreState(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}))
 
 	blog := ns.Application("blog")
 	require.NotNil(t, blog)
@@ -464,7 +484,7 @@ func TestRestoreStateFailsOnCorruptLabel(t *testing.T) {
 			},
 		}
 
-		require.Error(t, ns.restoreState(context.Background(), client))
+		require.Error(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}))
 		assert.Empty(t, ns.Applications())
 	})
 
@@ -476,7 +496,7 @@ func TestRestoreStateFailsOnCorruptLabel(t *testing.T) {
 			},
 		}
 
-		require.Error(t, ns.restoreState(context.Background(), client))
+		require.Error(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}))
 		assert.Nil(t, ns.Proxy().Settings)
 	})
 }
@@ -494,7 +514,7 @@ func TestRestoreStateIgnoresContainersOutsideNamespace(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ns.restoreState(context.Background(), client))
+	require.NoError(t, ns.restoreState(context.Background(), client, &fakeRouteTargets{}))
 
 	require.Len(t, ns.Applications(), 1)
 	assert.Equal(t, "blog", ns.Applications()[0].Settings.Name)

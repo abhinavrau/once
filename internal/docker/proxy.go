@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/containerd/errdefs"
@@ -243,6 +245,19 @@ func (p *Proxy) Deploy(ctx context.Context, opts DeployOptions) error {
 	return p.Exec(ctx, p.deployArgs(opts))
 }
 
+// RouteTargets maps each routed app name to the short container ID its route
+// targets. An install with no Proxy routes nothing.
+func (p *Proxy) RouteTargets(ctx context.Context) (map[string]string, error) {
+	output, err := p.ExecOutput(ctx, []string{"kamal-proxy", "list"})
+	if errdefs.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parseRouteTargets(output), nil
+}
+
 func (p *Proxy) LoadState(ctx context.Context) (*State, error) {
 	containerName := p.containerName()
 
@@ -430,6 +445,29 @@ func (p *Proxy) copyFiles(ctx context.Context, dir string, files map[string][]by
 }
 
 // Helpers
+
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// parseRouteTargets reads the `kamal-proxy list` table, which colors its
+// cells even without a TTY. No cell contains spaces, and a target is a
+// container's short ID, sometimes with a port.
+func parseRouteTargets(output string) map[string]string {
+	lines := strings.Split(ansiEscape.ReplaceAllString(output, ""), "\n")
+	targetColumn := slices.Index(strings.Fields(lines[0]), "Target")
+	if targetColumn < 0 {
+		return nil
+	}
+
+	targets := make(map[string]string)
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) > targetColumn {
+			target, _, _ := strings.Cut(fields[targetColumn], ":")
+			targets[fields[0]] = target
+		}
+	}
+	return targets
+}
 
 // withDefaultPorts only consults defaultPorts when a port is unset, so a
 // proxy that already exists never draws ports it won't bind.
