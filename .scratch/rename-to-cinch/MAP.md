@@ -40,6 +40,7 @@ at the spec.
 ## Decisions so far
 
 - [Research: is "cinch" free to use?](issues/01-research-is-cinch-free.md): clear in distro repos, but cinch.sh (self-hosted CI) and cinchcli.com ship `cinch` binaries via curl; never overwrite a foreign `cinch`
+- [Distribution and release identity](issues/04-distribution-and-release-identity.md): static `install.sh` at get.cinch.host (Go server deleted), foreign-`cinch` guard, first release v0.2.0, repo renamed to abhinavrau/cinch and detached from the fork network, proxy retagged `cinch-02`
 
 ## Not yet specified
 
