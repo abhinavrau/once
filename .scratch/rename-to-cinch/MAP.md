@@ -42,11 +42,11 @@ at the spec.
 - [Research: is "cinch" free to use?](issues/01-research-is-cinch-free.md): clear in distro repos, but cinch.sh (self-hosted CI) and cinchcli.com ship `cinch` binaries via curl; never overwrite a foreign `cinch`
 - [Distribution and release identity](issues/04-distribution-and-release-identity.md): static `install.sh` at get.cinch.host (Go server deleted), foreign-`cinch` guard, first release v0.2.0, repo renamed to abhinavrau/cinch and detached from the fork network, proxy retagged `cinch-02`
 - [Which text and docs get renamed?](issues/05-which-text-gets-renamed.md): history stays as written plus ADR-0019 name table; all living text renamed; ONCE -> CINCH text wordmark; Cinch/`cinch`/CINCH; identifier patterns, never a blind replace
+- [Assemble the rename spec](issues/06-assemble-the-rename-spec.md): [SPEC.md](SPEC.md), with a full old -> new table, 14-step order of operations, and leftover check
 
 ## Not yet specified
 
-- Local dev environment: workspace dir, graphify-out, treehouse.toml, and the
-  deja index after the repo path changes.
+(none - the way is clear)
 
 ## Out of scope
 
